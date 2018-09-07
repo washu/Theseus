@@ -1,0 +1,85 @@
+sourceSets {
+  main {
+    java {
+      srcDir 'src/main/java'
+      srcDir 'src/gen/proto/java/main/grpc'
+      srcDir 'src/gen/proto/java/main/java'
+    }
+    resources {
+      srcDir 'src/main/resources'
+    }
+  }
+  test {
+    java {
+      srcDir 'src/test/java'
+    }
+    resources {
+      srcDir 'src/test/resources'
+    }
+  }
+}
+
+
+test {
+  useJUnit {
+    excludeCategories 'ai.eloquent.test.IntegrationTests'
+    excludeCategories 'ai.eloquent.test.SlowTests'
+  }
+}
+
+task itest(type: Test) {
+  useJUnit {
+    includeCategories 'ai.eloquent.test.IntegrationTests'
+  }
+}
+
+task slowtest(type: Test) {
+  useJUnit {
+    includeCategories 'ai.eloquent.test.SlowTests'
+  }
+}
+
+
+task dist(type: Copy) {
+  dependsOn compileJava
+  from configurations.runtime
+  from jar
+  into "${project.projectDir}/build/dist"
+}
+
+
+dependencies {
+  compile project(':public/common')
+
+
+  //
+  // MAVEN
+  //
+  
+  // gRPC
+  compile (group: 'io.grpc', name: 'grpc-all', version: '1.12.0') {
+    exclude group: 'com.google.code.gson'
+    exclude group: 'com.fasterxml.jackson'
+  }
+
+  // SLF4j for a unified logging
+  compile group: 'org.slf4j', name: 'slf4j-api',      version: '1.7.13'
+  compile group: 'org.slf4j', name: 'jcl-over-slf4j', version: '1.7.13'
+  compile group: 'org.slf4j', name: 'slf4j-simple',   version: '1.7.25'
+
+
+
+  //
+  // TEST LIBRARIES
+  //
+  // There can be more of these than the main dependencies,
+  // since we only need them for testing
+  //
+
+
+  // JUnit (for testing)
+  testCompile group: 'junit', name: 'junit', version: '4.12'
+  // Guava (for utility functions)
+  compile group: 'com.google.guava', name: 'guava', version: '26.0-jre'
+  
+}
