@@ -1,0 +1,8 @@
+# Ignore any build files
+*/build
+*/out
+
+# Intellij config
+.idea
+
+.DS_Store
