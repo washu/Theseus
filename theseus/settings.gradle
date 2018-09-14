@@ -1,0 +1,3 @@
+// Make public/common a subproject of public/theseus
+include ':public/common'
+project(":public/common").projectDir = file("../public/common")
