@@ -8,11 +8,11 @@ script:
 - ls
 - pwd
 - cd common && \
-  ./common/gradlew --warning-mode=all compileJava && \
-  ./common/gradlew --warning-mode=all test itest slowtest && \
+  ./gradlew --warning-mode=all compileJava && \
+  ./gradlew --warning-mode=all test itest slowtest && \
   cd ..
 
-- cd common && \
-  ./theseus/gradlew --warning-mode=all compileJava && \
-  ./theseus/gradlew --warning-mode=all test itest slowtest && \
+- cd theseus && \
+  ./gradlew --warning-mode=all compileJava && \
+  ./gradlew --warning-mode=all test itest slowtest && \
   cd ..
