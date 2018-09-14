@@ -3,7 +3,7 @@
 [Eloquent Labs](https://www.eloquent.ai)' implementation of the Raft distributed consensus algoritum.
 
 ## Table of Contents
-* [Motivation](#Motivation)
+* [Motivation](#motivation)
 * [Getting Started](#getting-started)
     * [Prerequisites](#prerequisites)
     * [Installing](#installing)

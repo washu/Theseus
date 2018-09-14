@@ -5,7 +5,9 @@ jdk:
 - oraclejdk8
 
 script:
-- ./common/gradlew --warning-mode=all buildJava && \
-  ./common/gradlew --warning-mode=all test itest slowtest
-- ./common/gradlew --warning-mode=all buildJava && \
-  ./common/gradlew --warning-mode=all test itest slowtest
+- cd common && \
+  ./gradlew --warning-mode=all buildJava && \
+  ./gradlew --warning-mode=all test itest slowtest
+- cd theseus && \
+  ./gradlew --warning-mode=all buildJava && \
+  ./gradlew --warning-mode=all test itest slowtest
