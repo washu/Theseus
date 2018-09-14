@@ -48,9 +48,11 @@ task dist(type: Copy) {
   into "${project.projectDir}/build/dist"
 }
 
+repositories {
+  mavenCentral()
+}
 
 dependencies {
-
   // Protocol Buffers
   compile group: 'com.google.protobuf', name: 'protobuf-java', version: '3.5.1'
 
@@ -65,3 +67,4 @@ dependencies {
   // Google guava for some utils
   compile 'com.google.guava:guava:26.0-jre'
 }
+

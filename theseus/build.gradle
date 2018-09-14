@@ -48,6 +48,9 @@ task dist(type: Copy) {
   into "${project.projectDir}/build/dist"
 }
 
+repositories {
+  mavenCentral()
+}
 
 dependencies {
   compile project(':public/common')
