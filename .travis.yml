@@ -5,10 +5,7 @@ jdk:
 - oraclejdk8
 
 script:
-- pwd
-- cd common && \
-  ./gradlew --warning-mode=all buildJava && \
-  ./gradlew --warning-mode=all test itest slowtest
-- cd theseus && \
-  ./gradlew --warning-mode=all buildJava && \
-  ./gradlew --warning-mode=all test itest slowtest
+- ./common/gradlew --warning-mode=all compileJava && \
+  ./common/gradlew --warning-mode=all test itest slowtest
+- ./theseus/gradlew --warning-mode=all compileJava && \
+  ./theseus/gradlew --warning-mode=all test itest slowtest
