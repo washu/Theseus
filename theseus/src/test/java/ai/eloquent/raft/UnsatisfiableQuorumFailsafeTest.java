@@ -6,9 +6,11 @@ import org.junit.Test;
 
 import java.io.File;
 import java.io.IOException;
+import java.lang.reflect.Field;
 import java.time.Duration;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -190,18 +192,20 @@ public class UnsatisfiableQuorumFailsafeTest {
    * Test that we actually read end-to-end from the Kubernetes file
    */
   @Test
-  public void endToEndTrigger() throws IOException {
+  public void endToEndTrigger() throws Exception {
     RaftAlgorithm algorithm = deadlockedAlgorithm(true, true, "10.0.0.1");
     UnsatisfiableQuorumFailsafe deadlock = new UnsatisfiableQuorumFailsafe(Duration.ofSeconds(45));
     File memberPath = File.createTempFile("raft_cluster", ".tab");
     memberPath.deleteOnExit();
     IOUtils.writeStringToFile("10.0.0.1\t1/1\trunning.", memberPath.getPath(), "utf-8");
     try {
+      injectEnvironmentVariable("ELOQUENT_RAFT_MEMBERS", memberPath.getPath());
       deadlock.heartbeat(algorithm, Duration.ofSeconds(46).toMillis());
       assertTrue("We should be the leader", algorithm.state().isLeader());
       assertEquals("The kubernetes failsafe should trigger", 1, algorithm.state().log.latestQuorumMembers.size());
     } finally {
       algorithm.stop(true);
+      injectEnvironmentVariable("ELOQUENT_RAFT_MEMBERS", "");
     }
   }
 
@@ -230,20 +234,63 @@ public class UnsatisfiableQuorumFailsafeTest {
    * exists in the Kubernetes state.
    */
   @Test
-  public void endToEndTriggerOtherNodesPresent() throws IOException {
+  public void endToEndTriggerOtherNodesPresent() throws Exception {
     RaftAlgorithm algorithm = deadlockedAlgorithm(true, true, "10.0.0.1");
     UnsatisfiableQuorumFailsafe deadlock = new UnsatisfiableQuorumFailsafe(Duration.ofSeconds(45));
     File memberPath = File.createTempFile("raft_cluster", ".tab");
     memberPath.deleteOnExit();
     IOUtils.writeStringToFile("10.0.0.1\t1/1\trunning.\n10.0.0.2\t1/1\trunning.", memberPath.getPath(), "utf-8");
     try {
+      injectEnvironmentVariable("ELOQUENT_RAFT_MEMBERS", memberPath.getPath());
       deadlock.heartbeat(algorithm, Duration.ofSeconds(46).toMillis());
       assertTrue("We should be the leader", algorithm.state().isLeader());
       assertEquals("The kubernetes failsafe should trigger even in the presence of other nodes in the cluster",
           1, algorithm.state().log.latestQuorumMembers.size());
     } finally {
       algorithm.stop(true);
+      injectEnvironmentVariable("ELOQUENT_RAFT_MEMBERS", "");
     }
   }
 
+
+  /**
+   * Very dirty hack to help inject environment variables for testing
+   * Use with care!
+   *
+   * @param key The key of the environment variable
+   * @param value The value of of the environment variable
+   * @throws Exception
+   */
+  private static void injectEnvironmentVariable(String key, String value)
+      throws Exception {
+
+    Class<?> processEnvironment = Class.forName("java.lang.ProcessEnvironment");
+
+    Field unmodifiableMapField = getAccessibleField(processEnvironment, "theUnmodifiableEnvironment");
+    Object unmodifiableMap = unmodifiableMapField.get(null);
+    injectIntoUnmodifiableMap(key, value, unmodifiableMap);
+
+    Field mapField = getAccessibleField(processEnvironment, "theEnvironment");
+    Map<String, String> map = (Map<String, String>) mapField.get(null);
+    map.put(key, value);
+  }
+
+
+  private static Field getAccessibleField(Class<?> clazz, String fieldName)
+      throws NoSuchFieldException {
+
+    Field field = clazz.getDeclaredField(fieldName);
+    field.setAccessible(true);
+    return field;
+  }
+
+
+  private static void injectIntoUnmodifiableMap(String key, String value, Object map)
+      throws ReflectiveOperationException {
+
+    Class unmodifiableMap = Class.forName("java.util.Collections$UnmodifiableMap");
+    Field field = getAccessibleField(unmodifiableMap, "m");
+    Object obj = field.get(map);
+    ((Map<String, String>) obj).put(key, value);
+  }
 }

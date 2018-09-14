@@ -4,7 +4,6 @@ import ai.eloquent.monitoring.Prometheus;
 import ai.eloquent.raft.EloquentRaftProto.*;
 import ai.eloquent.util.RuntimeInterruptedException;
 import ai.eloquent.util.TimeUtils;
-import ai.eloquent.web.Lifecycle;
 import com.google.protobuf.ByteString;
 import com.google.protobuf.InvalidProtocolBufferException;
 import com.sun.management.GcInfo;

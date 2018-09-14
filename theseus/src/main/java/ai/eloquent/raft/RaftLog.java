@@ -226,7 +226,7 @@ public class RaftLog {
    */
   @SuppressWarnings("Duplicates")
   private boolean fast(String description, Object Summary_startTime) {
-    long duration =  (long) ((double) Prometheus.observeDuration(Summary_startTime) * 1000);
+    long duration =  (long) (Prometheus.observeDuration(Summary_startTime) * 1000);
     if (duration > 5) {
       long lastGcTime = -1L;
       try {

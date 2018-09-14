@@ -1,7 +1,6 @@
 package ai.eloquent.raft.transport;
 
 import ai.eloquent.raft.*;
-import ai.eloquent.web.Lifecycle;
 import com.google.common.util.concurrent.MoreExecutors;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;

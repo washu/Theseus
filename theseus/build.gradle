@@ -65,8 +65,7 @@ dependencies {
   // SLF4j for a unified logging
   compile group: 'org.slf4j', name: 'slf4j-api',      version: '1.7.13'
   compile group: 'org.slf4j', name: 'jcl-over-slf4j', version: '1.7.13'
-  compile group: 'org.slf4j', name: 'slf4j-simple',   version: '1.7.25'
-
+  compile group: 'org.slf4j', name: 'slf4j-simple',   version: '1.7.25' // Temporary solution for testing
 
 
   //

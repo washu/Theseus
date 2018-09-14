@@ -1,13 +1,11 @@
 package ai.eloquent.raft;
 
 import ai.eloquent.util.*;
-import ai.eloquent.web.Lifecycle;
 import ai.eloquent.web.TrackedExecutorService;
 import com.google.common.util.concurrent.ThreadFactoryBuilder;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.sql.Time;
 import java.time.Duration;
 import java.util.*;
 import java.util.concurrent.*;
@@ -15,7 +13,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.stream.Collectors;
 
-public class RaftLifecycle extends Lifecycle {
+public class RaftLifecycle {
 
   /**
    * An SLF4J Logger for this class.
@@ -26,18 +24,17 @@ public class RaftLifecycle extends Lifecycle {
 
   /**
    * A global timer that we can use.
-   * TODO(gabor) make this final, and remove {useTimerMock(boolean)}
    */
   public Lazy<SafeTimer> timer;
 
   /** The set of managed thread pools */
-  private final Map<String, ExecutorService> managedThreadPools = new HashMap<>();
+  protected final Map<String, ExecutorService> managedThreadPools = new HashMap<>();
 
   /** The set of managed thread pools, which run core system-level things (e.g., Rabbit or the DB connections). */
-  private final Map<String, ExecutorService> coreThreadPools = new HashMap<>();
+  protected final Map<String, ExecutorService> coreThreadPools = new HashMap<>();
 
   /** This is the EloquentRaft that's tied to this RaftLifecycle - if any. We use this knowledge on shutdown. */
-  private Optional<EloquentRaftNode> registeredRaft = Optional.empty();
+  protected Optional<EloquentRaftNode> registeredRaft = Optional.empty();
 
   public RaftLifecycle(Lazy<SafeTimer> timer) {
     this.timer = timer;
@@ -77,7 +74,7 @@ public class RaftLifecycle extends Lifecycle {
 
 
   /**
-   * This registers Raft on this Lifecycle, so that the Lifecycle can shut it down when it's ready.
+   * This registers Raft on this RaftLifecycle, so that the RaftLifecycle can shut it down when it's ready.
    */
   public void registerRaft(EloquentRaftNode raft) {
     this.registeredRaft = Optional.of(raft);
@@ -232,7 +229,7 @@ public class RaftLifecycle extends Lifecycle {
 
   // Stuff to shut down elegantly
   /** The set of shutdown hooks we should run on shutdown, once we are no longer receiving traffic */
-  private final IdentityHashSet<Runnable> shutdownHooks = new IdentityHashSet<>();
+  protected final IdentityHashSet<Runnable> shutdownHooks = new IdentityHashSet<>();
 
   /** The indicator for whether our web server is accepting new requests. */
   public final AtomicBoolean IS_READY = new AtomicBoolean(false);
@@ -275,14 +272,14 @@ public class RaftLifecycle extends Lifecycle {
    * This can be used to, e.g., create critical sections of code that cannot be
    * interrupted by the system shutting down.
    */
-  private final Set<ReentrantLock> criticalSections = new IdentityHashSet<>();
+  protected final Set<ReentrantLock> criticalSections = new IdentityHashSet<>();
 
   /**
    * If false, throw an exception rather than entering the critical section.
    * This is the case when we are already in the process of shutting down and we attempt
    * to enter a new critical section.
    */
-  private boolean allowCriticalSections = true;
+  protected boolean allowCriticalSections = true;
 
   static {
     // Set up the shutdown hook

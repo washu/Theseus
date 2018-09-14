@@ -5,7 +5,6 @@ import ai.eloquent.test.SlowTests;
 import ai.eloquent.util.RunnableThrowsException;
 import ai.eloquent.util.TimeUtils;
 import ai.eloquent.util.Uninterruptably;
-import ai.eloquent.web.Lifecycle;
 import org.junit.Test;
 import org.junit.experimental.categories.Category;
 import org.slf4j.Logger;

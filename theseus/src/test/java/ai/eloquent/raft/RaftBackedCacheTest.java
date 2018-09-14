@@ -2,7 +2,6 @@ package ai.eloquent.raft;
 
 import ai.eloquent.util.Uninterruptably;
 import ai.eloquent.util.ZipUtils;
-import ai.eloquent.web.Lifecycle;
 import com.google.common.base.Charsets;
 import com.google.protobuf.InvalidProtocolBufferException;
 import org.junit.After;

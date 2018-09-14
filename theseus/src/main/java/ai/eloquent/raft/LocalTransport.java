@@ -1,7 +1,6 @@
 package ai.eloquent.raft;
 
 import ai.eloquent.util.*;
-import ai.eloquent.web.Lifecycle;
 import com.google.protobuf.InvalidProtocolBufferException;
 import ai.eloquent.util.IdentityHashSet;
 import ai.eloquent.util.RuntimeInterruptedException;

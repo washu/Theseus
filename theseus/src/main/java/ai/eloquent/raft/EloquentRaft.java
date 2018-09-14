@@ -3,7 +3,6 @@ package ai.eloquent.raft;
 import ai.eloquent.error.RaftErrorListener;
 import ai.eloquent.util.SafeTimerTask;
 import ai.eloquent.util.TimeUtils;
-import ai.eloquent.web.Lifecycle;
 import ai.eloquent.web.TrackedExecutorService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;

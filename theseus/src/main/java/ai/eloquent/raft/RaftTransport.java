@@ -15,7 +15,6 @@ import java.util.function.Consumer;
 
 import ai.eloquent.raft.EloquentRaftProto.*;
 import ai.eloquent.util.Uninterruptably;
-import ai.eloquent.web.Lifecycle;
 
 /**
  * This encapsulates all the non-functional components in EloquentRaftMember so that the remaining code can be easily

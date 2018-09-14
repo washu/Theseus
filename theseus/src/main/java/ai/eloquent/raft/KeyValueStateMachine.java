@@ -668,7 +668,7 @@ public class KeyValueStateMachine extends RaftStateMachine {
       assert this.changeListenerToTrace.containsKey(changeListener);
 
       // Register the listener in Prometheus
-      Prometheus.gaugeSet(Gauge_NUM_LISTENERS, this.changeListeners.size());
+      Prometheus.gaugeSet(Gauge_NUM_LISTENERS, (double) this.changeListeners.size());
       numListeners = this.changeListeners.size();
     }
 
@@ -699,7 +699,7 @@ public class KeyValueStateMachine extends RaftStateMachine {
     }
 
     // Deregister the listener in Prometheus
-    Prometheus.gaugeSet(Gauge_NUM_LISTENERS, numListeners);
+    Prometheus.gaugeSet(Gauge_NUM_LISTENERS, (double) numListeners);
   }
 
   /**

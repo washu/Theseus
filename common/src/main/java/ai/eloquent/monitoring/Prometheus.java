@@ -1,11 +1,15 @@
 package ai.eloquent.monitoring;
 
+import com.google.common.base.Stopwatch;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.w3c.dom.css.Counter;
 
 import javax.annotation.Nullable;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
+import java.util.HashMap;
+import java.util.concurrent.TimeUnit;
 
 public class Prometheus {
 
@@ -21,6 +25,14 @@ public class Prometheus {
   private Prometheus() {
   }
 
+  @Nullable
+  private static HashMap<Object, Double> gaugeMocks;
+
+  @Nullable
+  private static HashMap<Object, Long> timerMocks;
+
+  @Nullable
+  private static HashMap<Object, Double> counterMocks;
 
   @Nullable
   private static Method SUMMARY_METHOD_BUILD;
@@ -30,6 +42,9 @@ public class Prometheus {
 
   @Nullable
   private static Method SUMMARY_METHOD_STARTTIMER;
+
+  @Nullable
+  private static Method SUMMARYCHILD_METHOD_STARTTIMER;
 
   @Nullable
   private static Method SUMMARYBUILDER_METHOD_LABELNAMES;
@@ -70,6 +85,7 @@ public class Prometheus {
   static {
     try {
       Class<?> SummaryClass = Class.forName("io.prometheus.client.Summary");
+      Class<?> SummaryChildClass = Class.forName("io.prometheus.client.Summary$Child");
       Class<?> SummaryBuilderClass = Class.forName("io.prometheus.client.Summary$Builder");
       Class<?> SummaryTimerClass = Class.forName("io.prometheus.client.Summary$Timer");
       Class<?> GaugeClass = Class.forName("io.prometheus.client.Gauge");
@@ -77,14 +93,15 @@ public class Prometheus {
       Class<?> CounterClass = Class.forName("io.prometheus.client.Gauge");
       Class<?> CounterBuilderClass = Class.forName("io.prometheus.client.Gauge$Builder");
       SUMMARY_METHOD_BUILD = SummaryClass.getMethod("build", String.class, String.class);
-      SUMMARY_METHOD_LABELS = SummaryClass.getMethod("labels", String.class);
+      SUMMARY_METHOD_LABELS = SummaryClass.getMethod("labels", String[].class);
       SUMMARY_METHOD_STARTTIMER = SummaryClass.getMethod("startTimer");
-      SUMMARYBUILDER_METHOD_LABELNAMES = SummaryBuilderClass.getMethod("labelNames", String.class);
+      SUMMARYCHILD_METHOD_STARTTIMER = SummaryChildClass.getMethod("startTimer");
+      SUMMARYBUILDER_METHOD_LABELNAMES = SummaryBuilderClass.getMethod("labelNames", String[].class);
       SUMMARYBUILDER_METHOD_REGISTER = SummaryBuilderClass.getMethod("register");
       TIMER_METHOD_OBSERVE_DURATION = SummaryTimerClass.getMethod("observeDuration");
       GAUGE_METHOD_BUILD = GaugeClass.getMethod("build", String.class, String.class);
       GAUGE_METHOD_GET = GaugeClass.getMethod("get");
-      GAUGE_METHOD_SET = GaugeClass.getMethod("set", Double.class);
+      GAUGE_METHOD_SET = GaugeClass.getMethod("set", double.class);
       GAUGE_METHOD_INC = GaugeClass.getMethod("inc");
       GAUGE_METHOD_DEC = GaugeClass.getMethod("dec");
       GAUGEBUILDER_METHOD_REGISTER = GaugeBuilderClass.getMethod("register");
@@ -93,11 +110,19 @@ public class Prometheus {
       COUNTERBUILDER_METHOD_REGISTER = CounterBuilderClass.getMethod("register");
     } catch (ClassNotFoundException e) {
       log.info("Could not find Prometheus in your classpath -- not logging statistics");
+      initializePrometheusMock();
     } catch (NoSuchMethodException e) {
       log.info("Prometheus methods are not as expected (version mismatch?) -- not logging statistics");
+      initializePrometheusMock();
     }
   }
 
+  private static void initializePrometheusMock() {
+    log.info("Implementing mocked version of Prometheus");
+    gaugeMocks = new HashMap<>();
+    timerMocks = new HashMap<>();
+    counterMocks = new HashMap<>();
+  }
 
   /**
    * Overloaded method
@@ -111,11 +136,12 @@ public class Prometheus {
    */
   public static Object summaryBuild(String name, String help, String label) {
     if (SUMMARY_METHOD_BUILD == null || SUMMARYBUILDER_METHOD_LABELNAMES == null || SUMMARYBUILDER_METHOD_REGISTER == null) {
-      return null;
+      return new SummaryMock(name);
     }
     try {
       Object builder = SUMMARY_METHOD_BUILD.invoke(null, name, help);
-      builder = SUMMARYBUILDER_METHOD_LABELNAMES.invoke(builder, label);
+      Object[] labelVarargs = new Object[] {new String[] {label}};
+      builder = SUMMARYBUILDER_METHOD_LABELNAMES.invoke(builder, labelVarargs); // Need to typecast label into an object array because method takes in varargs
       return SUMMARYBUILDER_METHOD_REGISTER.invoke(builder);
     } catch (IllegalAccessException | InvocationTargetException e) {
       log.info("Prometheus methods could not be invoked (version mismatch?) -- not logging statistics");
@@ -135,7 +161,7 @@ public class Prometheus {
    */
   public static Object summaryBuild(String name, String help) {
     if (SUMMARY_METHOD_BUILD == null || SUMMARYBUILDER_METHOD_REGISTER == null) {
-      return null;
+      return new SummaryMock(name);
     }
     try {
       Object builder = SUMMARY_METHOD_BUILD.invoke(null, name, help);
@@ -156,12 +182,15 @@ public class Prometheus {
    * @return the Prometheus Timer object
    */
   public static Object labelAndStartTimer(Object summary, String label) {
-    if (summary == null || SUMMARY_METHOD_LABELS == null || SUMMARY_METHOD_STARTTIMER == null) {
-      return null;
+    if (summary == null || SUMMARY_METHOD_LABELS == null || SUMMARYCHILD_METHOD_STARTTIMER == null) {
+      TimerMock timerMock = new TimerMock();
+      timerMocks.put(timerMock, System.nanoTime());
+      return timerMock;
     }
     try {
-      summary = SUMMARY_METHOD_LABELS.invoke(summary, label);
-      return SUMMARY_METHOD_STARTTIMER.invoke(summary);
+      Object[] labelVarargs = new Object[] {new String[] {label}}; // Need to typecast label into an object array because method takes in varargs
+      summary = SUMMARY_METHOD_LABELS.invoke(summary, labelVarargs);
+      return SUMMARYCHILD_METHOD_STARTTIMER.invoke(summary);
     } catch (IllegalAccessException | InvocationTargetException e) {
       log.info("Prometheus methods could not be invoked (version mismatch?) -- not logging statistics");
       return null;
@@ -178,7 +207,9 @@ public class Prometheus {
    */
   public static Object startTimer(Object summary) {
     if (summary == null || SUMMARY_METHOD_STARTTIMER == null) {
-      return null;
+      TimerMock timerMock = new TimerMock();
+      timerMocks.put(timerMock, System.nanoTime());
+      return timerMock;
     }
     try {
       return SUMMARY_METHOD_STARTTIMER.invoke(summary);
@@ -195,7 +226,10 @@ public class Prometheus {
    */
   public static Double observeDuration(Object timer) {
     if (timer == null || TIMER_METHOD_OBSERVE_DURATION == null) {
-      return null;
+      long startTime = timerMocks.get(timer);
+      long timeNanoseconds = System.nanoTime() - startTime;
+      double timeSeconds = (double)timeNanoseconds / 1000000000.0;
+      return timeSeconds;
     }
     try {
       return (Double) TIMER_METHOD_OBSERVE_DURATION.invoke(timer);
@@ -215,7 +249,9 @@ public class Prometheus {
    */
   public static Object gaugeBuild(String name, String help) {
     if (GAUGE_METHOD_BUILD == null || GAUGEBUILDER_METHOD_REGISTER == null) {
-      return null;
+      GaugeMock gaugeMock = new GaugeMock(name);
+      gaugeMocks.put(gaugeMock, 0.0);
+      return gaugeMock;
     }
     try {
       Object builder = GAUGE_METHOD_BUILD.invoke(null, name, help);
@@ -235,7 +271,7 @@ public class Prometheus {
    */
   public static Double gaugeGet(Object gauge) {
     if (gauge == null || GAUGE_METHOD_GET == null) {
-      return null;
+      return gaugeMocks.get(gauge);
     }
     try {
       return (Double) GAUGE_METHOD_GET.invoke(gauge);
@@ -249,8 +285,9 @@ public class Prometheus {
   /**
    * Sets the Prometheus Gauge to a given value, if possible.
    */
-  public static void gaugeSet(Object gauge, Integer val) {
-    if (gauge == null || val == null || GAUGE_METHOD_SET == null) {
+  public static void gaugeSet(Object gauge, double val) {
+    if (gauge == null || GAUGE_METHOD_SET == null) {
+      gaugeMocks.put(gauge, val);
       return;
     }
     try {
@@ -266,6 +303,7 @@ public class Prometheus {
    */
   public static void gaugeInc(Object gauge) {
     if (gauge == null || GAUGE_METHOD_INC == null) {
+      gaugeMocks.put(gauge, gaugeMocks.get(gauge) + 1);
       return;
     }
     try {
@@ -281,6 +319,7 @@ public class Prometheus {
    */
   public static void gaugeDec(Object gauge) {
     if (gauge == null || GAUGE_METHOD_DEC == null) {
+      gaugeMocks.put(gauge, gaugeMocks.get(gauge) - 1);
       return;
     }
     try {
@@ -302,7 +341,9 @@ public class Prometheus {
    */
   public static Object counterBuild(String name, String help) {
     if (COUNTER_METHOD_BUILD == null || COUNTERBUILDER_METHOD_REGISTER == null) {
-      return null;
+      CounterMock counterMock = new CounterMock(name);
+      counterMocks.put(counterMock, 0.0);
+      return counterMock;
     }
     try {
       Object builder = COUNTER_METHOD_BUILD.invoke(null, name, help);
@@ -314,18 +355,46 @@ public class Prometheus {
   }
 
   /**
-   * Increments the value in the Prometheus Gauge by 1, if possible.
+   * Increments the value in the Prometheus Counter by 1, if possible.
    */
-  public static void counterInc(Object gauge) {
-    if (gauge == null || COUNTER_METHOD_INC == null) {
+  public static void counterInc(Object counter) {
+    if (counter == null || COUNTER_METHOD_INC == null) {
+      counterMocks.put(counter, counterMocks.get(counter) + 1);
       return;
     }
     try {
-      COUNTER_METHOD_INC.invoke(gauge);
+      COUNTER_METHOD_INC.invoke(counter);
     } catch (IllegalAccessException | InvocationTargetException e) {
       log.info("Prometheus methods could not be invoked (version mismatch?) -- not logging statistics");
       return;
     }
   }
 
+
+  private static class SummaryMock {
+    String name;
+    public SummaryMock(String name) {
+      this.name = name;
+    }
+  }
+
+  private static class TimerMock {
+    public TimerMock() {
+    }
+  }
+
+  private static class GaugeMock {
+    String name;
+
+    public GaugeMock(String name) {
+      this.name = name;
+    }
+  }
+
+  private static class CounterMock {
+    String name;
+    public CounterMock(String name) {
+      this.name = name;
+    }
+  }
 }
