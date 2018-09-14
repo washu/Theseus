@@ -1,0 +1,11 @@
+language: java
+install: true
+
+jdk:
+- oraclejdk8
+
+script:
+- ./common/gradlew --warning-mode=all buildJava && \
+  ./common/gradlew --warning-mode=all test itest slowtest
+- ./common/gradlew --warning-mode=all buildJava && \
+  ./common/gradlew --warning-mode=all test itest slowtest
