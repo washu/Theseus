@@ -8,7 +8,7 @@ OS_LOWER := $(shell uname -s | tr '[:upper:]' '[:lower:]')
 default: compile
 
 compile:
-	${GRADLE} compileJava processResources writeClasspath --stacktrace
+	${GRADLE} compileJava processResources
 
 
 #
