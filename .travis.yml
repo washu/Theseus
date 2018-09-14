@@ -5,7 +5,12 @@ jdk:
 - oraclejdk8
 
 script:
-- ./common/gradlew --warning-mode=all compileJava && \
-  ./common/gradlew --warning-mode=all test itest slowtest
-- ./theseus/gradlew --warning-mode=all compileJava && \
-  ./theseus/gradlew --warning-mode=all test itest slowtest
+- cd common && \
+  ./common/gradlew --warning-mode=all compileJava && \
+  ./common/gradlew --warning-mode=all test itest slowtest && \
+  cd ..
+
+- cd common && \
+  ./theseus/gradlew --warning-mode=all compileJava && \
+  ./theseus/gradlew --warning-mode=all test itest slowtest && \
+  cd ..
