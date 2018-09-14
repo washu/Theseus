@@ -5,6 +5,8 @@ jdk:
 - oraclejdk8
 
 script:
+-ls
+-pwd
 - cd common && \
   ./common/gradlew --warning-mode=all compileJava && \
   ./common/gradlew --warning-mode=all test itest slowtest && \
