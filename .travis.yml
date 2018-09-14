@@ -5,13 +5,5 @@ jdk:
 - oraclejdk8
 
 script:
-- cd common
-- ls
-- ./gradlew --warning-mode=all compileJava
-- ./gradlew --warning-mode=all test itest slowtest
-- cd ..
-
-- cd theseus
-- ./gradlew --warning-mode=all compileJava
-- ./gradlew --warning-mode=all test itest slowtest
-- cd ..
+- make
+- make check
