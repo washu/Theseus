@@ -53,7 +53,7 @@ TODO
 Please read [CONTRIBUTING.md](https://gist.github.com/eloquentlabs/theseus/CONTRIBUTING.md) for details on our code of conduct, and the process for submitting pull requests to us.
 
 ## Versioning
-* v1.0.0 [14/10/18] - Released Theseus
+* v1.0.0 [14/10/18] - Release Theseus
 
 For the versions available, see the [tags on this repository](https://github.com/eloquentlabs/theseus/tags). 
 
@@ -61,6 +61,7 @@ For the versions available, see the [tags on this repository](https://github.com
 
 * **Gabor Angeli** - *Initial work* - [Github](https://github.com/gangeli)
 * **Keenon Werling** - *Initial work* - [Github](https://github.com/keenon)
+* **Zames Chua** - [Github](https://github.com/zameschua)
 
 Also, special thanks to the rest of the team at Eloquent Labs
 
