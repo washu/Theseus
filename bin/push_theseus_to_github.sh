@@ -153,7 +153,7 @@ COMMIT_MESSAGE=$(git log -1 --pretty=%B)
 # Add and commit to git
 info "----- Commiting files -----"
 cd $THESEUS_DIR
-git config user.email "noreply@eloquent.ai"
+git config user.email "hello@eloquent.ai"
 git config user.name "Eloquent Labs"
 git add .
 git commit --all --author="Gabor Angeli<gabor@eloquent.ai>" --message="$COMMIT_MESSAGE" # note: "--all" = "-a"
