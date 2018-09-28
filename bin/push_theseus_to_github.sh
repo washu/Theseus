@@ -55,25 +55,21 @@ echo "----- Initializing variables -----"
 # Timer to keep track of duration of the script
 TIMER_START="$SECONDS"
 
-# Base directory where the job is being run
-# By default, this uses $CI_PROJECT_DIR which is the folder where GitLab runs this script
-BASE_DIR="$CI_PROJECT_DIR"
-
 # The directory with the current Theseus checkout
 # Optimally, this directory should be tested and should compile
 # This directory name should not have spaces in it
 # e.g., SOURCE_DIR="/user/angeli/workspace/nlp/"
-SOURCE_DIR="$BASE_DIR/eloquent/public"
+SOURCE_DIR="$ROOT/public"
 
 # Create a temporary directory which will get sync'd to GitHub
 # This directory name should not have spaces in it
 # e.g., CORENLP_DIR="/user/angeli/tmp/corenlp-github"
-THESEUS_DIR="$BASE_DIR/theseus"
+THESEUS_DIR="$ROOT/theseus"
 
 # Create a temporary directory to store our metadata
 # This directory name should not have spaces in it
 # e.g., CORENLP_DIR="/user/angeli/tmp/corenlp-github"
-GITHUB_META_DIR="$BASE_DIR/github_meta"
+GITHUB_META_DIR="$ROOT/github_meta"
 
 # The path to the Github repo
 # e.g., GITHUB_REPO_PATH="git@github.com:gangeli/CoreNLP-pilot.git"
@@ -154,7 +150,7 @@ ssh-agent bash -c "ssh-add $SSH_KEY_FILE; git clone $GITHUB_REPO_PATH $THESEUS_D
 # Copy files from eloquent/public
 doRsync
 
-cd "$BASE_DIR/eloquent"
+cd "$ROOT"
 # Clean all dependencies off our repo
 make clean
 # Grab the last commit message
