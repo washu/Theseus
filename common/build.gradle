@@ -1,6 +1,57 @@
+// -----
+// PLUGINS
+// -----
+
+buildscript {
+  repositories {
+    mavenCentral()
+  }
+  dependencies {
+    classpath 'com.google.protobuf:protobuf-gradle-plugin:0.8.6'
+  }
+}
+
 apply plugin: 'java'
+apply plugin: 'com.google.protobuf'
+
+
+// -----
+// BASICS
+// -----
+
 compileJava.options.encoding = "UTF-8"
 compileTestJava.options.encoding = "UTF-8"
+
+
+// -----
+// PROTOBUF
+// -----
+
+// Configure Protocol Buffers + gRPC
+protobuf {
+  generatedFilesBaseDir = "$projectDir/src/gen/proto/java"
+  protoc {
+    // The version of protoc must match protobuf-java. If you don't depend on
+    // protobuf-java directly, you will be transitively depending on the
+    // protobuf-java version that grpc depends on.
+    artifact = "com.google.protobuf:protoc:3.5.1"
+  }
+  plugins {
+    grpc {
+      artifact = 'io.grpc:protoc-gen-grpc-java:1.9.0'
+    }
+  }
+  generateProtoTasks {
+    all()*.plugins {
+      grpc {}
+    }
+  }
+}
+
+
+// -----
+// SOURCES
+// -----
 
 sourceSets {
   main {
@@ -23,6 +74,10 @@ sourceSets {
   }
 }
 
+
+// -----
+// TASKS
+// -----
 
 test {
   useJUnit {
@@ -50,6 +105,11 @@ task dist(type: Copy) {
   from jar
   into "${project.projectDir}/build/dist"
 }
+
+
+// -----
+// DEPENDENCIES
+// -----
 
 repositories {
   mavenCentral()
