@@ -21,6 +21,8 @@ public class StableEloquentRaftAlgorithmTest extends RaftAlgorithmWithMockTransp
   protected RaftAlgorithm create(RaftState state, RaftTransport transport) {
     return new SingleThreadedRaftAlgorithm(new EloquentRaftAlgorithm(state, transport, Optional.empty()), Executors.newSingleThreadExecutor());
   }
+
+
   /**
    * Like {@link #catchUpShadowOnLoad()}, but there are a lot of commits on the cluster already,
    * and so we have to get both the most recent snapshot and the most recent log entries.

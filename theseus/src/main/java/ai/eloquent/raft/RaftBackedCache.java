@@ -360,6 +360,21 @@ public abstract class RaftBackedCache<V> implements Iterable<Map.Entry<String,V>
 
 
   /**
+   * This iterates through all the elements in the Raft backed cache and evicts them, using only a single Raft commit
+   * to do it.
+   */
+  public CompletableFuture<Boolean> clearCache() {
+    Set<String> toRemove = new HashSet<>();
+    for (String key : raft.stateMachine.values.keySet()) {
+      if (key.startsWith(prefix())) {
+        toRemove.add(key);
+      }
+    }
+    return this.raft.removeElementsRetryAsync(toRemove, Duration.ofSeconds(30));
+  }
+
+
+  /**
    * This registers a listener that will be called whenever the key-value store changes.
    *
    * @param changeListener the listener to register

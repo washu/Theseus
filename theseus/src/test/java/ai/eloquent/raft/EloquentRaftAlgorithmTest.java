@@ -685,7 +685,7 @@ public class EloquentRaftAlgorithmTest {
   public void stressTestHeartbeat() throws IOException, ExecutionException, InterruptedException {
     // 1. Create an algorithm and elect ourselves
     RaftState state = new RaftState("server", new KeyValueStateMachine("server"), Executors.newSingleThreadExecutor());
-    RaftAlgorithm algorithm = new SingleThreadedRaftAlgorithm(new EloquentRaftAlgorithm(state, new NetRaftTransport("server"), Optional.empty()), Executors.newSingleThreadExecutor());
+    RaftAlgorithm algorithm = new SingleThreadedRaftAlgorithm(new EloquentRaftAlgorithm(state, new NetRaftTransport("server", "server"), Optional.empty()), Executors.newSingleThreadExecutor());
     try {
       algorithm.bootstrap(false);
       algorithm.heartbeat(System.currentTimeMillis());

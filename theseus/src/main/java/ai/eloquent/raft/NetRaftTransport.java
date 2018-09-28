@@ -70,18 +70,24 @@ public class NetRaftTransport implements RaftTransport {
   /**
    * Create a UDP transport.
    *
+   * @param serverName The name of our server
    * @param clusterName The name of the cluster we're attached to.
    * @param rpcListenPort The gRPC port to listen on.
    * @param async If true, run messages on the transport in separate threads.
    *
    * @throws UnknownHostException Thrown if we could not get our own hostname.
    */
-  public NetRaftTransport(String clusterName, int rpcListenPort, boolean async) throws IOException {
+  public NetRaftTransport(String serverName, String clusterName, int rpcListenPort, boolean async) throws IOException {
     // Save some trivial variables
+    this.serverName = serverName;
     this.clusterName = clusterName;
     this.rpcListenPort = rpcListenPort;
-    this.serverName = InetAddress.getLocalHost().getHostAddress();
     this.thread = async;
+
+    // Assertions
+    if (!serverName.matches("[12]?[0-9]?[0-9]\\.[12]?[0-9]?[0-9]\\.[12]?[0-9]?[0-9]\\.[12]?[0-9]?[0-9](_.*)?")) {
+      throw new IllegalArgumentException("Invalid server name. Server name must start with an IPv4 address, followed by an optional underscore and custom descriptor. For example, \"127.0.0.1_foobar\".");
+    }
 
     // Start the Grpc Server
     ServerBuilder
@@ -113,9 +119,9 @@ public class NetRaftTransport implements RaftTransport {
   }
 
 
-  /** @see #NetRaftTransport(String, int, boolean) */
-  public NetRaftTransport(String clusterName) throws IOException {
-    this(clusterName, DEFAULT_RPC_LISTEN_PORT, false);
+  /** @see #NetRaftTransport(String, String, int, boolean) */
+  public NetRaftTransport(String serverName, String clusterName) throws IOException {
+    this(serverName, clusterName, DEFAULT_RPC_LISTEN_PORT, false);
   }
 
 
@@ -170,6 +176,16 @@ public class NetRaftTransport implements RaftTransport {
                            Consumer<EloquentRaftProto.RaftMessage> onResponseReceived, Runnable onTimeout,
                            long timeout) {
     assert ConcurrencyUtils.ensureNoLocksHeld();
+
+    // Get the destination IP address
+    int underscoreIndex;
+    final String destinationIp;
+    if ((underscoreIndex = destination.indexOf("_")) > 0) {
+      destinationIp = destination.substring(0, underscoreIndex);
+    } else {
+      destinationIp = destination;
+    }
+
     ManagedChannel channel;
     synchronized (this) {
       // Clear old entries
@@ -180,19 +196,19 @@ public class NetRaftTransport implements RaftTransport {
         }
       }
       // Get our channel
-      channel = this.channel.computeIfAbsent(destination, ip -> ManagedChannelBuilder.forAddress(ip, rpcListenPort)
+      channel = this.channel.computeIfAbsent(destination, name -> ManagedChannelBuilder.forAddress(destinationIp, rpcListenPort)
           .usePlaintext()
           .build());
     }
     // Call our stub
     AtomicBoolean awaitingResponse = new AtomicBoolean(true);
-    log.trace("Sending RPC request to {}", destination);
+    log.trace("Sending RPC request to {} @ ip {}", destination, destinationIp);
     RaftGrpc.newStub(channel)
         .withDeadlineAfter(timeout, TimeUnit.MILLISECONDS)
         .rpc(message, new StreamObserver<EloquentRaftProto.RaftMessage>() {
           @Override
           public void onNext(EloquentRaftProto.RaftMessage value) {
-            log.trace("Got an RPC response from {}", destination);
+            log.trace("Got an RPC response from {}", destinationIp);
             if (awaitingResponse.getAndSet(false)) {
               assert ConcurrencyUtils.ensureNoLocksHeld();
               onResponseReceived.accept(value);
@@ -221,7 +237,18 @@ public class NetRaftTransport implements RaftTransport {
   public void sendTransport(String sender, String destination, EloquentRaftProto.RaftMessage message) {
     log.trace("Sending a UDP message to {}", destination);
     assert ConcurrencyUtils.ensureNoLocksHeld();
-    UDPTransport.DEFAULT.get().sendTransport(destination, UDPBroadcastProtos.MessageType.RAFT, message.toByteArray());
+
+    // Get the destination IP address
+    int underscoreIndex;
+    final String destinationIp;
+    if ((underscoreIndex = destination.indexOf("_")) > 0) {
+      destinationIp = destination.substring(0, underscoreIndex);
+    } else {
+      destinationIp = destination;
+    }
+
+    // SEnd the message
+    UDPTransport.DEFAULT.get().sendTransport(destinationIp, UDPBroadcastProtos.MessageType.RAFT, message.toByteArray());
   }
 
 

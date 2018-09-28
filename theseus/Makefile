@@ -4,6 +4,8 @@ NPM    ?= 'npm'
 OSTYPE := $(shell uname)
 OS_LOWER := $(shell uname -s | tr '[:upper:]' '[:lower:]')
 
+JAVA_FILES  := $(shell find src/main/java -type f -name "*.java" ) $(shell find src/test/java -type f -name "*.java" )
+
 
 default: compile
 
@@ -14,17 +16,17 @@ compile:
 #
 # Run the unit tests
 #
-check:
+check: $(JAVA_FILES)
 	${GRADLE} test itest slowtest
 
-test:
-	${GRADLE} -x test
+test: $(JAVA_FILES)
+	${GRADLE} test
 
-itest:
-	${GRADLE} -x itest
+itest: $(JAVA_FILES)
+	${GRADLE} itest
 
-slowtest:
-	${GRADLE} -x slowtest
+slowtest: $(JAVA_FILES)
+	${GRADLE} slowtest
 
 
 #

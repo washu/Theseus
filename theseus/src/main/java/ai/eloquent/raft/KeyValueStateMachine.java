@@ -39,15 +39,13 @@ public class KeyValueStateMachine extends RaftStateMachine {
   /** The number of elements currently in the queue. */
   private static final Object Gauge_NUM_LISTENERS = Prometheus.gaugeBuild("kv_state_machine_listeners", "The number of listeners on Raft's Key/Value state machine");
 
-  /** The last time we paged, to prevent spamming. */
-  private static long lastPaged = 0L;
-
   /** Keeps track of existing {@link RaftErrorListener} **/
   private static ArrayList<RaftErrorListener> errorListeners = new ArrayList<>();
 
   /**
    * Keeps track of an additional {@link RaftErrorListener} in this class
-   * @param errorListener
+   *
+   * @param errorListener The error listener to add.
    */
   protected void addErrorListener(RaftErrorListener errorListener) {
     errorListeners.add(errorListener);
@@ -635,7 +633,7 @@ public class KeyValueStateMachine extends RaftStateMachine {
       synchronized (changeListeners) {
         changeListenersCopy = new HashSet<>(changeListeners);
       }
-      if (!changeListenersCopy.isEmpty()) {
+      if (changeListenersCopy.size() > 0) {
         Map<String, byte[]> asMap = new ValueWithOptionalOwnerMapView(this.values);
         for (ChangeListener listener : changeListenersCopy) {
           if (serializedTransition.getType() == KeyValueStateMachineProto.TransitionType.SET_VALUE) {
@@ -663,20 +661,18 @@ public class KeyValueStateMachine extends RaftStateMachine {
     synchronized (this.changeListeners) {
       // Add the listener
       this.changeListeners.add(changeListener);
+      numListeners = this.changeListeners.size();
       assert this.changeListeners.contains(changeListener);
       this.changeListenerToTrace.put(changeListener, new StackTrace());
       assert this.changeListenerToTrace.containsKey(changeListener);
 
       // Register the listener in Prometheus
-      Prometheus.gaugeSet(Gauge_NUM_LISTENERS, (double) this.changeListeners.size());
-      numListeners = this.changeListeners.size();
+      Prometheus.gaugeSet(Gauge_NUM_LISTENERS, (double) numListeners);
     }
 
     // Make sure we don't have too many listeners
-    if (numListeners > 100 && lastPaged < System.currentTimeMillis() - 600000) {
-      lastPaged = System.currentTimeMillis();
-
-      throwRaftError("too-many-raft-listeners-" + SystemUtils.HOST, "Too many Raft listeners: Listener count at : " + this.changeListeners.size());
+    if (numListeners > 256) {
+      throwRaftError("too-many-raft-listeners-" + SystemUtils.HOST, "Too many Raft listeners: Listener count at : " + numListeners);
     }
   }
 
@@ -685,7 +681,7 @@ public class KeyValueStateMachine extends RaftStateMachine {
    *
    * @param changeListener the listener to deregister
    */
-  public void removeChangeListener(ChangeListener changeListener) {
+  public void removeChangeListener(ChangeListener changeListener) {synchronized (this.changeListeners) {
     // Deregister the listener.
     int numListeners;
     synchronized (this.changeListeners) {
@@ -698,9 +694,11 @@ public class KeyValueStateMachine extends RaftStateMachine {
       numListeners = this.changeListeners.size();
     }
 
-    // Deregister the listener in Prometheus
-    Prometheus.gaugeSet(Gauge_NUM_LISTENERS, (double) numListeners);
+      // Deregister the listener in Prometheus
+      Prometheus.gaugeSet(Gauge_NUM_LISTENERS, (double) numListeners);
+    }
   }
+
 
   /**
    * This gets a value from the values map, if it's present. Otherwise returns empty.

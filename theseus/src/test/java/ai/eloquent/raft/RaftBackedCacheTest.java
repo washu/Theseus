@@ -287,6 +287,31 @@ public class RaftBackedCacheTest {
 
 
   /**
+   * Test evicting from the cache
+   */
+  @Test
+  public void testClear() throws ExecutionException, InterruptedException {
+    int NUM_ENTRIES = 100;
+
+    Map<String, String>  permanentStore = new HashMap<>();
+    try (Cache cache = new Cache(raft, permanentStore)) {
+
+      int sum = 0;
+      for (int i = 0; i < NUM_ENTRIES; i++) {
+        boolean success = cache.withElementAsync("key"+i, str -> str + "B", () -> "A").get();
+        if (success) {
+          sum++;
+        }
+      }
+      assertEquals("Raft map should be the right size", sum, raft.stateMachine.entries().size());
+
+      cache.clearCache().get();
+      assertEquals("Raft map should be empty", 0, raft.stateMachine.entries().size());
+    }
+  }
+
+
+  /**
    * Test serialization stability for entry
    */
   @Test

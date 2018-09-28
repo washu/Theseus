@@ -5,6 +5,7 @@ import ai.eloquent.test.SlowTests;
 import ai.eloquent.util.RunnableThrowsException;
 import ai.eloquent.util.TimeUtils;
 import ai.eloquent.util.Uninterruptably;
+import org.junit.Ignore;
 import org.junit.Test;
 import org.junit.experimental.categories.Category;
 import org.slf4j.Logger;
@@ -386,6 +387,40 @@ public class EloquentRaftTest extends WithLocalTransport {
 
 
   /**
+   * Test that we can remove a set of elements
+   */
+  @Test
+  public void removeElements() {
+    EloquentRaft leader = new EloquentRaft("L", transport, new HashSet<>(Arrays.asList("L", "A")), RaftLifecycle.newBuilder().mockTime().build());
+    EloquentRaft follower = new EloquentRaft("A", transport, new HashSet<>(Arrays.asList("L", "A")), RaftLifecycle.newBuilder().mockTime().build());
+    withNodes(transport, nodes -> {
+      // Set an element
+      Set<String> keys = new HashSet<>();
+      for (int i = 0; i < 10; i++) {
+        nodes[1].setElementRetryAsync("element"+i, new byte[]{42}, true, Duration.ofMinutes(1)).get();
+        keys.add("element"+i);
+      }
+
+      for (int i = 0; i < 10; i++) {
+        Optional<byte[]> elem = nodes[0].getElement("element"+i);
+        assertTrue("Element "+i+" committed to a node should be available on another node", elem.isPresent());
+        assertArrayEquals("Should have been able to retrieve the set element "+i, new byte[]{42}, elem.get());
+      }
+
+      // Remove the element
+      nodes[1].removeElementsRetryAsync(keys, Duration.ofMinutes(1)).get();
+
+      // Element should not exist (on other server)
+      for (int i = 0; i < 10; i++) {
+        Optional<byte[]> reread = nodes[0].getElement("element"+i);
+        assertEquals("Element "+i+" should no longer be in the state machine", Optional.empty(), reread);
+      }
+    }, leader, follower);
+    transport.stop();
+  }
+
+
+  /**
    * Test getting the entire state machine map from a node.
    */
   @Test
@@ -544,6 +579,113 @@ public class EloquentRaftTest extends WithLocalTransport {
   @Test
   public void transientsClearOnClose() {
     permanence(false, false, false, node -> node.node.close());
+  }
+
+  /**
+   * Boots and shuts down three nodes. Runs some code in the middle.
+   */
+  private void threeNodeSimpleTest(ThrowableConsumer<EloquentRaft[]> withNodes) {
+    EloquentRaft L = new EloquentRaft("L", transport, new HashSet<>(Arrays.asList("L", "A", "B")), RaftLifecycle.newBuilder().mockTime().build());
+    EloquentRaft A = new EloquentRaft("A", transport, new HashSet<>(Arrays.asList("L", "A", "B")), RaftLifecycle.newBuilder().mockTime().build());
+    EloquentRaft B = new EloquentRaft("B", transport, new HashSet<>(Arrays.asList("L", "A", "B")), RaftLifecycle.newBuilder().mockTime().build());
+    withNodes(transport, withNodes, L, A, B);
+    transport.stop();
+    if (L.node.algorithm instanceof SingleThreadedRaftAlgorithm) {
+      ((SingleThreadedRaftAlgorithm) L.node.algorithm).flush(() -> { if(transport != null) { transport.waitForSilence(); }});
+    }
+    if (A.node.algorithm instanceof SingleThreadedRaftAlgorithm) {
+      ((SingleThreadedRaftAlgorithm) A.node.algorithm).flush(() -> { if(transport != null) { transport.waitForSilence(); }});
+    }
+    if (B.node.algorithm instanceof SingleThreadedRaftAlgorithm) {
+      ((SingleThreadedRaftAlgorithm) B.node.algorithm).flush(() -> { if(transport != null) { transport.waitForSilence(); }});
+    }
+  }
+
+  /**
+   * This tests throwing an exception inside a withElementAsync
+   */
+  @Test
+  public void testWithElementThrowsException() {
+    threeNodeSimpleTest((nodes) -> {
+      String KEY = "key";
+
+      nodes[2].withElementAsync(KEY, (old) -> {
+        throw new RuntimeException("Wat");
+      }, () -> new byte[]{42}, true).get();
+
+      assertEquals(0, nodes[0].getLocks().size()); // We don't hold the lock
+      assertFalse(nodes[0].getElement(KEY).isPresent()); // Value wasn't set
+    });
+  }
+
+  /**
+   * This tests a simulated deadlock inside a withElementAsync mutator
+   */
+  @Test
+  @Ignore
+  public void testWithElementMutationDeadlock() {
+    threeNodeSimpleTest((nodes) -> {
+      String KEY = "key";
+
+      nodes[2].withElementAsync(KEY, (old) -> {
+        while (true) {
+          Uninterruptably.sleep(1);
+        }
+      }, () -> new byte[]{42}, true).get(5, TimeUnit.SECONDS);
+
+      assertEquals(0, nodes[0].getLocks().size()); // We don't hold the lock
+      assertFalse(nodes[0].getElement(KEY).isPresent()); // Value wasn't set
+    });
+  }
+
+  /**
+   * This tests a simulated deadlock inside a withElementAsync creator
+   */
+  @Ignore
+  @Test
+  public void testWithElementCreationDeadlock() {
+    threeNodeSimpleTest((nodes) -> {
+      String KEY = "key";
+
+      nodes[2].withElementAsync(KEY, (old) -> old, () -> {
+        while (true) {
+          Uninterruptably.sleep(1);
+        }
+      }, true).get(5, TimeUnit.SECONDS);
+
+      assertEquals(0, nodes[0].getLocks().size()); // We don't hold the lock
+      assertFalse(nodes[0].getElement(KEY).isPresent()); // Value wasn't set
+    });
+  }
+
+  /**
+   * This tests infinite looping inside a withElementAsync
+   */
+  @Ignore
+  @Test
+  public void testWithElementThreadInterrupt() {
+    threeNodeSimpleTest((nodes) -> {
+      String KEY = "key";
+
+      Thread thread = new Thread(() -> {
+        try {
+          nodes[2].withElementAsync(KEY, (old) -> {
+            for (int i = 0; i < 500; i++) {
+              Uninterruptably.sleep(1);
+            }
+            return new byte[]{42};
+          }, () -> new byte[]{42}, true).get(5, TimeUnit.SECONDS);
+        } catch (InterruptedException | ExecutionException | TimeoutException ignored) { }
+      });
+      thread.setDaemon(true);
+      thread.start();
+      Uninterruptably.sleep(100);
+      thread.interrupt();
+      thread.join();
+
+      assertEquals(0, nodes[0].getLocks().size()); // We don't hold the lock
+      assertFalse(nodes[0].getElement(KEY).isPresent()); // Value wasn't set
+    });
   }
 
 

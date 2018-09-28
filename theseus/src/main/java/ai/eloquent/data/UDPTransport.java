@@ -1,6 +1,7 @@
 package ai.eloquent.data;
 
 import ai.eloquent.io.IOUtils;
+import ai.eloquent.monitoring.Prometheus;
 import ai.eloquent.raft.RaftLifecycle;
 import ai.eloquent.util.*;
 import com.google.protobuf.ByteString;
@@ -148,6 +149,11 @@ public class UDPTransport implements Transport {
    */
   private final Queue<Runnable> sendQueue = new ArrayDeque<>();
 
+  /**
+   * Timing statistics for Raft.
+   */
+  Object METRIC_TIMING = Prometheus.summaryBuild("udp_transport", "Statistics on the UDP Transport calls", "operation");
+
 
   /**
    * Create a UDP transport.
@@ -269,6 +275,7 @@ public class UDPTransport implements Transport {
             }
             serverSocket.receive(packet);
 
+            Object prometheusBegin = Prometheus.startTimer(METRIC_TIMING, "parse_upd_packet");
             // 2. Parse the packet
             byte[] datagram = new byte[packet.getLength()];
             System.arraycopy(packet.getData(), packet.getOffset(), datagram, 0, datagram.length);
@@ -286,6 +293,7 @@ public class UDPTransport implements Transport {
             if (proto == null) {
               continue;
             }
+            Prometheus.observeDuration(prometheusBegin);
 
             // 3. Notify listeners
             if (proto.getType() == UDPBroadcastProtos.MessageType.PING) {
@@ -337,18 +345,23 @@ public class UDPTransport implements Transport {
               try {
                 UDPBroadcastProtos.UDPPacket proto;
                 // 2. Receive the packets
-                while (
-                  // If the client is closed, stop listening
-                    !client.isClosed() &&
-                        // If no proto left to read, close the listener. Otherwise, we may infinite loop
-                        (proto = UDPBroadcastProtos.UDPPacket.parseDelimitedFrom(client.getInputStream())) != null) {
+                // If the client is closed, stop listening
+                while (!client.isClosed()) {
+                  proto = UDPBroadcastProtos.UDPPacket.parseDelimitedFrom(client.getInputStream());
+                  // If no proto left to read, close the listener. Otherwise, we may infinite loop
+                  if (proto == null) {
+                    break;
+                  }
 
                   // 3. Notify listeners
+                  Object prometheusBegin = Prometheus.startTimer(METRIC_TIMING, "parse_tcp_packet");
                   IdentityHashSet<Consumer<byte[]>> listeners;
                   synchronized (this.listeners) {
                     listeners = new IdentityHashSet<>(this.listeners.get(proto.getType()));  // copy, to prevent concurrency bugs
                   }
                   final byte[] bytes = proto.getContents().toByteArray();
+                  Prometheus.observeDuration(prometheusBegin);
+
                   for (Consumer<byte[]> listener : listeners) {
                     doAction(async, "inbound TCP message of type " + proto.getType(), () -> listener.accept(bytes));
                   }
@@ -380,7 +393,7 @@ public class UDPTransport implements Transport {
             lastMessageReceived = System.currentTimeMillis();
           }
         }
-      } catch (IOException e) {
+      } catch (Throwable e) {
         log.error("Could not establish TCP socket -- this is an error!");
       } finally {
         log.error("Why did we shut down the transport listener thread?");

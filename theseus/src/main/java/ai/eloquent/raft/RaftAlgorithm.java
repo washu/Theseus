@@ -1,5 +1,6 @@
 package ai.eloquent.raft;
 
+import java.util.Collections;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
@@ -10,6 +11,7 @@ import java.util.function.Consumer;
 import ai.eloquent.monitoring.Prometheus;
 import ai.eloquent.raft.EloquentRaftProto.*;
 import ai.eloquent.util.Span;
+import ai.eloquent.util.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -521,7 +523,12 @@ public interface RaftAlgorithm {
 
     // 2. Wait for someone else to appear
     while (!allowClusterDeath && raft.mutableState().log.committedQuorumMembers.size() < 2) {
-      log.warn("{} - [{}] We're the last member of the quorum -- sleeping to wait for someone else to arrive", raft.mutableState().serverName, transport.now());
+      log.warn("{} - [{}] We're the last member of the quorum -- sleeping to wait for someone else to arrive. Errors={}. Heartbeats from={}. Hospice={}.",
+          raft.mutableState().serverName, transport.now(),
+          raft instanceof EloquentRaftAlgorithm ? StringUtils.join(((EloquentRaftAlgorithm) raft).errors(), ", ") : "<n/a>",
+          raft.mutableState().lastMessageTimestamp.orElse(Collections.emptyMap()).keySet(),
+          raft.mutableStateMachine().getHospice()
+      );
       transport.sleep(1000);
     }
 

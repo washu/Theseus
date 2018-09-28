@@ -677,6 +677,8 @@ public class RaftState {
                 entry.getValue() > latestResponse) {
               latestResponse = entry.getValue();
               argmaxName = entry.getKey();
+            } else if (hospice.contains(entry.getKey())) {
+              System.err.println("node is in the hospice: " + entry.getKey());
             }
           }
           // Make sure we wouldn't immediately want to remove the server

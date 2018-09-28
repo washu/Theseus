@@ -14,6 +14,7 @@ import java.util.*;
 import java.util.concurrent.*;
 import java.util.function.Function;
 import java.util.function.Supplier;
+import java.util.stream.Collectors;
 
 /**
  * This is the high-level user-facing API for RAFT. It's designed to appear simple to end-users. The key reason we need
@@ -788,6 +789,16 @@ public class EloquentRaft {
     return retryTransitionAsync(KeyValueStateMachine.createRemoveValueTransition(elementName), timeout);
   }
 
+  /**
+   * This removes a set of elements from the Raft key-value store. It's a no-op if the value isn't already in the database.
+   *
+   * @param elementName the name of the element to remove
+   */
+  public CompletableFuture<Boolean> removeElementsRetryAsync(Set<String> elementName, Duration timeout) {
+    // Create a grouped transition to remove all the elements from Raft at once
+    return retryTransitionAsync(KeyValueStateMachine.createGroupedTransition(elementName.stream().map(KeyValueStateMachine::createRemoveValueTransition).collect(Collectors.toList()).toArray(new byte[elementName.size()][])), timeout);
+  }
+
   //////////////////////////////////////////////////////////////////
   // Getters
   //////////////////////////////////////////////////////////////////
@@ -884,7 +895,7 @@ public class EloquentRaft {
    *  // Later in the code where there is an error
    *  throwRaftError(incident_key, debug_message);
    *
-   * @param errorListener
+   * @param errorListener The error listener to add.
    */
   public void addErrorListener(RaftErrorListener errorListener) {
     stateMachine.addErrorListener(errorListener);
@@ -894,6 +905,12 @@ public class EloquentRaft {
     }
   }
 
+  /**
+   * Remove an error listener from Raft.
+   *
+   * @param errorListener The error listener to remove.
+   */
+  @SuppressWarnings("unused")
   public void removeErrorListener(RaftErrorListener errorListener) {
     stateMachine.removeErrorListener(errorListener);
     node.removeErrorListener(errorListener);
@@ -902,6 +919,10 @@ public class EloquentRaft {
     }
   }
 
+  /**
+   * Remove all error listeners from Raft.
+   */
+  @SuppressWarnings("unused")
   public void clearErrorListeners() {
     stateMachine.clearErrorListeners();
     node.clearErrorListeners();
