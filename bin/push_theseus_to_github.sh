@@ -14,18 +14,6 @@
 # Configure bash #
 ##################
 
-# Exit script on program fail
-set -o errexit
-# Don't run commands if they are undefined
-set -o nounset
-
-
-####################
-# ensureCmd Checks #
-####################
-
-echo "----- Doing checks -----"
-
 # Import useful utils from main.sh
 PRG="$BASH_SOURCE"
 progname=`basename "$BASH_SOURCE"`
@@ -40,8 +28,14 @@ while [ -h "$PRG" ] ; do
 done
 ROOT="`realpath $(dirname "$PRG")/../..`"
 source "$ROOT/bin/main.sh"
+
+
+####################
+# ensureCmd Checks #
+####################
+
+info "----- Doing checks -----"
 # Check if external commands exist
-ensureCmd ssh-agent
 ensureCmd make
 ensureCmd rsync
 
@@ -50,7 +44,7 @@ ensureCmd rsync
 # INITIALIZE VARIABLES #
 ########################
 
-echo "----- Initializing variables -----"
+info "----- Initializing variables -----"
 
 # Timer to keep track of duration of the script
 TIMER_START="$SECONDS"
@@ -91,14 +85,14 @@ function ensureCleanState {
 
 # Delete the temporary folders that we created
 function doCleanup {
-echo "----- Performing cleanup -----"
+info "----- Performing cleanup -----"
   if [ -d "$THESEUS_DIR" ]; then
     rm -rf "$THESEUS_DIR"
   fi
   if [ -d "$GITHUB_META_DIR" ]; then
     rm -rf "$GITHUB_META_DIR"
   fi
-echo "----- Cleanup complete -----"
+info "----- Cleanup complete -----"
 }
 
 # Run our cleanup on exit, even if the script fails
@@ -107,7 +101,7 @@ trap doCleanup EXIT
 # Copy files from $SOURCE_DIR to $THESEUS_DIR
 # Exclude .git from being overwritten in $THESEUS_DIR or else we won't be able to push to github
 function doRsync {
-  echo "----- RSync (eloquent/public->theseus)-----"
+  info "----- RSync (eloquent/public->theseus)-----"
   rsync \
     --archive\
     --copy-links\
@@ -133,11 +127,11 @@ mkdir "$GITHUB_META_DIR"
 
 # The SSH key to push to GitHub with
 # Copy SSH key from Gitlab into a temporary file
-echo "$THESEUS_SSH_KEY" > "$GITHUB_META_DIR/ssh_key"
+SSH_KEY_FILE="$GITHUB_META_DIR/ssh_key"
+echo "$THESEUS_SSH_KEY" > "$SSH_KEY_FILE"
 
 # This file name should not have spaces in it
 # e.g., SSH_KEY_FILE="/user/angeli/tmp/ssh_key"
-SSH_KEY_FILE="$GITHUB_META_DIR/ssh_key"
 # Change access rights to our SSH key file to be read-only (If not ssh-agent won't run)
 chmod 400 "$SSH_KEY_FILE"
 
@@ -146,7 +140,7 @@ chmod 400 "$SSH_KEY_FILE"
 ###############
 
 # Download and clear the Theseus repository
-ssh-agent bash -c "ssh-add $SSH_KEY_FILE; git clone $GITHUB_REPO_PATH $THESEUS_DIR"
+GIT_SSH_COMMAND="ssh -i $SSH_KEY_FILE -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no" git clone $GITHUB_REPO_PATH $THESEUS_DIR
 # Copy files from eloquent/public
 doRsync
 
@@ -157,14 +151,16 @@ make clean
 COMMIT_MESSAGE=$(git log -1 --pretty=%B)
 
 # Add and commit to git
-echo "----- Commiting files -----"
+info "----- Commiting files -----"
 cd $THESEUS_DIR
+git config user.email "noreply@eloquent.ai"
+git config user.name "Eloquent Labs"
 git add .
 git commit --all --author="Gabor Angeli<gabor@eloquent.ai>" --message="$COMMIT_MESSAGE" # note: "--all" = "-a"
 # Push to git
-echo "----- Pushing to github-----"
-ssh-agent bash -c "ssh-add $SSH_KEY_FILE; git pull"
-ssh-agent bash -c "ssh-add $SSH_KEY_FILE; git push origin master"
+info "----- Pushing to github-----"
+GIT_SSH_COMMAND="ssh -i $SSH_KEY_FILE -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no" git pull
+GIT_SSH_COMMAND="ssh -i $SSH_KEY_FILE -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no" git push origin master
 
 
 ###########
@@ -173,6 +169,6 @@ ssh-agent bash -c "ssh-add $SSH_KEY_FILE; git push origin master"
 
 doCleanup
 DURATION=$(( $SECONDS - TIMER_START ))
-echo "Sync to Github completed in $DURATION seconds"
-echo "----- DONE -----"
+info "Sync to Github completed in $DURATION seconds"
+info "----- DONE -----"
 exit 0
