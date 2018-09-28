@@ -2,7 +2,7 @@ package ai.eloquent.raft;
 
 import ai.eloquent.util.Pointer;
 import ai.eloquent.util.SafeTimerTask;
-import ai.eloquent.util.TimeUtils;
+import ai.eloquent.util.TimerUtils;
 import com.google.protobuf.InvalidProtocolBufferException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -571,7 +571,7 @@ public abstract class RaftBackedCache<V> implements Iterable<Map.Entry<String,V>
    * @return The element we are getting, if present.
    */
   public Optional<V> get(String key) {
-    Optional<byte[]> simpleGet = raft.stateMachine.get(prefix() + key, TimeUtils.mockableNow().toEpochMilli());
+    Optional<byte[]> simpleGet = raft.stateMachine.get(prefix() + key, TimerUtils.mockableNow().toEpochMilli());
     if (simpleGet.isPresent()) {
       try {
         return Optional.of(Entry.deserialize(key, simpleGet.get(), this::deserialize).value);
@@ -596,7 +596,7 @@ public abstract class RaftBackedCache<V> implements Iterable<Map.Entry<String,V>
    * @return The element we are getting, if present.
    */
   public Optional<V> getIfPresent(String key) {
-    return raft.stateMachine.get(prefix() + key, TimeUtils.mockableNow().toEpochMilli()).flatMap(v -> {
+    return raft.stateMachine.get(prefix() + key, TimerUtils.mockableNow().toEpochMilli()).flatMap(v -> {
       try {
         return Optional.of(Entry.deserialize(key, v, this::deserialize).value);
       } catch (InvalidProtocolBufferException e) {

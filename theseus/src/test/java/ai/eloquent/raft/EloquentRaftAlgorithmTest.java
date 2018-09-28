@@ -709,8 +709,8 @@ public class EloquentRaftAlgorithmTest {
         algorithm.heartbeat(now);
         now += 50;
       }
-      System.out.println("Took " + TimeUtils.formatTimeSince(start) + " to run heartbeats over a simulated time of " +
-          TimeUtils.formatTimeDifference(now - start) + " => " +
+      System.out.println("Took " + TimerUtils.formatTimeSince(start) + " to run heartbeats over a simulated time of " +
+          TimerUtils.formatTimeDifference(now - start) + " => " +
           new DecimalFormat("0.000%").format(((double) (System.currentTimeMillis() - start)) / ((double) (now - start))) +
           " of time spent in heartbeats"
       );
@@ -755,7 +755,7 @@ public class EloquentRaftAlgorithmTest {
         now += 50;
         success.get();
       }
-      System.out.println("Took " + TimeUtils.formatTimeSince(start) + " to run " + count + " transitions - " + ((double) (System.currentTimeMillis() - start) / count) + " per transition");
+      System.out.println("Took " + TimerUtils.formatTimeSince(start) + " to run " + count + " transitions - " + ((double) (System.currentTimeMillis() - start) / count) + " per transition");
     } finally {
       algorithm.stop(true);
       transport.stop();

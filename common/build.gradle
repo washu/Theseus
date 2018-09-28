@@ -1,4 +1,7 @@
 apply plugin: 'java'
+compileJava.options.encoding = "UTF-8"
+compileTestJava.options.encoding = "UTF-8"
+
 sourceSets {
   main {
     java {
@@ -56,15 +59,22 @@ dependencies {
   // Protocol Buffers
   compile group: 'com.google.protobuf', name: 'protobuf-java', version: '3.5.1'
 
-  // JUnit (for testing)
-  testCompile group: 'junit', name: 'junit', version: '4.12'
-
   // SLF4j for a unified logging
   compile group: 'org.slf4j', name: 'slf4j-api',      version: '1.7.13'
-  compile group: 'org.slf4j', name: 'jcl-over-slf4j', version: '1.7.13'
-  compile group: 'org.slf4j', name: 'slf4j-simple',   version: '1.7.25'
 
+  // Javax Annotations
+  compile group: 'com.google.code.findbugs', name: 'jsr305', version: '3.0.0'
+
+
+  //
+  // TEST DEPENDENCIES
+  //
+
+  // JUnit (for testing)
+  testCompile group: 'junit', name: 'junit', version: '4.12'
   // Google guava for some utils
-  compile 'com.google.guava:guava:26.0-jre'
+  testCompile 'com.google.guava:guava:26.0-jre'
+  // SLF4J Simple so we can actually log things
+  testCompile group: 'org.slf4j', name: 'slf4j-simple',      version: '1.7.13'
 }
 

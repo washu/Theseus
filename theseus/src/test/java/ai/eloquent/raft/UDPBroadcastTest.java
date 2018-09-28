@@ -2,7 +2,7 @@ package ai.eloquent.raft;
 
 import ai.eloquent.data.UDPBroadcastProtos;
 import ai.eloquent.data.UDPTransport;
-import ai.eloquent.util.TimeUtils;
+import ai.eloquent.util.TimerUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -35,7 +35,7 @@ public class UDPBroadcastTest {
         transport.broadcastTransport(UDPBroadcastProtos.MessageType.RAFT, new byte[]{REPLY, myId});
       }
       else if (bytes[0] == REPLY && bytes[1] != myId) {
-        launchTime.get().ifPresent(aLong -> System.out.println("Time since launch: " + TimeUtils.formatTimeSince(aLong)));
+        launchTime.get().ifPresent(aLong -> System.out.println("Time since launch: " + TimerUtils.formatTimeSince(aLong)));
         launchTime.set(Optional.empty());
       }
     });

@@ -1,6 +1,6 @@
 package ai.eloquent.raft;
 
-import ai.eloquent.util.TimeUtils;
+import ai.eloquent.util.TimerUtils;
 import com.google.common.util.concurrent.MoreExecutors;
 import com.google.protobuf.ByteString;
 import org.junit.Test;
@@ -318,13 +318,13 @@ public class RaftLogTest {
 
     // Partially commit the entries
     synchronized (log) {
-      log.setCommitIndex((long) 1, TimeUtils.mockableNow().toEpochMilli());
+      log.setCommitIndex((long) 1, TimerUtils.mockableNow().toEpochMilli());
     }
     assertEquals("We should have applied our entry to our state machine", 3, stateMachine.value);
 
     // Commit the other entry
     synchronized (log) {
-      log.setCommitIndex((long) 2, TimeUtils.mockableNow().toEpochMilli());
+      log.setCommitIndex((long) 2, TimerUtils.mockableNow().toEpochMilli());
     }
     assertEquals("We should have applied our entry to our state machine", 4, stateMachine.value);
   }
@@ -352,7 +352,7 @@ public class RaftLogTest {
 
     // Commit the entries
     synchronized (log) {
-      log.setCommitIndex((long) 1, TimeUtils.mockableNow().toEpochMilli());
+      log.setCommitIndex((long) 1, TimerUtils.mockableNow().toEpochMilli());
     }
     assertEquals("We should have applied our entry to our state machine", 3, stateMachine.value);
   }
@@ -403,7 +403,7 @@ public class RaftLogTest {
 
     // Commit the entries
     synchronized (log) {
-      log.setCommitIndex((long) 3, TimeUtils.mockableNow().toEpochMilli());
+      log.setCommitIndex((long) 3, TimerUtils.mockableNow().toEpochMilli());
     }
     assertEquals("We should have applied our entry to our state machine", 6, stateMachine.value);
   }
@@ -461,7 +461,7 @@ public class RaftLogTest {
 
     // Commit the entries
     synchronized (log) {
-      log.setCommitIndex((long) 3, TimeUtils.mockableNow().toEpochMilli());
+      log.setCommitIndex((long) 3, TimerUtils.mockableNow().toEpochMilli());
     }
     assertEquals("We should have applied our entry to our state machine", 6, stateMachine.value);
   }
@@ -499,7 +499,7 @@ public class RaftLogTest {
 
     // Commit the entries
     synchronized (log) {
-      log.setCommitIndex((long) 3, TimeUtils.mockableNow().toEpochMilli());
+      log.setCommitIndex((long) 3, TimerUtils.mockableNow().toEpochMilli());
     }
     assertEquals("We should have applied our entry to our state machine", 1, stateMachine.value);
   }
@@ -542,14 +542,14 @@ public class RaftLogTest {
     assertEquals(configuration2, log.latestQuorumMembers);
 
     synchronized (log) {
-      log.setCommitIndex((long) 2, TimeUtils.mockableNow().toEpochMilli());
+      log.setCommitIndex((long) 2, TimerUtils.mockableNow().toEpochMilli());
     }
 
     assertEquals(configuration1, log.committedQuorumMembers);
     assertEquals(configuration2, log.latestQuorumMembers);
 
     synchronized (log) {
-      log.setCommitIndex((long) 3, TimeUtils.mockableNow().toEpochMilli());
+      log.setCommitIndex((long) 3, TimerUtils.mockableNow().toEpochMilli());
     }
 
     assertEquals(configuration2, log.committedQuorumMembers);
@@ -586,7 +586,7 @@ public class RaftLogTest {
 
     RaftLog.Snapshot snapshot0 = log.forceSnapshot();
 
-    recoveredStateMachine.overwriteWithSerialized(snapshot0.serializedStateMachine, TimeUtils.mockableNow().toEpochMilli(), MoreExecutors.newDirectExecutorService());
+    recoveredStateMachine.overwriteWithSerialized(snapshot0.serializedStateMachine, TimerUtils.mockableNow().toEpochMilli(), MoreExecutors.newDirectExecutorService());
     assertEquals(-1, recoveredStateMachine.value);
 
     // test getEntriesSinceIndex(), we shouldn't have compacted anything yet
@@ -602,7 +602,7 @@ public class RaftLogTest {
 
     // Commit the entries
     synchronized (log) {
-      log.setCommitIndex((long) 2, TimeUtils.mockableNow().toEpochMilli());
+      log.setCommitIndex((long) 2, TimerUtils.mockableNow().toEpochMilli());
     }
     assertEquals(3, log.logEntries.size());
 
@@ -622,7 +622,7 @@ public class RaftLogTest {
     assertEquals(0, entries.get().size());
 
     assertEquals(1, log.logEntries.size());
-    recoveredStateMachine.overwriteWithSerialized(snapshot2.serializedStateMachine, TimeUtils.mockableNow().toEpochMilli(), MoreExecutors.newDirectExecutorService());
+    recoveredStateMachine.overwriteWithSerialized(snapshot2.serializedStateMachine, TimerUtils.mockableNow().toEpochMilli(), MoreExecutors.newDirectExecutorService());
     assertEquals(2, recoveredStateMachine.value);
 
     assertEquals("We should have applied our entries up through 2 to our state machine", 2, stateMachine.value);
@@ -631,7 +631,7 @@ public class RaftLogTest {
     assertSame(snapshot2, log.snapshot.get());
     boolean result7;
     synchronized (log) {
-      result7 = log.installSnapshot(snapshot0, TimeUtils.mockableNow().toEpochMilli());
+      result7 = log.installSnapshot(snapshot0, TimerUtils.mockableNow().toEpochMilli());
     }
     assertFalse(result7); // this should fail
     assertSame(snapshot2, log.snapshot.get());
@@ -640,7 +640,7 @@ public class RaftLogTest {
     assertSame(snapshot2, log.snapshot.get());
     boolean result6;
     synchronized (log) {
-      result6 = log.installSnapshot(snapshot2, TimeUtils.mockableNow().toEpochMilli());
+      result6 = log.installSnapshot(snapshot2, TimerUtils.mockableNow().toEpochMilli());
     }
     assertFalse(result6);
     assertSame(snapshot2, log.snapshot.get());
@@ -648,7 +648,7 @@ public class RaftLogTest {
 
     // Then commit all the entries, and we should have updated our state
     synchronized (log) {
-      log.setCommitIndex((long) 3, TimeUtils.mockableNow().toEpochMilli());
+      log.setCommitIndex((long) 3, TimerUtils.mockableNow().toEpochMilli());
     }
     assertEquals(1, stateMachine.value);
     assertEquals(1, log.logEntries.size());
@@ -661,7 +661,7 @@ public class RaftLogTest {
     // We shouldn't be able to go backwards by installing an old snapshot
     boolean result5;
     synchronized (log) {
-      result5 = log.installSnapshot(snapshot2, TimeUtils.mockableNow().toEpochMilli());
+      result5 = log.installSnapshot(snapshot2, TimerUtils.mockableNow().toEpochMilli());
     }
     assertEquals(1, stateMachine.value);
 
@@ -672,7 +672,7 @@ public class RaftLogTest {
     assertEquals(-1, stateMachine2.value);
     boolean result4;
     synchronized (log2) {
-      result4 = log2.installSnapshot(snapshot0, TimeUtils.mockableNow().toEpochMilli());
+      result4 = log2.installSnapshot(snapshot0, TimerUtils.mockableNow().toEpochMilli());
     }
     assertTrue(result4);
     assertEquals(-1, stateMachine2.value);
@@ -682,7 +682,7 @@ public class RaftLogTest {
     // Installing the snapshot from index 2 should work
     boolean result3;
     synchronized (log2) {
-      result3 = log2.installSnapshot(snapshot2, TimeUtils.mockableNow().toEpochMilli());
+      result3 = log2.installSnapshot(snapshot2, TimerUtils.mockableNow().toEpochMilli());
     }
     assertTrue(result3);
     assertEquals(2, stateMachine2.value);
@@ -692,7 +692,7 @@ public class RaftLogTest {
     // Going backwards should be a no-op
     boolean result2;
     synchronized (log2) {
-      result2 = log2.installSnapshot(snapshot0, TimeUtils.mockableNow().toEpochMilli());
+      result2 = log2.installSnapshot(snapshot0, TimerUtils.mockableNow().toEpochMilli());
     }
     assertFalse(result2);
     assertEquals(2, stateMachine2.value);
@@ -703,7 +703,7 @@ public class RaftLogTest {
     // Installing the snapshot from index 2 twice should be a no-op
     boolean result1;
     synchronized (log2) {
-      result1 = log2.installSnapshot(snapshot2, TimeUtils.mockableNow().toEpochMilli());
+      result1 = log2.installSnapshot(snapshot2, TimerUtils.mockableNow().toEpochMilli());
     }
     assertFalse(result1);
     assertEquals(2, stateMachine2.value);
@@ -713,7 +713,7 @@ public class RaftLogTest {
     // Installing the snapshot from index 3 should work
     boolean result;
     synchronized (log2) {
-      result = log2.installSnapshot(snapshot3, TimeUtils.mockableNow().toEpochMilli());
+      result = log2.installSnapshot(snapshot3, TimerUtils.mockableNow().toEpochMilli());
     }
     assertTrue(result);
     assertEquals(1, stateMachine2.value);
@@ -740,7 +740,7 @@ public class RaftLogTest {
     verifyEntry(log, 1, 1, 3);
 
     synchronized (log) {
-      log.setCommitIndex((long) 1, TimeUtils.mockableNow().toEpochMilli());
+      log.setCommitIndex((long) 1, TimerUtils.mockableNow().toEpochMilli());
     }
     log.forceSnapshot();
 
@@ -763,7 +763,7 @@ public class RaftLogTest {
 
     // Commit the entries
     synchronized (log) {
-      log.setCommitIndex((long) 3, TimeUtils.mockableNow().toEpochMilli());
+      log.setCommitIndex((long) 3, TimerUtils.mockableNow().toEpochMilli());
     }
     log.forceSnapshot();
     assertEquals("We should have applied our entry to our state machine", 1, stateMachine.value);
@@ -792,7 +792,7 @@ public class RaftLogTest {
     verifyEntry(log, 3, 1, 1);
 
     synchronized (log) {
-      log.setCommitIndex((long) 1, TimeUtils.mockableNow().toEpochMilli());
+      log.setCommitIndex((long) 1, TimerUtils.mockableNow().toEpochMilli());
     }
     log.forceSnapshot();
 
@@ -811,7 +811,7 @@ public class RaftLogTest {
 
     // Commit the entries
     synchronized (log) {
-      log.setCommitIndex((long) 3, TimeUtils.mockableNow().toEpochMilli());
+      log.setCommitIndex((long) 3, TimerUtils.mockableNow().toEpochMilli());
     }
     assertEquals("We should have applied our entry to our state machine", 6, stateMachine.value);
   }
@@ -838,7 +838,7 @@ public class RaftLogTest {
     verifyEntry(log1, 3, 1, 1);
 
     synchronized (log1) {
-      log1.setCommitIndex((long) 3, TimeUtils.mockableNow().toEpochMilli());
+      log1.setCommitIndex((long) 3, TimerUtils.mockableNow().toEpochMilli());
     }
     RaftLog.Snapshot snapshot = log1.forceSnapshot();
 
@@ -860,7 +860,7 @@ public class RaftLogTest {
     assertEquals(-1, stateMachine2.value);
     boolean result;
     synchronized (log2) {
-      result = log2.installSnapshot(snapshot, TimeUtils.mockableNow().toEpochMilli());
+      result = log2.installSnapshot(snapshot, TimerUtils.mockableNow().toEpochMilli());
     }
     assertEquals(0, log2.logEntries.size());
     assertEquals(3, log2.commitIndex);
@@ -907,7 +907,7 @@ public class RaftLogTest {
 
     // Commit config1
     synchronized (log) {
-      log.setCommitIndex((long) 2, TimeUtils.mockableNow().toEpochMilli());
+      log.setCommitIndex((long) 2, TimerUtils.mockableNow().toEpochMilli());
     }
     RaftLog.Snapshot snapshot1 = log.forceSnapshot();
     assertEquals(configuration1, snapshot1.lastClusterMembership);  // configuration1 should be the committed config
@@ -916,7 +916,7 @@ public class RaftLogTest {
 
     // Commit config2
     synchronized (log) {
-      log.setCommitIndex((long) 3, TimeUtils.mockableNow().toEpochMilli());
+      log.setCommitIndex((long) 3, TimerUtils.mockableNow().toEpochMilli());
     }
     RaftLog.Snapshot snapshot2 = log.forceSnapshot();
     assertEquals(configuration2, snapshot2.lastClusterMembership);        // now everyone should use config2
@@ -931,7 +931,7 @@ public class RaftLogTest {
     // Install snapshot1 (the one with config1 committed)
     boolean result1;
     synchronized (log2) {
-      result1 = log2.installSnapshot(snapshot1, TimeUtils.mockableNow().toEpochMilli());
+      result1 = log2.installSnapshot(snapshot1, TimerUtils.mockableNow().toEpochMilli());
     }
     assertEquals(2, log2.getCommitIndex());
     assertEquals(configuration1, log2.committedQuorumMembers);
@@ -939,7 +939,7 @@ public class RaftLogTest {
     // Install snapshot2 (the one with config1 committed)
     boolean result;
     synchronized (log2) {
-      result = log2.installSnapshot(snapshot2, TimeUtils.mockableNow().toEpochMilli());
+      result = log2.installSnapshot(snapshot2, TimerUtils.mockableNow().toEpochMilli());
     }
     assertEquals(3, log2.getCommitIndex());
     assertEquals(configuration2, log2.committedQuorumMembers);
@@ -968,7 +968,7 @@ public class RaftLogTest {
     verifyEntry(log1, 3, 1, 1);
 
     synchronized (log1) {
-      log1.setCommitIndex((long) 3, TimeUtils.mockableNow().toEpochMilli());
+      log1.setCommitIndex((long) 3, TimerUtils.mockableNow().toEpochMilli());
     }
     RaftLog.Snapshot snapshot1 = log1.forceSnapshot();
 
@@ -976,7 +976,7 @@ public class RaftLogTest {
     RaftLog log2 = new RaftLog(stateMachine2, new ArrayList<>(), MoreExecutors.newDirectExecutorService());
     boolean result1;
     synchronized (log2) {
-      result1 = log2.installSnapshot(snapshot1, TimeUtils.mockableNow().toEpochMilli());
+      result1 = log2.installSnapshot(snapshot1, TimerUtils.mockableNow().toEpochMilli());
     }
     success = result1;
     assertTrue(success);
@@ -998,14 +998,14 @@ public class RaftLogTest {
 
     // Commit the entries
     synchronized (log2) {
-      log2.setCommitIndex((long) 5, TimeUtils.mockableNow().toEpochMilli());
+      log2.setCommitIndex((long) 5, TimerUtils.mockableNow().toEpochMilli());
     }
     assertEquals("We should have applied our entry to our state machine", 6, stateMachine2.value);
 
     RaftLog.Snapshot snapshot2 = log2.forceSnapshot();
     boolean result;
     synchronized (log1) {
-      result = log1.installSnapshot(snapshot2, TimeUtils.mockableNow().toEpochMilli());
+      result = log1.installSnapshot(snapshot2, TimerUtils.mockableNow().toEpochMilli());
     }
     assertEquals("We should have applied our entry to our state machine", 6, stateMachine1.value);
   }
@@ -1103,7 +1103,7 @@ public class RaftLogTest {
     assertEquals(1, (long)previousEntry.get());
 
     synchronized (log) {
-      log.setCommitIndex((long) 2, TimeUtils.mockableNow().toEpochMilli());
+      log.setCommitIndex((long) 2, TimerUtils.mockableNow().toEpochMilli());
     }
     log.forceSnapshot();
 
@@ -1155,7 +1155,7 @@ public class RaftLogTest {
     assertFalse(commit3.isDone());
 
     synchronized (log) {
-      log.setCommitIndex((long) 1, TimeUtils.mockableNow().toEpochMilli());
+      log.setCommitIndex((long) 1, TimerUtils.mockableNow().toEpochMilli());
     }
 
     assertTrue(commit1BadTerm.isDone());
@@ -1168,7 +1168,7 @@ public class RaftLogTest {
     assertFalse(commit3.isDone());
 
     synchronized (log) {
-      log.setCommitIndex((long) 3, TimeUtils.mockableNow().toEpochMilli());
+      log.setCommitIndex((long) 3, TimerUtils.mockableNow().toEpochMilli());
     }
 
     assertTrue(commit1BadTerm.isDone());
@@ -1238,7 +1238,7 @@ public class RaftLogTest {
     assertEquals(configuration1, log.latestQuorumMembers);
 
     synchronized (log) {
-      log.setCommitIndex((long) 2, TimeUtils.mockableNow().toEpochMilli());
+      log.setCommitIndex((long) 2, TimerUtils.mockableNow().toEpochMilli());
     }
 
     // we have no uncommitted membership changes
@@ -1254,7 +1254,7 @@ public class RaftLogTest {
     assertFalse(log.getSafeToChangeMembership());
 
     synchronized (log) {
-      log.setCommitIndex((long) 3, TimeUtils.mockableNow().toEpochMilli());
+      log.setCommitIndex((long) 3, TimerUtils.mockableNow().toEpochMilli());
     }
 
     // we have no uncommitted membership changes
@@ -1319,7 +1319,7 @@ public class RaftLogTest {
 
     // Force a snapshot
     synchronized (log) {
-      log.setCommitIndex((long) 2, TimeUtils.mockableNow().toEpochMilli());
+      log.setCommitIndex((long) 2, TimerUtils.mockableNow().toEpochMilli());
     }
     log.forceSnapshot();
 

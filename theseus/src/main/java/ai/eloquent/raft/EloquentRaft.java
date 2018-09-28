@@ -2,7 +2,7 @@ package ai.eloquent.raft;
 
 import ai.eloquent.error.RaftErrorListener;
 import ai.eloquent.util.SafeTimerTask;
-import ai.eloquent.util.TimeUtils;
+import ai.eloquent.util.TimerUtils;
 import ai.eloquent.web.TrackedExecutorService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -949,7 +949,7 @@ public class EloquentRaft {
     long startTime = System.currentTimeMillis();
     log.trace("\n-------------\nSTARTING TRANSITION {}\n-------------\n", uniqueID);
     return retryAsync(() -> node.submitTransition(transition), timeout).thenApply((success) -> {
-      log.trace("\n-------------\nFINISHED TRANSITION {}: {} ({})\n-------------\n", uniqueID, success, TimeUtils.formatTimeSince(startTime));
+      log.trace("\n-------------\nFINISHED TRANSITION {}: {} ({})\n-------------\n", uniqueID, success, TimerUtils.formatTimeSince(startTime));
       return success;
     });
   }

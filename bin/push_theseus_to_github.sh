@@ -156,7 +156,7 @@ cd $THESEUS_DIR
 git config user.email "hello@eloquent.ai"
 git config user.name "Eloquent Labs"
 git add .
-git commit --all --author="Gabor Angeli<gabor@eloquent.ai>" --message="$COMMIT_MESSAGE" # note: "--all" = "-a"
+git commit --all --author="Gabor Angeli<gabor@eloquent.ai>" --message="$COMMIT_MESSAGE"  || exit 0  # note: "--all" = "-a"; exit 0 if nothing to commit
 # Push to git
 info "----- Pushing to github-----"
 GIT_SSH_COMMAND="ssh -i $SSH_KEY_FILE -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no" git pull

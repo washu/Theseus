@@ -2,7 +2,7 @@ package ai.eloquent.raft;
 
 import ai.eloquent.monitoring.Prometheus;
 import ai.eloquent.util.FunctionalUtils;
-import ai.eloquent.util.TimeUtils;
+import ai.eloquent.util.TimerUtils;
 import com.sun.management.GcInfo;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -244,7 +244,7 @@ public class RaftLog {
       if (lastGcTime > System.currentTimeMillis() - duration && lastGcTime < System.currentTimeMillis()) {
         interruptedByGC = true;
       }
-      log.warn("{} took {};  interrupted_by_gc={}", description, TimeUtils.formatTimeDifference(duration), interruptedByGC);
+      log.warn("{} took {};  interrupted_by_gc={}", description, TimerUtils.formatTimeDifference(duration), interruptedByGC);
     }
     return true;
   }

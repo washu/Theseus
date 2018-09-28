@@ -552,7 +552,7 @@ public class UDPTransport implements Transport {
         } finally {
           long socketSendEnd = System.currentTimeMillis();
           if (socketSendEnd > socketSendStart + 10) {
-            log.warn("Sending a direct message on the UDP socket took {}", TimeUtils.formatTimeDifference(socketSendEnd - socketSendStart));
+            log.warn("Sending a direct message on the UDP socket took {}", TimerUtils.formatTimeDifference(socketSendEnd - socketSendStart));
           }
         }
         if (networkSeemsDown) {
@@ -733,7 +733,7 @@ public class UDPTransport implements Transport {
                 long socketSendEnd = System.currentTimeMillis();
                 if (socketSendEnd > socketSendStart + 10) {
                   log.warn("Sending a broadcast to {} on the UDP socket took {} for packet of length {}",
-                      broadcastAddr, TimeUtils.formatTimeDifference(socketSendEnd - socketSendStart), packet.getLength());
+                      broadcastAddr, TimerUtils.formatTimeDifference(socketSendEnd - socketSendStart), packet.getLength());
                 }
               }
               if (networkSeemsDown) {
@@ -751,12 +751,12 @@ public class UDPTransport implements Transport {
               }
               networkSeemsDown = true;
             } else {
-              log.warn("Could not broadcast to " + broadcastAddr + " (attempt took " + TimeUtils.formatTimeSince(sendStart) + ") -- still trying other addressed", t);
+              log.warn("Could not broadcast to " + broadcastAddr + " (attempt took " + TimerUtils.formatTimeSince(sendStart) + ") -- still trying other addressed", t);
             }
           } finally {
             long sendEnd = System.currentTimeMillis();
             if (sendEnd > sendStart + 10) {
-              log.warn("Sending broadcast to {} on transport took {}", broadcastAddr, TimeUtils.formatTimeDifference(sendEnd - sendStart));
+              log.warn("Sending broadcast to {} on transport took {}", broadcastAddr, TimerUtils.formatTimeDifference(sendEnd - sendStart));
             }
           }
         }
@@ -782,7 +782,7 @@ public class UDPTransport implements Transport {
       }
     } finally {
       lastMessageSent = System.currentTimeMillis();
-      log.trace("Sending UDP broadcast took {}", TimeUtils.formatTimeSince(startTime));
+      log.trace("Sending UDP broadcast took {}", TimerUtils.formatTimeSince(startTime));
     }
     return false;
   }
@@ -848,7 +848,7 @@ public class UDPTransport implements Transport {
   @Override
   public String toString() {
     return "UDP@" + SystemUtils.HOST + " (" + this.serverAddress + ")" +
-        "  <last message sent " + TimeUtils.formatTimeSince(lastMessageSent) + " ago; received " + TimeUtils.formatTimeSince(lastMessageReceived) + " ago>" +
+        "  <last message sent " + TimerUtils.formatTimeSince(lastMessageSent) + " ago; received " + TimerUtils.formatTimeSince(lastMessageReceived) + " ago>" +
         "  <broadcasting to " + Arrays.asList(this.broadcastAddrs) + ">" +
         "  <pings from " + StringUtils.join(liveServers(60000), ", ") + ">"
         ;

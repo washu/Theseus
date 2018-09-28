@@ -8,7 +8,7 @@ import java.time.Instant;
  *
  * @author Gabor Angeli
  */
-public class TimeUtils {
+public class TimerUtils {
 
   /**
    * UNIT TESTS ONLY.
@@ -33,7 +33,7 @@ public class TimeUtils {
    * @param diff Time difference in milliseconds
    * @param b The string builder to append to
    */
-  static void formatTimeDifference(long diff, StringBuilder b){
+  public static void formatTimeDifference(long diff, StringBuilder b){
     //--Short circuit for < 100ms
     if (diff < 100) {
       b.append(diff).append(" ms");

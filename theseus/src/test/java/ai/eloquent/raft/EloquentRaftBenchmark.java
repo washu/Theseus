@@ -1,6 +1,6 @@
 package ai.eloquent.raft;
 
-import ai.eloquent.util.TimeUtils;
+import ai.eloquent.util.TimerUtils;
 import com.google.protobuf.ByteString;
 import org.junit.Ignore;
 import org.junit.Test;
@@ -51,7 +51,7 @@ public class EloquentRaftBenchmark {
           .build(), i * 1000);
     }
 
-    System.out.println("************* DONE "+ TimeUtils.formatTimeSince(startTime)+" ("+((double)(System.currentTimeMillis() - startTime) / numIterations)+"ms / transition) **************");
+    System.out.println("************* DONE "+ TimerUtils.formatTimeSince(startTime)+" ("+((double)(System.currentTimeMillis() - startTime) / numIterations)+"ms / transition) **************");
 
     // Do some other meaningful work - evict everything from the CPU cache
 
@@ -73,7 +73,7 @@ public class EloquentRaftBenchmark {
           .build(), i * 1000);
     }
 
-    System.out.println("************* DONE "+TimeUtils.formatTimeSince(startTime)+" ("+((double)(System.currentTimeMillis() - startTime) / numIterations)+"ms / transition) **************");
+    System.out.println("************* DONE "+ TimerUtils.formatTimeSince(startTime)+" ("+((double)(System.currentTimeMillis() - startTime) / numIterations)+"ms / transition) **************");
   }
 
 
@@ -100,6 +100,6 @@ public class EloquentRaftBenchmark {
       assertEquals("L should know about A and B", new HashSet<>(Arrays.asList("A", "B")), L.algorithm.state().lastMessageTimestamp.get().keySet());
     }
 
-    System.out.println("************* DONE "+TimeUtils.formatTimeSince(startTime)+" **************");
+    System.out.println("************* DONE "+ TimerUtils.formatTimeSince(startTime)+" **************");
   }
 }

@@ -42,10 +42,15 @@ TODO
 TODO
 
 ## Dependencies
-* [Gradle](https://gradle.org/) - Dependency management
-* [SLF4J](https://www.slf4j.org/) - Logging
-* [Guava](https://github.com/google/guava) - Utility classes for Java
-* [JUnit 4](https://junit.org/junit4/) - Unit testing
+* [Gradle](https://gradle.org/) - Dependency management.
+* [SLF4J](https://www.slf4j.org/) - For unified logging.
+* [gRPC](https://grpc.io/) - RPC library.
+* [protobuf](https://developers.google.com/protocol-buffers/) - Interchange and data storage format.
+
+For running the tests, Theseus additionally depends on:
+
+* [JUnit 4](https://junit.org/junit4/) - Unit testing.
+* [Guava](https://github.com/google/guava) - Utility classes for Java.
 
 
 ## Contributing

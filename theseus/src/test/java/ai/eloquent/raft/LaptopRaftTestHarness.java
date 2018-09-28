@@ -227,7 +227,7 @@ public class LaptopRaftTestHarness {
               .append("  Commit Index    ").append(state.commitIndex()).append("\n")
               .append("  Log Length      ").append(state.log.getAllUncompressedEntries().size()).append("\n")
               .append("  Voted For       ").append(state.votedFor.orElse("<none>")).append("\n")
-              .append("  Election Ckpt   ").append(state.isLeader() ? "<is leader>" : TimeUtils.formatTimeSince(state.electionTimeoutCheckpoint) + " ago").append("\n")
+              .append("  Election Ckpt   ").append(state.isLeader() ? "<is leader>" : TimerUtils.formatTimeSince(state.electionTimeoutCheckpoint) + " ago").append("\n")
               .append("  Want Election   ").append(state.shouldTriggerElection(System.currentTimeMillis(), raft.node.algorithm.electionTimeoutMillisRange())).append("\n")
           ;
           b.append("\n  Errors:\n");
@@ -257,7 +257,7 @@ public class LaptopRaftTestHarness {
                 b.append("    <empty>\n");
               }
               for (Map.Entry<String, Long> entry : timestamps) {
-                String diff = TimeUtils.formatTimeSince(entry.getValue());
+                String diff = TimerUtils.formatTimeSince(entry.getValue());
                 b.append("    ")
                     .append(state.alreadyKilled.map(strings -> (strings.contains(entry.getKey()) ? "☠ " : "♥ ")).orElse(""))
                     .append(Instant.ofEpochMilli(entry.getValue()).toString())

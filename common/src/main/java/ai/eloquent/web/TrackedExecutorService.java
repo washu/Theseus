@@ -5,7 +5,7 @@ import ai.eloquent.monitoring.Prometheus;
 import ai.eloquent.stats.IntCounter;
 import ai.eloquent.util.StackTrace;
 import ai.eloquent.util.SystemUtils;
-import ai.eloquent.util.TimeUtils;
+import ai.eloquent.util.TimerUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -157,7 +157,7 @@ public class TrackedExecutorService implements ExecutorService {
         Double duration = Prometheus.observeDuration(Timer_runTimer);
         if (duration > 60.0 && duration != null) {
           log.warn("Thread on executor {} took >1m to finish ({})",
-              this.name, TimeUtils.formatTimeDifference(duration.longValue() * 1000));
+              this.name, TimerUtils.formatTimeDifference(duration.longValue() * 1000));
 //                this.name, TimeUtils.formatTimeDifference((long) duration * 1000), new StackTrace(callerTrace));
         }
       }

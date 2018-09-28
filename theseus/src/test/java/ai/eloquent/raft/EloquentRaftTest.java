@@ -3,7 +3,7 @@ package ai.eloquent.raft;
 import ai.eloquent.raft.transport.WithLocalTransport;
 import ai.eloquent.test.SlowTests;
 import ai.eloquent.util.RunnableThrowsException;
-import ai.eloquent.util.TimeUtils;
+import ai.eloquent.util.TimerUtils;
 import ai.eloquent.util.Uninterruptably;
 import org.junit.Ignore;
 import org.junit.Test;
@@ -292,7 +292,7 @@ public class EloquentRaftTest extends WithLocalTransport {
               } catch (InterruptedException | ExecutionException | TimeoutException e) {
                 e.printStackTrace();
               } finally {
-                log.info("{} iteration {} / {} completed in {}", Thread.currentThread(), i + 1, numIters, TimeUtils.formatTimeSince(start));
+                log.info("{} iteration {} / {} completed in {}", Thread.currentThread(), i + 1, numIters, TimerUtils.formatTimeSince(start));
               }
               if (success) {
                 // If the transition succeeded, we should have called the mutator exactly once
@@ -312,7 +312,7 @@ public class EloquentRaftTest extends WithLocalTransport {
         threads.forEach(Thread::start);
         threads.forEach(Uninterruptably::join);
         long duration = System.currentTimeMillis() - startTime;
-        log.info("Doing "+(numIters * numThreads)+" atomic increments took "+ TimeUtils.formatTimeDifference(duration));
+        log.info("Doing "+(numIters * numThreads)+" atomic increments took "+ TimerUtils.formatTimeDifference(duration));
         log.info("Doing "+(numIters * numThreads)+" atomic increments took "+((double)duration / (numIters * numThreads))+"ms per increment");
 
         // Check the sum

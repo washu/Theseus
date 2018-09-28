@@ -3,7 +3,7 @@ package ai.eloquent.raft;
 import ai.eloquent.monitoring.Prometheus;
 import ai.eloquent.raft.EloquentRaftProto.*;
 import ai.eloquent.util.RuntimeInterruptedException;
-import ai.eloquent.util.TimeUtils;
+import ai.eloquent.util.TimerUtils;
 import com.google.protobuf.ByteString;
 import com.google.protobuf.InvalidProtocolBufferException;
 import com.sun.management.GcInfo;
@@ -1474,7 +1474,7 @@ public class EloquentRaftAlgorithm implements RaftAlgorithm {
       }
       OperatingSystemMXBean osBean = ManagementFactory.getPlatformMXBean(OperatingSystemMXBean.class);
       log.warn("{} - Raft took >50ms ({}) on step '{}';  leadership={}  system_load={}  interrupted_by_gc={}",
-          state.serverName, TimeUtils.formatTimeDifference(timeElapsed), description, state.leadership,
+          state.serverName, TimerUtils.formatTimeDifference(timeElapsed), description, state.leadership,
           osBean.getSystemLoadAverage(), interruptedByGC);
     }
     return true;  // always return true, or else we throw an assert
@@ -1546,7 +1546,7 @@ public class EloquentRaftAlgorithm implements RaftAlgorithm {
     }
     long timeSinceBroadcast = transport.now() - (Arrays.stream(lastBroadcastTimes).max().orElse(0));
     if (state.isLeader() && timeSinceBroadcast > this.heartbeatMillis() * 10) {
-      errors.add("Last broadcast was " + TimeUtils.formatTimeDifference(timeSinceBroadcast) + " ago");
+      errors.add("Last broadcast was " + TimerUtils.formatTimeDifference(timeSinceBroadcast) + " ago");
     }
     return errors;
   }

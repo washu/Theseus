@@ -331,7 +331,7 @@ public class RaftLifecycle {
     // 2. Bring readiness down and wait
     if (IS_READY.getAndSet(false)) {
       long msToWait = ((RaftLifecycle.STATUS_PERIOD_SEC + RaftLifecycle.STATUS_TIMEOUT_SEC) * 1000 * STATUS_FAILURE_THRESHOLD) + 2000;  // +2s for good measure
-      log.info(logServerNamePrefix()+"Waiting " + TimeUtils.formatTimeDifference(msToWait) + " before shutting down to let Kubernetes detect we're not READY...");
+      log.info(logServerNamePrefix()+"Waiting " + TimerUtils.formatTimeDifference(msToWait) + " before shutting down to let Kubernetes detect we're not READY...");
       Uninterruptably.sleep(msToWait);
     }
 

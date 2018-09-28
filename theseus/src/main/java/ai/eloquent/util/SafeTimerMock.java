@@ -267,7 +267,7 @@ public class SafeTimerMock implements SafeTimer {
               }
               // Log if the queue hasn't flushed in long enough [virtual time]
               if (now() > lastMessageTime + 60000) {
-                log.warn("[{}] Have not flushed transport after {}; scheduled={}", mockTime, TimeUtils.formatTimeDifference(now() - startTime), numTasksScheduled());
+                log.warn("[{}] Have not flushed transport after {}; scheduled={}", mockTime, TimerUtils.formatTimeDifference(now() - startTime), numTasksScheduled());
                 lastMessageTime = now();
               }
               // Exception if the queue doesn't flush in 5 [virtual] minutes seconds
@@ -290,7 +290,7 @@ public class SafeTimerMock implements SafeTimer {
     } catch (InterruptedException e) {
       throw new RuntimeException(e);
     }
-    log.info("[{}] Transport is flushed (scheduled={} real_flush_time={})", mockTime, numTasksScheduled(), TimeUtils.formatTimeDifference(now() - startTime));
+    log.info("[{}] Transport is flushed (scheduled={} real_flush_time={})", mockTime, numTasksScheduled(), TimerUtils.formatTimeDifference(now() - startTime));
   }
 
 

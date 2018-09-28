@@ -1,8 +1,5 @@
 package ai.eloquent.util;
 
-import ai.eloquent.util.RuntimeIOException;
-
-import com.google.common.io.ByteStreams;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -59,6 +56,20 @@ public class ZipUtils {
   }
 
 
+  /** Copy from an input stream to an output stream */
+  public static long copy(InputStream src, OutputStream sink) throws IOException {
+    byte[] buf = new byte[1024];
+    long total = 0L;
+    while(true) {
+      int count = src.read(buf);
+      if (count == -1) {
+        return total;
+      }
+      sink.write(buf, 0, count);
+      total += (long) count;
+    }
+  }
+
   /**
    * Unzip a byte stream.
    */
@@ -66,7 +77,7 @@ public class ZipUtils {
     try (ByteArrayInputStream in = new ByteArrayInputStream(zipped)) {
       try (GZIPInputStream stream = new GZIPInputStream(in)) {
         try (ByteArrayOutputStream out = new ByteArrayOutputStream(Math.max(32, stream.available()))) {
-          ByteStreams.copy(stream, out);
+          copy(stream, out);
           return out.toByteArray();
         }
       }

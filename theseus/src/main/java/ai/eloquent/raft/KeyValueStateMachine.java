@@ -5,7 +5,7 @@ import ai.eloquent.monitoring.Prometheus;
 import ai.eloquent.util.IdentityHashSet;
 import ai.eloquent.util.StackTrace;
 import ai.eloquent.util.SystemUtils;
-import ai.eloquent.util.TimeUtils;
+import ai.eloquent.util.TimerUtils;
 import com.google.protobuf.ByteString;
 import com.google.protobuf.InvalidProtocolBufferException;
 import org.slf4j.Logger;
@@ -459,7 +459,7 @@ public class KeyValueStateMachine extends RaftStateMachine {
 
     } finally {
       if (!this.values.isEmpty() && System.currentTimeMillis() - begin > 10) {
-        log.warn("Serialization of state machine took {}; {} entries and {} locks", TimeUtils.formatTimeSince(begin), this.values.size(), this.locks.size());
+        log.warn("Serialization of state machine took {}; {} entries and {} locks", TimerUtils.formatTimeSince(begin), this.values.size(), this.locks.size());
       }
     }
   }

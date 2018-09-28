@@ -270,7 +270,7 @@ public class EloquentRaftNode implements AutoCloseable {
     }
     if (alive) {
       if (Math.abs(transport.now() - lastHeartbeat) > algorithm.heartbeatMillis() * 2) {
-        errors.add("Last heartbeat was " + TimeUtils.formatTimeSince(lastHeartbeat) + " ago");
+        errors.add("Last heartbeat was " + TimerUtils.formatTimeSince(lastHeartbeat) + " ago");
       }
     }
     return errors;

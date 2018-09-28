@@ -1,4 +1,7 @@
 apply plugin: 'java'
+compileJava.options.encoding = "UTF-8"
+compileTestJava.options.encoding = "UTF-8"
+
 sourceSets {
   main {
     java {
@@ -55,34 +58,22 @@ repositories {
 dependencies {
   compile project(':public/common')
 
-
-  //
-  // MAVEN
-  //
-  
   // gRPC
-  compile (group: 'io.grpc', name: 'grpc-all', version: '1.12.0') {
-    exclude group: 'com.google.code.gson'
-    exclude group: 'com.fasterxml.jackson'
-  }
-
-  // SLF4j for a unified logging
-  compile group: 'org.slf4j', name: 'slf4j-api',      version: '1.7.13'
-  compile group: 'org.slf4j', name: 'jcl-over-slf4j', version: '1.7.13'
-  compile group: 'org.slf4j', name: 'slf4j-simple',   version: '1.7.25' // Temporary solution for testing
+  compile (group: 'io.grpc', name: 'grpc-core',     version: '1.15.0')
+  compile (group: 'io.grpc', name: 'grpc-stub',     version: '1.15.0')
+  compile (group: 'io.grpc', name: 'grpc-protobuf', version: '1.15.0')
+  compile (group: 'io.grpc', name: 'grpc-netty',    version: '1.15.0')
 
 
   //
-  // TEST LIBRARIES
+  // TEST DEPENDENCIES
   //
-  // There can be more of these than the main dependencies,
-  // since we only need them for testing
-  //
-
 
   // JUnit (for testing)
   testCompile group: 'junit', name: 'junit', version: '4.12'
-  // Guava (for utility functions)
-  compile group: 'com.google.guava', name: 'guava', version: '26.0-jre'
-  
+  // Google guava for some utils
+  testCompile 'com.google.guava:guava:26.0-jre'
+  // SLF4J Simple so we can actually log things
+  testCompile group: 'org.slf4j', name: 'slf4j-simple',      version: '1.7.13'
+
 }
