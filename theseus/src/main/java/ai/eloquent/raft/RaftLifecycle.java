@@ -258,8 +258,6 @@ public class RaftLifecycle {
   public final AtomicBoolean CORE_THREAD_POOLS_CLOSED = new AtomicBoolean(false);
 
 
-  /** The port we are serving health checks on. */
-  public static final int STATUS_PORT = 8042;
   /** The interval in which liveness and readiness checks are sent to our server. This must match deployment.yaml. */
   public static final int STATUS_PERIOD_SEC = 2;
   /** The number of readiness checks we have to fail for us to be considered dead by Kuberneters. This must match deployment.yaml. */
@@ -295,7 +293,6 @@ public class RaftLifecycle {
       global.shutdown(false);
 
       // N+1. Shutdown logging
-      log.info(global.logServerNamePrefix()+"Shutdown complete; setting /live to return 500");
       log.info(global.logServerNamePrefix()+"-----------------END SHUTDOWN " + SystemUtils.HOST + "--------------------");
       Uninterruptably.sleep(1000);  // sleep a while to give everyone a chance to flush if they haven't already
       log.info(global.logServerNamePrefix()+"Done with shutdown");
@@ -311,6 +308,7 @@ public class RaftLifecycle {
    *                          Otherwise, we wait for another live node to show up before shutting
    *                          down (the default).
    */
+  @SuppressWarnings("Duplicates")
   public void shutdown(boolean allowClusterDeath) {
     if (SHUTDOWN_BEGIN.getAndSet(true)) {
       // If we're already shutting down somewhere else, prevent a duplicate shutdown
@@ -417,6 +415,7 @@ public class RaftLifecycle {
     System.runFinalization();
   }
 
+
   /**
    * Shut down a thread pool collection.
    * This is a common method for stopping {@link #managedThreadPools} and
@@ -424,7 +423,7 @@ public class RaftLifecycle {
    *
    * @param pool The thread pool collection to stop.
    */
-  private void stopPool(Collection<ExecutorService> pool) {
+  protected void stopPool(Collection<ExecutorService> pool) {
     pool.stream().map((service) -> {
       service.shutdown();
       Thread awaitTermination = new Thread(() -> {

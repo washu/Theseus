@@ -608,7 +608,7 @@ public class SingleThreadedRaftAlgorithm implements RaftAlgorithm {
         // 4. Register the completion on the boundary pool
         result.whenComplete((E r, Throwable t2) -> {
           // note: this is likely running on the Raft control thread
-          if (Thread.currentThread().getId() != raftThread.getId()) {
+          if (t2 == null && Thread.currentThread().getId() != raftThread.getId()) {  // ok to fail on timer thread -- we defer to boundary thread below
             log.warn("Future of future's implementation should be completing on the Raft control thread; running on {} instead", Thread.currentThread().getId());
           }
           // 4.1. Cancel the timeout

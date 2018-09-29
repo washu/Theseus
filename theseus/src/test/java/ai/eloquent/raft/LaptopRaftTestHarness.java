@@ -189,7 +189,7 @@ public class LaptopRaftTestHarness {
 
     ExecutorService pool = Executors.newFixedThreadPool(4);
     RaftState state = new RaftState(hostname, new KeyValueStateMachine(hostname), pool);
-    RaftTransport transport = new NetRaftTransport(hostname, "laptop_test");
+    RaftTransport transport = new NetRaftTransport(hostname);
     RaftAlgorithm algorithm = new SingleThreadedRaftAlgorithm(new EloquentRaftAlgorithm(state, transport, Optional.empty()), pool);
     EloquentRaft raft = new EloquentRaft(algorithm, transport, lifecycle);
 

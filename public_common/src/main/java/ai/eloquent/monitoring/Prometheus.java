@@ -110,10 +110,52 @@ public class Prometheus {
       COUNTER_METHOD_BUILD = CounterClass.getMethod("build", String.class, String.class);
       COUNTERBUILDER_METHOD_REGISTER = CounterBuilderClass.getMethod("register");
     } catch (ClassNotFoundException e) {
-      log.info("Could not find Prometheus in your classpath -- not logging statistics");
+      log.info("Could not find Prometheus in your classpath -- not logging statistics", e);
     } catch (NoSuchMethodException e) {
-      log.info("Prometheus methods are not as expected (version mismatch?) -- not logging statistics");
+      log.warn("Prometheus methods are not as expected (version mismatch?) -- not logging statistics", e);
+      e.printStackTrace();
+
+      // Null out all the methods, in case we actually loaded a few
+
+      SUMMARY_METHOD_BUILD = null;
+      SUMMARY_METHOD_LABELS = null;
+      SUMMARY_METHOD_STARTTIMER = null;
+      SUMMARYCHILD_METHOD_STARTTIMER = null;
+      SUMMARYBUILDER_METHOD_LABELNAMES = null;
+      SUMMARYBUILDER_METHOD_REGISTER = null;
+      TIMER_METHOD_OBSERVE_DURATION = null;
+      TIMER_METHOD_LABELS = null;
+      GAUGE_METHOD_BUILD = null;
+      GAUGE_METHOD_GET = null;
+      GAUGE_METHOD_SET = null;
+      GAUGE_METHOD_INC = null;
+      GAUGE_METHOD_DEC = null;
+      GAUGEBUILDER_METHOD_REGISTER = null;
+      COUNTER_METHOD_INC = null;
+      COUNTER_METHOD_BUILD = null;
+      COUNTERBUILDER_METHOD_REGISTER = null;
     }
+
+    // TODO:zames remove the nulls below
+    // Null out all the methods in general, because things remain broken with all the reflection
+
+    SUMMARY_METHOD_BUILD = null;
+    SUMMARY_METHOD_LABELS = null;
+    SUMMARY_METHOD_STARTTIMER = null;
+    SUMMARYCHILD_METHOD_STARTTIMER = null;
+    SUMMARYBUILDER_METHOD_LABELNAMES = null;
+    SUMMARYBUILDER_METHOD_REGISTER = null;
+    TIMER_METHOD_OBSERVE_DURATION = null;
+    TIMER_METHOD_LABELS = null;
+    GAUGE_METHOD_BUILD = null;
+    GAUGE_METHOD_GET = null;
+    GAUGE_METHOD_SET = null;
+    GAUGE_METHOD_INC = null;
+    GAUGE_METHOD_DEC = null;
+    GAUGEBUILDER_METHOD_REGISTER = null;
+    COUNTER_METHOD_INC = null;
+    COUNTER_METHOD_BUILD = null;
+    COUNTERBUILDER_METHOD_REGISTER = null;
   }
 
 
@@ -128,6 +170,9 @@ public class Prometheus {
    * @return The Summary object
    */
   public static Object summaryBuild(String name, String help, String label) {
+    return new Object();
+    // TODO:zames uncomment once this is tested
+    /*
     if (SUMMARY_METHOD_BUILD == null || SUMMARYBUILDER_METHOD_LABELNAMES == null || SUMMARYBUILDER_METHOD_REGISTER == null) {
       return new SummaryMock(name);
     }
@@ -137,9 +182,10 @@ public class Prometheus {
       builder = SUMMARYBUILDER_METHOD_LABELNAMES.invoke(builder, labelVarargs); // Need to typecast label into an object array because method takes in varargs
       return SUMMARYBUILDER_METHOD_REGISTER.invoke(builder);
     } catch (IllegalAccessException | InvocationTargetException e) {
-      log.info("Prometheus methods could not be invoked (version mismatch?) -- not logging statistics");
-      return null;
+      log.warn("Prometheus methods could not be invoked (version mismatch?) -- not logging statistics", e);
+      return new SummaryMock(name);
     }
+    */
   }
 
 
@@ -153,6 +199,9 @@ public class Prometheus {
    * @return The Summary object
    */
   public static Object summaryBuild(String name, String help) {
+    return new Object();
+    // TODO:zames uncomment once this is tested
+    /*
     if (SUMMARY_METHOD_BUILD == null || SUMMARYBUILDER_METHOD_REGISTER == null) {
       return new SummaryMock(name);
     }
@@ -160,9 +209,10 @@ public class Prometheus {
       Object builder = SUMMARY_METHOD_BUILD.invoke(null, name, help);
       return SUMMARYBUILDER_METHOD_REGISTER.invoke(builder);
     } catch (IllegalAccessException | InvocationTargetException e) {
-      log.info("Prometheus methods could not be invoked (version mismatch?) -- not logging statistics");
-      return null;
+      log.warn("Prometheus methods could not be invoked (version mismatch?) -- not logging statistics", e);
+      return new SummaryMock(name);
     }
+    */
   }
 
 
@@ -175,6 +225,9 @@ public class Prometheus {
    * @return the Prometheus Timer object
    */
   public static Object labelAndStartTimer(Object summary, String label) {
+    return new Object();
+    // TODO:zames uncomment once this is tested
+    /*
     if (summary == null || SUMMARY_METHOD_LABELS == null || SUMMARYCHILD_METHOD_STARTTIMER == null) {
       TimerMock timerMock = new TimerMock();
       timerMocks.put(timerMock, System.nanoTime());
@@ -185,9 +238,10 @@ public class Prometheus {
       summary = SUMMARY_METHOD_LABELS.invoke(summary, labelVarargs);
       return SUMMARYCHILD_METHOD_STARTTIMER.invoke(summary);
     } catch (IllegalAccessException | InvocationTargetException e) {
-      log.info("Prometheus methods could not be invoked (version mismatch?) -- not logging statistics");
-      return null;
+      log.warn("Prometheus methods could not be invoked (version mismatch?) -- not logging statistics", e);
+      return new TimerMock();
     }
+    */
   }
 
 
@@ -200,6 +254,9 @@ public class Prometheus {
    * @return the Prometheus Timer object
    */
   public static Object startTimer(Object summary, String... labels) {
+    return new Object();
+    // TODO:zames uncomment once this is tested
+    /*
     if (summary == null || SUMMARY_METHOD_STARTTIMER == null) {
       TimerMock timerMock = new TimerMock();
       timerMocks.put(timerMock, System.nanoTime());
@@ -212,9 +269,10 @@ public class Prometheus {
       }
       return timer;
     } catch (IllegalAccessException | InvocationTargetException e) {
-      log.info("Prometheus methods could not be invoked (version mismatch?) -- not logging statistics");
-      return null;
+      log.warn("Prometheus methods could not be invoked (version mismatch?) -- not logging statistics", e);
+      return new TimerMock();
     }
+    */
   }
 
 
@@ -223,6 +281,9 @@ public class Prometheus {
    * @param timer The prometheus timer.
    */
   public static Double observeDuration(Object timer) {
+    return 0.;
+    // TODO:zames uncomment once this is tested
+    /*
     if (timer == null || TIMER_METHOD_OBSERVE_DURATION == null) {
       long startTime = timerMocks.get(timer);
       long timeNanoseconds = System.nanoTime() - startTime;
@@ -231,9 +292,10 @@ public class Prometheus {
     try {
       return (Double) TIMER_METHOD_OBSERVE_DURATION.invoke(timer);
     } catch (IllegalAccessException | InvocationTargetException e) {
-      log.info("Prometheus methods could not be invoked (version mismatch?) -- not logging statistics");
-      return null;
+      log.warn("Prometheus methods could not be invoked (version mismatch?) -- not logging statistics", e);
+      return 0.;
     }
+    */
   }
 
 
@@ -245,6 +307,9 @@ public class Prometheus {
    * @return The Gauge object, or a mock if necessary.
    */
   public static Object gaugeBuild(String name, String help) {
+    return new Object();
+    // TODO:zames uncomment once this is tested
+    /*
     if (GAUGE_METHOD_BUILD == null || GAUGEBUILDER_METHOD_REGISTER == null) {
       GaugeMock gaugeMock = new GaugeMock(name);
       gaugeMocks.put(gaugeMock, 0.0);
@@ -254,10 +319,11 @@ public class Prometheus {
         Object builder = GAUGE_METHOD_BUILD.invoke(null, name, help);
         return GAUGEBUILDER_METHOD_REGISTER.invoke(builder);
       } catch (IllegalAccessException | InvocationTargetException e) {
-        log.info("Prometheus methods could not be invoked (version mismatch?) -- not logging statistics");
-        return null;
+        log.warn("Prometheus methods could not be invoked (version mismatch?) -- not logging statistics", e);
+        return new GaugeMock(name);
       }
     }
+    */
   }
 
 
@@ -269,16 +335,20 @@ public class Prometheus {
    * @return The value of the Gauge as a Double
    */
   public static Double gaugeGet(Object gauge) {
+    return 0.;
+    // TODO:zames uncomment once this is tested
+    /*
     if (gauge == null || GAUGE_METHOD_GET == null) {
       return gaugeMocks.get(gauge);
     } else {
       try {
         return (Double) GAUGE_METHOD_GET.invoke(gauge);
       } catch (IllegalAccessException | InvocationTargetException e) {
-        log.info("Prometheus methods could not be invoked (version mismatch?) -- not logging statistics");
-        return null;
+        log.warn("Prometheus methods could not be invoked (version mismatch?) -- not logging statistics", e);
+        return 0.;
       }
     }
+    */
   }
 
 
@@ -286,45 +356,54 @@ public class Prometheus {
    * Sets the Prometheus Gauge to a given value, if possible.
    */
   public static void gaugeSet(Object gauge, double val) {
+    // TODO:zames uncomment once this is tested
+    /*
     if (gauge == null || GAUGE_METHOD_SET == null) {
       gaugeMocks.put(gauge, val);
     } else {
       try {
         GAUGE_METHOD_SET.invoke(gauge, val);
       } catch (IllegalAccessException | InvocationTargetException e) {
-        log.info("Prometheus methods could not be invoked (version mismatch?) -- not logging statistics");
+        log.warn("Prometheus methods could not be invoked (version mismatch?) -- not logging statistics", e);
       }
     }
+    */
   }
 
   /**
    * Increments the value in the Prometheus Gauge by 1, if possible.
    */
   public static void gaugeInc(Object gauge) {
+    // TODO:zames uncomment once this is tested
+    /*
     if (gauge == null || GAUGE_METHOD_INC == null) {
       gaugeMocks.put(gauge, gaugeMocks.get(gauge) + 1);
     } else {
       try {
         GAUGE_METHOD_INC.invoke(gauge);
       } catch (IllegalAccessException | InvocationTargetException e) {
-        log.info("Prometheus methods could not be invoked (version mismatch?) -- not logging statistics");
+        log.warn("Prometheus methods could not be invoked (version mismatch?) -- not logging statistics", e);
       }
     }
+    */
   }
 
   /**
    * Decrements the value in the Prometheus Gauge by 1, if possible.
    */
   public static void gaugeDec(Object gauge) {
+    // TODO:zames uncomment once this is tested
+    /*
     if (gauge == null || GAUGE_METHOD_DEC == null) {
       gaugeMocks.put(gauge, gaugeMocks.get(gauge) - 1);
     } else {
       try {
         GAUGE_METHOD_DEC.invoke(gauge);
       } catch (IllegalAccessException | InvocationTargetException e) {
-        log.info("Prometheus methods could not be invoked (version mismatch?) -- not logging statistics");
+        log.warn("Prometheus methods could not be invoked (version mismatch?) -- not logging statistics", e);
       }
     }
+    */
   }
 
 
@@ -337,6 +416,9 @@ public class Prometheus {
    * @return The Prometheus counter, or a mock if necessary.
    */
   public static Object counterBuild(String name, String help) {
+    return new Object();
+    // TODO:zames uncomment once this is tested
+    /*
     if (COUNTER_METHOD_BUILD == null || COUNTERBUILDER_METHOD_REGISTER == null) {
       CounterMock counterMock = new CounterMock(name);
       counterMocks.put(counterMock, 0.0);
@@ -346,25 +428,29 @@ public class Prometheus {
         Object builder = COUNTER_METHOD_BUILD.invoke(null, name, help);
         return COUNTERBUILDER_METHOD_REGISTER.invoke(builder);
       } catch (IllegalAccessException | InvocationTargetException e) {
-        log.info("Prometheus methods could not be invoked (version mismatch?) -- not logging statistics");
-        return null;
+        log.warn("Prometheus methods could not be invoked (version mismatch?) -- not logging statistics", e);
+        return new CounterMock(name);
       }
     }
+    */
   }
 
   /**
    * Increments the value in the Prometheus Counter by 1, if possible.
    */
   public static void counterInc(Object counter) {
+    // TODO:zames uncomment once this is tested
+    /*
     if (counter == null || COUNTER_METHOD_INC == null) {
       counterMocks.put(counter, counterMocks.get(counter) + 1);
     } else {
       try {
         COUNTER_METHOD_INC.invoke(counter);
       } catch (IllegalAccessException | InvocationTargetException e) {
-        log.info("Prometheus methods could not be invoked (version mismatch?) -- not logging statistics");
+        log.warn("Prometheus methods could not be invoked (version mismatch?) -- not logging statistics", e);
       }
     }
+    */
   }
 
 

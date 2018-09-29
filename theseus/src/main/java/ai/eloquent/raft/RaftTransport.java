@@ -271,17 +271,16 @@ public interface RaftTransport {
    * Create a new transport of the given type.
    *
    * @param serverName The name of us (our server)
-   * @param clusterName The name of the cluster the server is a part of.
    * @param type The type of transport to create.
    *
    * @return A transport of the given type.
    *
    * @throws IOException Thrown if we could not create the given transport.
    */
-  static RaftTransport create(String serverName, String clusterName, RaftTransport.Type type) throws IOException {
+  static RaftTransport create(String serverName, RaftTransport.Type type) throws IOException {
     switch (type) {
       case NET:
-        return new NetRaftTransport(serverName, clusterName);
+        return new NetRaftTransport(serverName);
       case LOCAL:
         return new LocalTransport(true, true);
       default:

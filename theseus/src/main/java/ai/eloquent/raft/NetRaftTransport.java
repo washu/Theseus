@@ -41,11 +41,6 @@ public class NetRaftTransport implements RaftTransport {
   public final String serverName;
 
   /**
-   * The name of the cluster we're joining.
-   */
-  public final String clusterName;
-
-  /**
    * If true, run the handling of messages on the transport in a new thread.
    */
   public final boolean thread;
@@ -71,22 +66,20 @@ public class NetRaftTransport implements RaftTransport {
    * Create a UDP transport.
    *
    * @param serverName The name of our server
-   * @param clusterName The name of the cluster we're attached to.
    * @param rpcListenPort The gRPC port to listen on.
    * @param async If true, run messages on the transport in separate threads.
    *
    * @throws UnknownHostException Thrown if we could not get our own hostname.
    */
-  public NetRaftTransport(String serverName, String clusterName, int rpcListenPort, boolean async) throws IOException {
+  public NetRaftTransport(String serverName, int rpcListenPort, boolean async) throws IOException {
     // Save some trivial variables
     this.serverName = serverName;
-    this.clusterName = clusterName;
     this.rpcListenPort = rpcListenPort;
     this.thread = async;
 
     // Assertions
     if (!serverName.matches("[12]?[0-9]?[0-9]\\.[12]?[0-9]?[0-9]\\.[12]?[0-9]?[0-9]\\.[12]?[0-9]?[0-9](_.*)?")) {
-      throw new IllegalArgumentException("Invalid server name. Server name must start with an IPv4 address, followed by an optional underscore and custom descriptor. For example, \"127.0.0.1_foobar\".");
+      throw new IllegalArgumentException("Invalid server name \""+serverName+"\". Server name must start with an IPv4 address, followed by an optional underscore and custom descriptor. For example, \"127.0.0.1_foobar\".");
     }
 
     // Start the Grpc Server
@@ -119,9 +112,9 @@ public class NetRaftTransport implements RaftTransport {
   }
 
 
-  /** @see #NetRaftTransport(String, String, int, boolean) */
-  public NetRaftTransport(String serverName, String clusterName) throws IOException {
-    this(serverName, clusterName, DEFAULT_RPC_LISTEN_PORT, false);
+  /** @see #NetRaftTransport(String, int, boolean) */
+  public NetRaftTransport(String serverName) throws IOException {
+    this(serverName, DEFAULT_RPC_LISTEN_PORT, false);
   }
 
 

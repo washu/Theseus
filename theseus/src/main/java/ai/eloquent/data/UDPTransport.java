@@ -667,7 +667,7 @@ public class UDPTransport implements Transport {
         }
         log.info("refreshed TCP socket for {}", addr);
       } catch (ExecutionException | InterruptedException | TimeoutException e) {
-        log.warn("Could not create TCP socket -- exception on future: ", e);
+        log.warn("Could not create TCP socket to {} -- exception on future: ", addr, e);
         return Optional.empty();
       } finally {
         if (tcpGetter.isAlive()) {  // kill the thread

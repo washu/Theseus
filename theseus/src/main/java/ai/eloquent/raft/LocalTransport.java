@@ -763,6 +763,14 @@ public class LocalTransport implements RaftTransport {
   }
 
 
+  /**
+   * Lift all of our network partitions.
+   */
+  public void liftPartitions() {
+    partitions.clear();
+  }
+
+
   /** {@inheritDoc} */
   @Override
   public long now() {

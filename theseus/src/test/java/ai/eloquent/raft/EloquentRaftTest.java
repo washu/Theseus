@@ -2,6 +2,7 @@ package ai.eloquent.raft;
 
 import ai.eloquent.raft.transport.WithLocalTransport;
 import ai.eloquent.test.SlowTests;
+import ai.eloquent.util.FunctionalUtils;
 import ai.eloquent.util.RunnableThrowsException;
 import ai.eloquent.util.TimerUtils;
 import ai.eloquent.util.Uninterruptably;
@@ -92,6 +93,7 @@ public class EloquentRaftTest extends WithLocalTransport {
         try {
           fn.accept(nodes);
         } finally {
+          transport.liftPartitions();
           Arrays.stream(nodes).forEach(node -> {
             if (node.node.algorithm instanceof SingleThreadedRaftAlgorithm) {
               ((SingleThreadedRaftAlgorithm) node.node.algorithm).flush(() -> {});
@@ -102,7 +104,11 @@ public class EloquentRaftTest extends WithLocalTransport {
         }
       // });
     } catch (Exception e) {
-      throw new RuntimeException(e);
+      if (e instanceof RuntimeException) {
+        throw (RuntimeException) e;
+      } else {
+        throw new RuntimeException(e);
+      }
     }
   }
 
@@ -144,7 +150,7 @@ public class EloquentRaftTest extends WithLocalTransport {
       transport.sleep(5100);
 
       // The lock should have been released
-      assertFalse(fourthAttempt.get().isHeld());
+      assertFalse(fourthAttempt.get().isCertainlyHeld());
 
       Optional<EloquentRaft.LongLivedLock> fifthAttempt = raft.tryLock("test", Duration.ofSeconds(5));
       assertTrue(fifthAttempt.isPresent());
@@ -209,6 +215,153 @@ public class EloquentRaftTest extends WithLocalTransport {
       }
     }, L, A);
 
+    transport.stop();
+  }
+
+
+  /**
+   * Test that we don't add duplicate lock release requests.
+   */
+  @Test
+  public void queueFailedLock() {
+    // 1. Set up variables
+    byte[] lock = KeyValueStateMachine.createReleaseLockTransition("lock", "requester", "hash");
+    byte[] differentHash = KeyValueStateMachine.createReleaseLockTransition("lock", "requester", "hash2");
+    byte[] differentRequester = KeyValueStateMachine.createReleaseLockTransition("lock", "requester2", "hash");
+    byte[] differentLock = KeyValueStateMachine.createReleaseLockTransition("lock2", "requester", "hash");
+    // 2. Tests
+    EloquentRaft L = new EloquentRaft("L", transport, new HashSet<>(Arrays.asList("L", "A")), RaftLifecycle.newBuilder().mockTime().build());
+    L.queueFailedLock(lock);
+    assertEquals(1, L.unreleasedLocks.size());
+    L.queueFailedLock(lock);
+    assertEquals("Should not add duplicate lock", 1, L.unreleasedLocks.size());
+    L.queueFailedLock(differentHash);
+    assertEquals("Should add lock with different hash", 2, L.unreleasedLocks.size());
+    L.queueFailedLock(differentRequester);
+    assertEquals("Should add lock with different requester", 3, L.unreleasedLocks.size());
+    L.queueFailedLock(differentLock);
+    assertEquals("Should add lock with different lock", 4, L.unreleasedLocks.size());
+  }
+
+
+  /**
+   * Test that we call the distributed lock failsafe, and that this failsafe doesn't interact
+   * poorly with regular Raft operations (e.g., blocks another thread on a lock).
+   */
+  @Test
+  public void distributedLockFailsafe() {
+    EloquentRaft L = new EloquentRaft("L", transport, new HashSet<>(Arrays.asList("L", "A")), RaftLifecycle.newBuilder().mockTime().build());
+    EloquentRaft A = new EloquentRaft("A", transport, new HashSet<>(Arrays.asList("L", "A")), RaftLifecycle.newBuilder().mockTime().build());
+    withNodes(transport, nodes -> {
+      log.info("-----------BEGIN TEST-------------");
+      // 1. Take the lock
+      assertEquals(Collections.emptyList(), L.unreleasedLocks);
+      EloquentRaft.LongLivedLock lock = L.tryLock("lock", Duration.ofMinutes(1)).orElseThrow(() -> new AssertionError("Could not take lock"));
+      assertTrue(lock.isCertainlyHeld());
+      assertTrue(lock.isPerhapsHeld());
+      // 2. Break consensus
+      transport.partitionOff(0, Long.MAX_VALUE, "A");
+      assertTrue(lock.isCertainlyHeld());
+      assertTrue(lock.isPerhapsHeld());
+      // 3. Release the lock
+      lock.release();
+      assertFalse(lock.isCertainlyHeld());
+      assertTrue("Lock should still be releasing at invocation -- we don't have consensus", lock.isPerhapsHeld());
+      // 4. Wait for lock to time out
+      transport.sleep(10000);
+      assertFalse(lock.isCertainlyHeld());
+      assertTrue("Lock should still be releasing after 10s -- we don't have consensus", lock.isPerhapsHeld());
+      // 5. Check that we registered the failsafe
+      for (int i = 0; i < 100 && L.unreleasedLocks.size() == 0; ++i) {
+        Uninterruptably.sleep(10);
+      }
+      assertEquals("We should have registered our lock as unreleased", 1, L.unreleasedLocks.size());
+      // 6. Lift the partition
+      transport.liftPartitions();
+      synchronized (L.unreleasedLocks) {
+        L.unreleasedLocks.notifyAll();
+      }
+      for (int i = 0; i < 100 && L.unreleasedLocks.size() > 0; ++i) {
+        Uninterruptably.sleep(10);
+      }
+      // 7. Check that the locks unlocked
+      assertEquals("We should clear out our unreleased lock", 0, L.unreleasedLocks.size());
+      assertFalse(lock.isCertainlyHeld());
+      assertFalse("Lock should no longer be held", lock.isPerhapsHeld());
+      log.info("-----------END TEST-------------");
+    }, L, A);
+    transport.stop();
+  }
+
+
+  /**
+   * Test that a distributed lock auto-releases itself after a given period of time, and that the
+   * timer cleans itself up when this happens.
+   */
+  @Test
+  public void distributedLockReleasesOnReleaseTimeout() {
+    EloquentRaft L = new EloquentRaft("L", transport, new HashSet<>(Arrays.asList("L", "A")), RaftLifecycle.newBuilder().mockTime().build());
+    EloquentRaft A = new EloquentRaft("A", transport, new HashSet<>(Arrays.asList("L", "A")), RaftLifecycle.newBuilder().mockTime().build());
+    withNodes(transport, nodes -> {
+      log.info("-----------BEGIN TEST-------------");
+      // 1. Take a lock and then partition off before releasing
+      assertEquals(Collections.emptyList(), L.unreleasedLocks);
+      L.withElementAsync("foo", x -> {
+        x[0] += 1;
+        return x;
+      }, () -> {
+        transport.partitionOff(0, Long.MAX_VALUE, "A");  // partition while lock is held
+        return new byte[0];
+      }, true);
+      // 2. Check that we registered the failsafe
+      for (int i = 0; i < 100 && L.unreleasedLocks.size() == 0; ++i) {
+        Uninterruptably.sleep(10);
+      }
+      assertEquals("We should have registered our lock as unreleased", 1, L.unreleasedLocks.size());
+      // 3. Check that we can't make progress
+      Boolean shouldFail = FunctionalUtils.ofThrowable(() -> L.withElementAsync("foo", x -> {
+        x[0] += 1;
+        return x;
+      }, () -> new byte[0], true).get(5, TimeUnit.SECONDS)).orElse(false);
+      assertFalse("Should not be able to make progress without unlocking stuck lock", shouldFail);
+      // 4. Lift the partition
+      transport.liftPartitions();
+      synchronized (L.unreleasedLocks) {
+        L.unreleasedLocks.notifyAll();
+      }
+      for (int i = 0; i < 100 && L.unreleasedLocks.size() > 0; ++i) {
+        Uninterruptably.sleep(10);
+      }
+      // 5. Check that the lock unlocked
+      // 5.1. ...In theory
+      assertEquals("We should clear out our unreleased lock", 0, L.unreleasedLocks.size());
+      // 5.2. ...In practice
+      Boolean result = L.withElementAsync("foo", x -> {
+        x[0] += 1;
+        transport.partitionOff(0, Long.MAX_VALUE, "A");  // partition while lock is held
+        return x;
+      }, () -> new byte[0], true).get(5, TimeUnit.SECONDS);
+      assertTrue("We should be able to complete withElement on the previously locked key", result);
+      log.info("-----------END TEST-------------");
+    }, L, A);
+    transport.stop();
+  }
+
+
+  /**
+   * Test that if a release fails on a {@link EloquentRaft.LongLivedLock}, we still queue it up for retrying.
+   */
+  @Test
+  public void longLivedLockReleaseFails() {
+    EloquentRaft L = new EloquentRaft("L", transport, new HashSet<>(Arrays.asList("L", "A")), RaftLifecycle.newBuilder().mockTime().build());
+    EloquentRaft A = new EloquentRaft("A", transport, new HashSet<>(Arrays.asList("L", "A")), RaftLifecycle.newBuilder().mockTime().build());
+    withNodes(transport, nodes -> {
+      Optional<EloquentRaft.LongLivedLock> lock = L.tryLock("lockName", Duration.ofSeconds(10));
+      assertTrue(lock.isPresent());
+      transport.sleep(Duration.ofSeconds(20).toMillis());
+      assertFalse("Lock should be unlocking", lock.get().isCertainlyHeld());
+      assertFalse("Lock should be unlocked", lock.get().isPerhapsHeld());
+    }, L, A);
     transport.stop();
   }
 
@@ -629,8 +782,13 @@ public class EloquentRaftTest extends WithLocalTransport {
 
       nodes[2].withElementAsync(KEY, (old) -> {
         while (true) {
-          Uninterruptably.sleep(1);
+          try {
+            Thread.sleep(1);
+          } catch (InterruptedException e) {
+            break;
+          }
         }
+        return null;
       }, () -> new byte[]{42}, true).get(5, TimeUnit.SECONDS);
 
       assertEquals(0, nodes[0].getLocks().size()); // We don't hold the lock
@@ -649,8 +807,13 @@ public class EloquentRaftTest extends WithLocalTransport {
 
       nodes[2].withElementAsync(KEY, (old) -> old, () -> {
         while (true) {
-          Uninterruptably.sleep(1);
+          try {
+            Thread.sleep(1);
+          } catch (InterruptedException e) {
+            break;
+          }
         }
+        return null;
       }, true).get(5, TimeUnit.SECONDS);
 
       assertEquals(0, nodes[0].getLocks().size()); // We don't hold the lock

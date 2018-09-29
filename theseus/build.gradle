@@ -116,7 +116,7 @@ repositories {
 }
 
 dependencies {
-  compile project(':public/common')
+  compile project(':public_common')
 
   // gRPC
   compile (group: 'io.grpc', name: 'grpc-core',     version: '1.15.0')

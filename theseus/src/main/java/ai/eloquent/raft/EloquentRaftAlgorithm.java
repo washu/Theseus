@@ -1021,8 +1021,7 @@ public class EloquentRaftAlgorithm implements RaftAlgorithm {
           return CompletableFuture.completedFuture(RaftMessage.newBuilder().setSender(state.serverName).setAddServerReply(AddServerReply
               .newBuilder()
               .setStatus(MembershipChangeStatus.NOT_LEADER)).build());
-        }
-        else {
+        } else {
           // Case: We're not the leader -- forward it to the leader
           log.trace("{} - got {}; forwarding request to {}", state.serverName, methodName, this.state.leader.orElse("<unknown>"));
           return transport.rpcTransportAsFuture(state.serverName, state.leader.orElse("<unknown>"), addServerRequest.toBuilder().addForwardedBy(state.serverName).build(), (result, exception) -> {

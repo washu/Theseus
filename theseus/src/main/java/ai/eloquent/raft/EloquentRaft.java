@@ -36,12 +36,6 @@ public class EloquentRaft {
    */
   private static final Logger log = LoggerFactory.getLogger(EloquentRaft.class);
 
-  /** The Raft cluster name */
-  public static final String clusterName =
-      (System.getenv("CHECKED_DEPLOY") != null || System.getenv("CI") != null)
-      ? "ci_raft_cluster"
-      : Optional.ofNullable(System.getenv("ELOQUENT_RAFT_CLUSTER")).orElse("eloquent");
-
 
   /**
    * This holds a lock that is expected to live longer than the duration of a single method call. Usually this lock is
@@ -50,37 +44,60 @@ public class EloquentRaft {
    * get released. Since locks auto-release when their owner disconnects from the cluster, this can safely be a part of
    * EloquentRaft, since as soon as EloquentRaft closes these locks no longer need cleaning up anyways.
    */
-  public interface LongLivedLock {
+  public interface LongLivedLock extends AutoCloseable {
     /**
      * Returns the name of the lock that is held.
      */
     String lockName();
     /**
-     * Returns true if the lock represented is still held.
+     * Returns true if the lock represented is still certainly held.
+     * If this is true, {@link #isPerhapsHeld()} is always true as well, but not
+     * visa versa.
      */
-    boolean isHeld();
+    boolean isCertainlyHeld();
+    /**
+     * Returns true if the lock represented has a chance of being held.
+     * This can be true even when {@link #isCertainlyHeld()} is false, in cases where we are in the process
+     * of releasing the lock.
+     * Note that unlike {@link #isCertainlyHeld()}, this may never revert to false in rare cases when we cannot talk
+     * to Raft effectively. Therefore, the caller should be wary of waiting on this function.
+     */
+    boolean isPerhapsHeld();
     /**
      * This releases a lock, and cleans up any resources waiting on it. Calling this more than once is a no-op.
      */
     CompletableFuture<Boolean> release();
+
+    /** {@inheritDoc} */
+    @Override
+    default void close() throws Exception {
+      release().get();
+    }
   }
+
 
   /**
    * The reason this is broken out from the interface is so that it is possible to mock LongLivedLock objects in the
    * RaftManagerMock.
    */
   private class LongLivedLockImpl implements LongLivedLock {
+    /** The name of the lock */
     public final String lockName;
+    /** A unique hash for this lock, to disambiguate this instance from other lock request instances of the same name. */
     public final String uniqueHash;
+    /** The window after which we should release the lock no matter what, as a last ditch on deadlocks. */
     public final Duration safetyReleaseWindow;
 
-    public boolean held;
+    /** If true, we currently hold this lock. This is an optimistic boolean -- we may no longer hold it technically. */
+    private boolean held = true;
+    /** If true, we want to hold this lock. If false, we are in the process of releasing it. */
+    private boolean wantToHold = true;
 
     public final SafeTimerTask cleanupTimerTask;
 
     /**
      * This creates a LongLivedLock object which will automatically clean itself up in the event of catastrophic
-     * failure. By creating this object, you are asserting
+     * failure.
      *
      * @param lockName the name of the lock
      * @param uniqueHash the unique hash of the lock, to prevent the same machine from getting the same lock multiple
@@ -92,11 +109,11 @@ public class EloquentRaft {
       this.lockName = lockName;
       this.uniqueHash = uniqueHash;
       this.safetyReleaseWindow = safetyReleaseWindow;
-      this.held = true;
 
       cleanupTimerTask = new LockCleanupTimerTask(this);
       node.transport.schedule(cleanupTimerTask, safetyReleaseWindow.toMillis());
     }
+
 
     /**
      * Returns the name of the lock that is held.
@@ -106,66 +123,118 @@ public class EloquentRaft {
       return this.lockName;
     }
 
-    /**
-     * Returns true if the lock represented is still held.
-     */
+
+    /** {@inheritDoc} */
     @Override
-    public boolean isHeld() {
-      return this.held;
+    public boolean isCertainlyHeld() {
+      return this.held && this.wantToHold;
     }
+
+
+    /** {@inheritDoc} */
+    @Override
+    public boolean isPerhapsHeld() {
+      if (!this.held) {
+        return false;
+      } else if (this.wantToHold) {
+        return true;
+      } else {
+        // This is the case where we may hold the lock, but don't want to.
+        // Let's check the state machine for our lock, though this is a bit slow
+        KeyValueStateMachine.QueueLock lock = stateMachine.locks.get(this.lockName);
+        if (lock == null || !lock.holder.isPresent()) {
+          // Case: there is no lock anymore
+          synchronized (this) {
+            this.held = false;
+          }
+        } else {
+          // Case: someone else holds the lock
+          KeyValueStateMachine.LockRequest holder = lock.holder.get();
+          synchronized (this) {
+            this.held = holder.server.equals(serverName) && holder.uniqueHash.equals(this.uniqueHash);
+          }
+        }
+        return this.held;
+      }
+    }
+
 
     /**
      * This releases a lock, and cleans up any resources waiting on it. Calling this more than once is a no-op.
      */
     @Override
     public synchronized CompletableFuture<Boolean> release() {
-      if (!held) return CompletableFuture.completedFuture(true);
+      if (!wantToHold) {
+        if (held) {
+          log.warn("Double-releasing a lock will have no effect. We see that this lock is currently perhaps held; the only recourse is to wait for the failsafe to release the lock.");
+        }
+        return CompletableFuture.completedFuture(!held);
+      }
+      this.wantToHold = false;
       cleanupTimerTask.cancel();
-      held = false;
-      return retryTransitionAsync(KeyValueStateMachine.createReleaseLockTransition(lockName, serverName, uniqueHash), Duration.ofMinutes(1));
+      byte[] transition = KeyValueStateMachine.createReleaseLockTransition(lockName, serverName, uniqueHash);
+      return node.submitTransition(transition)  // note[gabor]: don't retry; let the cleanup thread take care of it on
+                                                // its own time. This is to prevent cascading release lock requests
+                                                // queuing up.
+          .whenComplete((success, e) -> {  // note[gabor]: this is not exception-proof; `e` may not be null.
+            handleReleaseLockResult(success, e, transition);
+          });
     }
+
 
     /**
      * This is a safety check to ensure that if a lock gets GC'd, it also gets released
      */
+    @SuppressWarnings("deprecation")  // Note[gabor]: Yes, we're doing a bad thing, but it's better than the alternative...
     @Override
-    public void finalize() {
-      // Optimization: Don't take the synchronized block from within finalize unless we haven't released yet
-      if (held) {
-        synchronized (this) {
-          // Check again inside the synchronized block for if we've released yet
-          if (held) {
-            log.warn(serverName+" - LongLivedLock for \""+lockName+"\" is being cleaned up from finalize()! This is very bad!");
-            release();
+    protected void finalize() throws Throwable {
+      try {
+        super.finalize();
+      } finally {
+        // Optimization: Don't take the synchronized block from within finalize unless we haven't released yet
+        if (held) {
+          log.warn("{} - LongLivedLock for \"{}\" is being cleaned up from finalize()! This is very bad!", serverName, lockName);
+          synchronized (unreleasedLocks) {
+            queueFailedLock(KeyValueStateMachine.createReleaseLockTransition(lockName, serverName, uniqueHash));
+          }
+          synchronized (this) {
+            // Check again inside the synchronized block for if we've released yet
+            if (held) {
+              release();
+            }
           }
         }
       }
     }
   }
 
+
   /**
    * This is a little hack of a class to let up have a TimerTask that keeps a weak reference to our LongLivedLock, so
    * that we can rely on the GC as a line of defense despite having the TimerTask outstanding.
    */
   private static class LockCleanupTimerTask extends SafeTimerTask {
-    WeakReference<LongLivedLock> weakReference;
+    /** The weak reference to our lock */
+    WeakReference<LongLivedLock> weakLock;
 
     public LockCleanupTimerTask(LongLivedLock longLivedLock) {
-      weakReference = new WeakReference<>(longLivedLock);
+      weakLock = new WeakReference<>(longLivedLock);
     }
 
     @Override
     public void runUnsafe() {
-      final LongLivedLock lock = weakReference.get();
+      final LongLivedLock lock = weakLock.get();
       // This has already been GC'd, so it's no problem
-      if (lock == null) return;
+      if (lock == null) {
+        return;
+      }
       // Optimization: Don't take the synchronized block from within finalize unless we haven't released yet
-      if (lock.isHeld()) {
+      if (lock.isCertainlyHeld()) {
         //noinspection SynchronizationOnLocalVariableOrMethodParameter
         synchronized (lock) {
           // Check again inside the synchronized block for if we've released yet
-          if (lock.isHeld()) {
-            log.warn("LongLivedLock for \"" + lock.lockName() + "\" is being cleaned up from a TimerTask! This is very, very bad! It means we didn't release it, and finalize() never fired.");
+          if (lock.isCertainlyHeld()) {
+            log.warn("LongLivedLock for \"{}\" is being cleaned up from a TimerTask! This is very, very bad! It means we didn't release it, and finalize() never fired.", lock.lockName());
             lock.release();
           }
         }
@@ -200,7 +269,9 @@ public class EloquentRaft {
    * A set of release lock transitions that did not complete in their usual loop -- we should continue to
    * try to release these locks so long as we can, in hopes Raft comes back up sometime.
    */
-  private final List<byte[]> unreleasedLocks = new ArrayList<>();
+  // note[gabor]: Package protected to allow for fine-grained testing of the release locks thread
+  final List<byte[]> unreleasedLocks = new ArrayList<>();
+
 
   /**
    * If false, we have stopped this Raft.
@@ -211,6 +282,12 @@ public class EloquentRaft {
    * An executor pool for async tasks.
    */
   private final ExecutorService pool;
+
+  /**
+   * The default timeout for our calls. Large enough that we can weather an election timeout, but small
+   * enough that we we return a failure in a reasonable amount of time.
+   */
+  private final Duration defaultTimeout;
 
 
   /**
@@ -223,6 +300,9 @@ public class EloquentRaft {
    * @param lifecycle The governing RaftLifecycle for this EloquentRaft, so that we can pass mock ones in inside tests
    */
   public EloquentRaft(RaftAlgorithm algo, RaftTransport transport, RaftLifecycle lifecycle) {
+    //
+    // I. Set variables
+    //
     this.serverName = algo.serverName();
     this.node = new EloquentRaftNode(algo, transport, lifecycle);
     this.node.registerShutdownHook(() -> {
@@ -232,34 +312,54 @@ public class EloquentRaft {
         unreleasedLocks.notifyAll();
       }
     });
+    this.defaultTimeout = Duration.ofMillis(node.algorithm.electionTimeoutMillisRange().end * 2);
     this.stateMachine = (KeyValueStateMachine) algo.mutableStateMachine();
     this.lifecycle = lifecycle;
     this.pool = lifecycle.managedThreadPool("eloquent-raft-async", true);
 
-    // Create lock cleanup thread
+    //
+    // II. Create lock cleanup thread
+    //
     Thread lockCleanupThread = new Thread(() -> {
       while (alive) {
         try {
+          // 1. Wait on new unreleased locks
+          byte[][] unreleasedLocksCopy;
           synchronized (unreleasedLocks) {
             while (unreleasedLocks.isEmpty() && alive) {
               try {
-                unreleasedLocks.wait(1000);
-              } catch (InterruptedException ignored) {
+                unreleasedLocks.wait(node.algorithm.electionTimeoutMillisRange().end * 2);  // allow any outstanding election to finish
+              } catch (InterruptedException ignored) {}
+            }
+            unreleasedLocksCopy = unreleasedLocks.toArray(new byte[0][]);
+          }
+          if (unreleasedLocksCopy.length > 0 &&                      // note[gabor]: only run if we have something to run
+              (!alive || this.errors().isEmpty()) &&                 // note[gabor]: only run if we're error free (or shutting down). Otherwise this is a foolish attempt
+              this.node.algorithm.mutableState().leader.isPresent()  // note[gabor]: if we have no leader (we're in the middle of an election), we're just asking for pain/
+          ) {
+            // 2. Release the locks
+            log.warn("Trying to release {} unreleased locks", unreleasedLocksCopy.length);
+            byte[] bulkTransition = KeyValueStateMachine.createGroupedTransition(unreleasedLocksCopy);
+            Boolean success = node.submitTransition(bulkTransition)
+                .get(node.algorithm.electionTimeoutMillisRange().end + 100, TimeUnit.MILLISECONDS);
+            if (success != null && success) {
+              // 3.A. Success: stop trying locks
+              log.warn("Successfully released {} unreleased locks", unreleasedLocksCopy.length);
+              synchronized (unreleasedLocks) {
+                unreleasedLocks.removeAll(Arrays.asList(unreleasedLocksCopy));
               }
-            }
-            if (!unreleasedLocks.isEmpty()) {
-              log.warn("Trying to release {} unreleased locks", unreleasedLocks.size());
-            }
-            for (byte[] releaseLockRequest : new HashSet<>(unreleasedLocks)) {
-              try {
-                retryTransitionAsync(releaseLockRequest, Duration.ofSeconds(5))
-                    .get(node.algorithm.electionTimeoutMillisRange().end + 100, TimeUnit.MILLISECONDS);
-                unreleasedLocks.remove(releaseLockRequest);
-              } catch (InterruptedException | ExecutionException | TimeoutException ignored) {}
+            } else {
+              // 3.B. Failure: signal failure
+              log.warn("Could not release {} locks; retrying later.", unreleasedLocksCopy.length);
             }
           }
         } catch (Throwable t) {
-          log.warn("Caught an exception in the lockCleanupThread in EloquentRaft", t);
+          if (t instanceof TimeoutException ||
+              (t instanceof CompletionException && t.getCause() != null && t.getCause() instanceof TimeoutException)) {
+            log.info("Caught a timeout exception in the lockCleanupThread in EloquentRaft");
+          } else {
+            log.warn("Caught an exception in the lockCleanupThread in EloquentRaft", t);
+          }
         }
       }
     });
@@ -375,7 +475,6 @@ public class EloquentRaft {
   // With distributed locks
   //////////////////////////////////////////////////////////////////
 
-
   /** @see #withDistributedLockAsync(String, Supplier)
    *
    * This wraps a runnable with an instantly complete future.
@@ -408,15 +507,14 @@ public class EloquentRaft {
     final String randomHash = UUID.randomUUID().toString();
     byte[] releaseLockTransition = KeyValueStateMachine.createReleaseLockTransition(lockName, serverName, randomHash);
 
-    return retryTransitionAsync(KeyValueStateMachine.createRequestLockTransition(lockName, serverName, randomHash), Duration.ofSeconds(5)).thenCompose((success) -> {
+    return retryTransitionAsync(KeyValueStateMachine.createRequestLockTransition(lockName, serverName, randomHash), defaultTimeout).thenCompose((success) -> {
       // 2.a. If we fail to submit the transition to get the lock, it is possible that we failed while waiting for the
       // transition to commit, but the transition is still out there. To be totally correct, we need to release the lock
       // here in the rare event that the request lock transition is still around and eventually gets committed.
       if (!success) {
-        return retryTransitionAsync(releaseLockTransition, Duration.ofMinutes(5))
-            .handle((Boolean s,Throwable e) -> {
-              handleReleaseLockResult(s,e,releaseLockTransition);
-              return false;
+        return node.submitTransition(releaseLockTransition)  // note[gabor]: let failsafe retry -- same reasoning as above.
+            .whenComplete((s, e) -> {  // note[gabor]: this is not exception-proof; `e` may not be null.
+              handleReleaseLockResult(s, e, releaseLockTransition);
             });
       } else {
         // 2.b. Otherwise, wait on the lock
@@ -432,17 +530,17 @@ public class EloquentRaft {
           } else {
             return CompletableFuture.completedFuture(false);
           }
-        }).thenCompose((runSuccess) -> {
+        }).whenComplete((runSuccess, t) -> {
           // 4. Always release the lock
-          return retryTransitionAsync(releaseLockTransition, Duration.ofMinutes(5))
-              .handle((Boolean s,Throwable e) -> {
-                handleReleaseLockResult(s,e,releaseLockTransition);
-                return runSuccess;
+          node.submitTransition(releaseLockTransition)  // note[gabor]: let failsafe retry -- same reasoning as above.
+              .whenComplete((s, e) -> {  // note[gabor]: this is not exception-proof; `e` may not be null.
+                handleReleaseLockResult(s, e, releaseLockTransition);
               });
         });
       }
     });
   }
+
 
   //////////////////////////////////////////////////////////////////
   // Try locks
@@ -469,6 +567,7 @@ public class EloquentRaft {
     }
   }
 
+
   /**
    * This will try to acquire a lock. It will block for network IO, but will not block waiting for the lock if the lock
    * is not immediately acquired upon request. It returns a LongLivedLock object that is a reference to this lock, and
@@ -487,7 +586,7 @@ public class EloquentRaft {
     CompletableFuture<Optional<LongLivedLock>> future = new CompletableFuture<>();
 
     // 1. Create and submit the lock request
-    retryTransitionAsync(KeyValueStateMachine.createTryLockTransition(lockName, serverName, randomHash), Duration.ofSeconds(5)).thenAccept((success) -> {
+    retryTransitionAsync(KeyValueStateMachine.createTryLockTransition(lockName, serverName, randomHash), defaultTimeout).thenAccept((success) -> {
       try {
         // 2. If we got the lock, then return an object representing that
         if (stateMachine.locks.containsKey(lockName) && stateMachine.locks.get(lockName).holder.map(h -> h.server.equals(serverName) && h.uniqueHash.equals(randomHash)).orElse(false)) {
@@ -497,8 +596,12 @@ public class EloquentRaft {
         }
       } catch (Throwable t) {
         // If something goes wrong, ensure we try to release the lock
-        future.complete(Optional.empty());
-        retryTransitionAsync(KeyValueStateMachine.createReleaseLockTransition(lockName, serverName, randomHash), Duration.ofMinutes(1));  // ensure we release the lock at all costs
+        byte[] releaseLockTransition = KeyValueStateMachine.createReleaseLockTransition(lockName, serverName, randomHash);
+        node.submitTransition(releaseLockTransition)  // note[gabor]: let failsafe retry -- same reasoning as above.
+            .whenComplete((s, e) -> {  // note[gabor]: this is not exception-proof; `e` may not be null.
+              handleReleaseLockResult(s, e, releaseLockTransition);
+              future.complete(Optional.empty());  // wait for release to finish (or at least try to finish) to return
+            });
       }
     });
 
@@ -517,7 +620,7 @@ public class EloquentRaft {
     KeyValueStateMachine.QueueLock lock = stateMachine.locks.get(lockName);
     if (lock != null && lock.holder.isPresent()) {
       KeyValueStateMachine.LockRequest holder = lock.holder.get();
-      return retryTransitionAsync(KeyValueStateMachine.createReleaseLockTransition(lockName, holder.server, holder.uniqueHash), Duration.ofSeconds(5));
+      return retryTransitionAsync(KeyValueStateMachine.createReleaseLockTransition(lockName, holder.server, holder.uniqueHash), defaultTimeout);
     } else {
       return CompletableFuture.completedFuture(false);
     }
@@ -528,24 +631,51 @@ public class EloquentRaft {
   // With element calls
   //////////////////////////////////////////////////////////////////
 
+
+  /**
+   * Queue a failed lock release request.
+   * The main point of this function, rather than just calling {@linkplain ArrayList#add(Object) add()}
+   * on the underlying map, is to deduplicate lock release requests.
+   * If a request is already queued, we don't double-add it.
+   *
+   * @param releaseLockTransition The request to queue.
+   */
+  // note[gabor] package protected to allow fine-grained testing
+  void queueFailedLock(byte[] releaseLockTransition) {
+    synchronized (unreleasedLocks) {
+      if (unreleasedLocks.size() < (0x1<<20)) {  // 1M locks
+        log.warn("Could not release lock! Queueing for later deletion.");
+        boolean isDuplicate = false;
+        for (byte[] lock : unreleasedLocks) {
+          if (Arrays.equals(lock, releaseLockTransition)) {
+            isDuplicate = true;
+            break;
+          }
+        }
+        if (!isDuplicate) {
+          unreleasedLocks.add(releaseLockTransition);
+        }
+      } else {
+        log.error("Could not release a lock and did not queue it for later deletion (queue full)");
+      }
+    }
+  }
+
+
   /**
    * This is a little helper that's responsible for queueing up a release lock transition, if necessary
    */
   private void handleReleaseLockResult(Boolean success, Throwable error, byte[] releaseLockTransition) {
     if (error != null || success == null || !success) {  // note[gabor] pass the boolean as an object to prevent possible null pointer
-      if (error != null) {
-        log.warn("Release lock encountered an error: ", error);
+      if (error != null &&
+          !(error instanceof TimeoutException) &&
+          !(error instanceof CompletionException && error.getCause() != null && error.getCause() instanceof TimeoutException)) {
+        log.warn("Release lock encountered an unexpected error: ", error);
       }
-      synchronized (unreleasedLocks) {
-        if (unreleasedLocks.size() < 1000) {
-          log.warn("Could not release lock! Queueing for later deletion.");
-          unreleasedLocks.add(releaseLockTransition);
-        } else {
-          log.error("Could not release a lock and did not queue it for later deletion (queue full)");
-        }
-      }
+      queueFailedLock(releaseLockTransition);
     }
   }
+
 
   /**
    * This is the safest way to do a withElement() update. We take a global lock, and then manipulate the item, and set
@@ -569,33 +699,22 @@ public class EloquentRaft {
    * @return true on success, false if something went wrong
    */
   public CompletableFuture<Boolean> withElementAsync(String elementName, Function<byte[], byte[]> mutator, @Nullable Supplier<byte[]> createNew, boolean permanent) {
-    // 1. Create and submit the lock request
+    // 1. Create the lock request
     // 1.1. The lock request
     final String randomHash = UUID.randomUUID().toString();
     byte[] requestLockTransition = KeyValueStateMachine.createRequestLockTransition(elementName, serverName, randomHash);
     byte[] releaseLockTransition = KeyValueStateMachine.createReleaseLockTransition(elementName, serverName, randomHash);
     // 1.2. The lock release thunk
-    Supplier<CompletableFuture<Boolean>> releaseLockWithoutChange = () -> retryTransitionAsync(releaseLockTransition, Duration.ofMinutes(5))
-        .handle((Boolean s,Throwable e) -> {
-          handleReleaseLockResult(s,e,releaseLockTransition);
-          return false;
-        });
+    Supplier<CompletableFuture<Boolean>> releaseLockWithoutChange = () ->
+        node.submitTransition(releaseLockTransition)  // note[gabor]: let failsafe retry -- same reasoning as above.
+          .whenComplete((s, e) -> {  // note[gabor]: this is not exception-proof; `e` may not be null.
+            handleReleaseLockResult(s, e, releaseLockTransition);
+          });
 
-    // 2. Get the lock, handling exceptions appropriately
-    CompletableFuture<Boolean> exceptionProofFuture = new CompletableFuture<>();
-    retryTransitionAsync(requestLockTransition, Duration.ofSeconds(5))
-        .whenComplete((success, t) -> {
-          if (t == null) {
-            exceptionProofFuture.complete(success);
-          } else {
-            log.warn("Got an exception from transition retry: ", t);
-            exceptionProofFuture.complete(false);
-          }
-        });
+    // 2. Submit the lock request
+    return exceptionProof(retryTransitionAsync(requestLockTransition, defaultTimeout)).thenCompose((success) -> {
 
-    // 3. Handle the withElement
-    return exceptionProofFuture.thenCompose((success) -> {
-
+      // 3. Handle mutation now that lock is held
       // 3.a. If we fail to submit the transition to get the lock, it is possible that we failed while waiting for the
       // transition to commit, but the transition is still out there. To be totally correct, we need to release the lock
       // here in the rare event that the request lock transition is still around and eventually gets committed.
@@ -652,12 +771,13 @@ public class EloquentRaft {
                 if (newObject || (mutated != null && !Arrays.equals(object, mutated))) {  // only if there was a change, or if it's a new object
                   retryTransitionAsync(
                       KeyValueStateMachine.createGroupedTransition(createSetValueTransition(elementName, mutated, permanent), releaseLockTransition),
-                      Duration.ofSeconds(30)).whenComplete((result, exception) -> {
+                      defaultTimeout).whenComplete((result, exception) -> {
                     if (result == null || !result) {
                       log.warn("Could not apply transition and/or release object lock: ", exception);
                       releaseLockWithoutChange.get().thenAccept(future::complete);
+                    } else {
+                      future.complete(true); // SUCCESSFUL CASE
                     }
-                    else future.complete(true); // SUCCESSFUL CASE
                   });
                 } else {
                   // vi. If the mutator chose not to mutate the object, then this is trivially successful
@@ -733,7 +853,13 @@ public class EloquentRaft {
 
         // 4. Put the object back into the map
         if (newObject || (mutated != null && !Arrays.equals(object, mutated))) {  // only if there was a change, or if it's a new object
-          retryTransitionAsync(createSetValueTransition(elementName, mutated, permanent), Duration.ofMinutes(5)).thenApply(future::complete);
+          retryTransitionAsync(createSetValueTransition(elementName, mutated, permanent), defaultTimeout).whenComplete((success, t) -> {
+            if (t != null) {
+              future.completeExceptionally(t);
+            } else {
+              future.complete(success);
+            }
+          });
         } else {
           // If the mutator chose not to mutate the object, then this is trivially successful
           future.complete(true);
@@ -742,6 +868,7 @@ public class EloquentRaft {
 
       return future;
   }
+
 
   //////////////////////////////////////////////////////////////////
   // Set element calls
@@ -775,6 +902,7 @@ public class EloquentRaft {
     }
   }
 
+
   //////////////////////////////////////////////////////////////////
   // Remove element calls
   //////////////////////////////////////////////////////////////////
@@ -788,6 +916,7 @@ public class EloquentRaft {
     // Remove the object from the map
     return retryTransitionAsync(KeyValueStateMachine.createRemoveValueTransition(elementName), timeout);
   }
+
 
   /**
    * This removes a set of elements from the Raft key-value store. It's a no-op if the value isn't already in the database.
@@ -831,6 +960,7 @@ public class EloquentRaft {
     return stateMachine.map();
   }
 
+
   /**
    * This returns the current keys in the state machine. It's impossible to hold some sort of lock while fetching these,
    * so these will be an eventually-consistent set, not an immediately consistent set.
@@ -838,6 +968,7 @@ public class EloquentRaft {
   public Collection<String> getKeys() {
     return stateMachine.keys();
   }
+
 
   /**
    * Get the set of locks that are held by the state machine, and the server that holds them.
@@ -864,6 +995,7 @@ public class EloquentRaft {
   public synchronized void addChangeListener(KeyValueStateMachine.ChangeListener changeListener) {
     stateMachine.addChangeListener(changeListener);
   }
+
 
   /**
    * This removes a listener that will be called whenever the key-value store changes.
@@ -905,6 +1037,7 @@ public class EloquentRaft {
     }
   }
 
+
   /**
    * Remove an error listener from Raft.
    *
@@ -919,6 +1052,7 @@ public class EloquentRaft {
     }
   }
 
+
   /**
    * Remove all error listeners from Raft.
    */
@@ -930,6 +1064,7 @@ public class EloquentRaft {
       ((TrackedExecutorService) pool).clearErrorListeners();
     }
   }
+
 
   //////////////////////////////////////////////////////////////////
   // Private implementation details
@@ -954,6 +1089,7 @@ public class EloquentRaft {
     });
   }
 
+
   /**
    * This is a helper that takes a CompletableFuture<Boolean> and wraps it so that it cannot return an exception,
    * instead it just returns false.
@@ -963,17 +1099,22 @@ public class EloquentRaft {
    */
   private static CompletableFuture<Boolean> exceptionProof(CompletableFuture<Boolean> future) {
     CompletableFuture<Boolean> wrapper = new CompletableFuture<>();
-    future.whenComplete((success, throwable) -> {
-      if (throwable != null) {
-        log.warn("Caught an exception in an exception-proof future:", throwable);
+    future.whenComplete((success, t) -> {
+      if (t != null) {
+        if (t instanceof TimeoutException ||
+            (t instanceof CompletionException && t.getCause() != null && t.getCause() instanceof TimeoutException)) {
+          log.info("Caught a timeout exception exception proof wrapper");
+        } else {
+          log.warn("Caught an exception in exception proof wrapper", t);
+        }
         wrapper.complete(false);
-      }
-      else {
+      } else {
         wrapper.complete(success);
       }
     });
     return wrapper;
   }
+
 
   /**
    * This returns a CompletableFuture for retrying a transition up until the timeout is reached.
@@ -995,11 +1136,11 @@ public class EloquentRaft {
         // A. Case: the future was successful
         return CompletableFuture.completedFuture(true);
       } else {
-        log.warn("Retrying a failed transition - this is fine, but should be rare");
+        log.warn("Retrying a failed transition @ {} - this is fine, but should be rare", node.transport.now());
         // B. Case: the future failed
         // B.1. Get the remaining time on the timeout
         long elapsed = node.transport.now() - startTime;
-        long remainingTime = timeout.toMillis() - elapsed - 500;  // include the 500ms delay time before we try again
+        long remainingTime = timeout.toMillis() - elapsed;
         // B.2. Check if there's still time on the timeout, and we haven't shut down the node yet
         if (remainingTime < 0 || !node.isAlive()) {
           return CompletableFuture.completedFuture(false);
@@ -1011,11 +1152,12 @@ public class EloquentRaft {
                                   public void runUnsafe() {
                                     retryAsync(action, Duration.ofMillis(remainingTime)).thenApply(ret::complete);
                                   }
-                                }, 500); // Wait 500ms before trying again, to avoid flooding the system with too many requests
+                                }, node.algorithm.electionTimeoutMillisRange().begin / 5); // Wait a bit before trying again, to avoid flooding the system with too many requests
         return ret;
       }
     });
   }
+
 
   /**
    * If true, this node is the leader of the Raft cluster.
