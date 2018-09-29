@@ -45,28 +45,28 @@ public interface RaftAlgorithm {
 
     if (!messageProto.getAppendEntries().equals(AppendEntriesRequest.getDefaultInstance())) {
       // Append Entries
-      Object Timer_start = Prometheus.labelAndStartTimer(Summary_timing,"append_entries");
+      Object Timer_start = Prometheus.startTimer(Summary_timing,"append_entries");
       receiveAppendEntriesRPC(messageProto.getAppendEntries(), msg -> {
         Prometheus.observeDuration(Timer_start);
         replySender.accept(msg);
       }, now);
     } else if (!messageProto.getRequestVotes().equals(RequestVoteRequest.getDefaultInstance())) {
       // Request Votes
-      Object Timer_start = Prometheus.labelAndStartTimer(Summary_timing,"request_votes");
+      Object Timer_start = Prometheus.startTimer(Summary_timing,"request_votes");
       receiveRequestVoteRPC(messageProto.getRequestVotes(), msg -> {
         Prometheus.observeDuration(Timer_start);
         replySender.accept(msg);
       }, now);
     } else if (!messageProto.getInstallSnapshot().equals(InstallSnapshotRequest.getDefaultInstance())) {
       // Install Snapshot
-      Object Timer_start = Prometheus.labelAndStartTimer(Summary_timing,"install_snapshot");
+      Object Timer_start = Prometheus.startTimer(Summary_timing,"install_snapshot");
       receiveInstallSnapshotRPC(messageProto.getInstallSnapshot(), msg -> {
         Prometheus.observeDuration(Timer_start);
         replySender.accept(msg);
       }, now);
     } else if (!messageProto.getAppendEntriesReply().equals(AppendEntriesReply.getDefaultInstance())) {
       // REPLY Append Entries
-      Object Timer_start = Prometheus.labelAndStartTimer(Summary_timing,"append_entries_reply");
+      Object Timer_start = Prometheus.startTimer(Summary_timing,"append_entries_reply");
       try {
         receiveAppendEntriesReply(messageProto.getAppendEntriesReply(), now);
       } finally {
@@ -74,7 +74,7 @@ public interface RaftAlgorithm {
       }
     } else if (!messageProto.getRequestVotesReply().equals(RequestVoteReply.getDefaultInstance())) {
       // REPLY Request Votes
-      Object Timer_start = Prometheus.labelAndStartTimer(Summary_timing,"request_votes_reply");
+      Object Timer_start = Prometheus.startTimer(Summary_timing,"request_votes_reply");
       try {
         receiveRequestVotesReply(messageProto.getRequestVotesReply(), now);
       } finally {
@@ -82,7 +82,7 @@ public interface RaftAlgorithm {
       }
     } else if (!messageProto.getInstallSnapshotReply().equals(InstallSnapshotReply.getDefaultInstance())) {
       // REPLY Install Snapshot
-      Object Timer_start = Prometheus.labelAndStartTimer(Summary_timing,"installl_snapshot_reply");
+      Object Timer_start = Prometheus.startTimer(Summary_timing,"installl_snapshot_reply");
       try {
         receiveInstallSnapshotReply(messageProto.getInstallSnapshotReply(), now);
       } finally {
@@ -90,7 +90,7 @@ public interface RaftAlgorithm {
       }
     } else if (!messageProto.getAddServer().equals(AddServerRequest.getDefaultInstance())) {
       // Add Server
-      Object Timer_start = Prometheus.labelAndStartTimer(Summary_timing,"add_server");
+      Object Timer_start = Prometheus.startTimer(Summary_timing,"add_server");
       CompletableFuture<RaftMessage> future = receiveAddServerRPC(messageProto.getAddServer(), now);
       future.whenComplete( (reply, exception) -> {
         Prometheus.observeDuration(Timer_start);
@@ -102,7 +102,7 @@ public interface RaftAlgorithm {
       });
     } else if (!messageProto.getRemoveServer().equals(RemoveServerRequest.getDefaultInstance())) {
       // Remove Server
-      Object Timer_start = Prometheus.labelAndStartTimer(Summary_timing,"remove_server");
+      Object Timer_start = Prometheus.startTimer(Summary_timing,"remove_server");
       CompletableFuture<RaftMessage> future = receiveRemoveServerRPC(messageProto.getRemoveServer(), now);
       future.whenComplete( (reply, exception) -> {
         Prometheus.observeDuration(Timer_start);
@@ -114,7 +114,7 @@ public interface RaftAlgorithm {
       });
     } else if (!messageProto.getApplyTransition().equals(ApplyTransitionRequest.getDefaultInstance())) {
       // Apply Transition
-      Object Timer_start = Prometheus.labelAndStartTimer(Summary_timing,"apply_transition");
+      Object Timer_start = Prometheus.startTimer(Summary_timing,"apply_transition");
       CompletableFuture<RaftMessage> future = receiveApplyTransitionRPC(messageProto.getApplyTransition(), now);
       future.whenComplete( (reply, exception) -> {
         Prometheus.observeDuration(Timer_start);
@@ -146,30 +146,30 @@ public interface RaftAlgorithm {
     try {
       if (messageProto.getAppendEntries() != AppendEntriesRequest.getDefaultInstance()) {
         // Append Entries
-        Timer_start = Prometheus.labelAndStartTimer(Summary_timing, "append_entries_rpc");
+        Timer_start = Prometheus.startTimer(Summary_timing, "append_entries_rpc");
         receiveAppendEntriesRPC(messageProto.getAppendEntries(), future::complete, now);
       } else if (messageProto.getRequestVotes() != RequestVoteRequest.getDefaultInstance()) {
         // Request Votes
-        Timer_start = Prometheus.labelAndStartTimer(Summary_timing, "request_votes_rpc");
+        Timer_start = Prometheus.startTimer(Summary_timing, "request_votes_rpc");
         receiveRequestVoteRPC(messageProto.getRequestVotes(), future::complete, now);
       } else if (messageProto.getInstallSnapshot() != InstallSnapshotRequest.getDefaultInstance()) {
         // Install Snapshot
-        Timer_start = Prometheus.labelAndStartTimer(Summary_timing, "install_snapshop_rpc");
+        Timer_start = Prometheus.startTimer(Summary_timing, "install_snapshop_rpc");
         receiveInstallSnapshotRPC(messageProto.getInstallSnapshot(), future::complete, now);
       } else if (messageProto.getAddServer() != AddServerRequest.getDefaultInstance()) {
         // Add Server
-        Timer_start = Prometheus.labelAndStartTimer(Summary_timing, "add_server_rpc");
+        Timer_start = Prometheus.startTimer(Summary_timing, "add_server_rpc");
         future = receiveAddServerRPC(messageProto.getAddServer(), now);
       } else if (messageProto.getRemoveServer() != RemoveServerRequest.getDefaultInstance()) {
         // Remove Server
-        Timer_start = Prometheus.labelAndStartTimer(Summary_timing, "remove_server_rpc");
+        Timer_start = Prometheus.startTimer(Summary_timing, "remove_server_rpc");
         future = receiveRemoveServerRPC(messageProto.getRemoveServer(), now);
       } else if (messageProto.getApplyTransition() != ApplyTransitionRequest.getDefaultInstance()) {
         // Apply Transition
-        Timer_start = Prometheus.labelAndStartTimer(Summary_timing, "transition_rpc");
+        Timer_start = Prometheus.startTimer(Summary_timing, "transition_rpc");
         future = receiveApplyTransitionRPC(messageProto.getApplyTransition(), now);
       } else {
-        Timer_start = Prometheus.labelAndStartTimer(Summary_timing, "unknown_rpc");
+        Timer_start = Prometheus.startTimer(Summary_timing, "unknown_rpc");
         future.completeExceptionally(new IllegalStateException("Message type not implemented: " + messageProto));
       }
     } catch (Throwable t) {

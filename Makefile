@@ -8,7 +8,7 @@ OS_LOWER := $(shell uname -s | tr '[:upper:]' '[:lower:]')
 default: compile
 
 compile:
-	$(MAKE) -C common
+	$(MAKE) -C public_common
 	$(MAKE) -C theseus
 
 
@@ -16,7 +16,7 @@ compile:
 # Run the unit tests
 #
 check:
-	$(MAKE) -C common check
+	$(MAKE) -C public_common check
 	$(MAKE) -C theseus check
 
 
@@ -24,5 +24,5 @@ check:
 # Clean
 #
 clean:
-	$(MAKE) -C common clean
+	$(MAKE) -C public_common clean
 	$(MAKE) -C theseus clean

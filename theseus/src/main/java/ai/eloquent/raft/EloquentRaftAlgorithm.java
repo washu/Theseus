@@ -1352,7 +1352,7 @@ public class EloquentRaftAlgorithm implements RaftAlgorithm {
   public void heartbeat(long now) {
     assert drivingThreadId < 0 || drivingThreadId == Thread.currentThread().getId() : "Eloquent Raft Algorithm should only be run from the driving thread (" + drivingThreadId + ") but is being driven by " + Thread.currentThread();
     long begin = transport.now();
-    Object Timer_prometheusBegin = Prometheus.labelAndStartTimer(Summary_timing, "heartbeat");
+    Object Timer_prometheusBegin = Prometheus.startTimer(Summary_timing, "heartbeat");
     long sectionBegin;
     try {
       if (this.state.isLeader()) {
