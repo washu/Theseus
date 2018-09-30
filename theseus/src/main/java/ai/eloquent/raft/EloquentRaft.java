@@ -1,6 +1,7 @@
 package ai.eloquent.raft;
 
 import ai.eloquent.error.RaftErrorListener;
+import ai.eloquent.util.Lazy;
 import ai.eloquent.util.SafeTimerTask;
 import ai.eloquent.util.TimerUtils;
 import ai.eloquent.web.TrackedExecutorService;
@@ -8,7 +9,10 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import javax.annotation.Nullable;
+import java.io.IOException;
 import java.lang.ref.WeakReference;
+import java.net.InetAddress;
+import java.net.UnknownHostException;
 import java.time.Duration;
 import java.util.*;
 import java.util.concurrent.*;
@@ -413,6 +417,67 @@ public class EloquentRaft {
             lifecycle.managedThreadPool("raft-pubic", true)),
         transport, lifecycle);
   }
+
+
+  /**
+   * Create a Raft cluster with a fixed quorum.
+   *
+   * @param serverName The server name for this Raft node.
+   * @param quorum The fixed quorum for the cluster.
+   *               This is a set of server names
+   *
+   * @throws IOException Thrown if we could not create the underlying transport.
+   */
+  public EloquentRaft(String serverName, Set<String> quorum) throws IOException {
+    this(
+        serverName,
+        RaftTransport.create(serverName, RaftTransport.Type.NET),
+        quorum,
+        RaftLifecycle.global);
+  }
+
+
+  /**
+   * Create a new dynamically resizing Raft cluster, with the given number
+   * of nodes as the target quorum size. We will shrink the cluster if we have more
+   * than this number, and grow it if we have less.
+   *
+   * @param targetQuorumSize The target number of nodes in the
+   *                         quorum.
+   *
+   * @throws IOException Thrown if we could not create the underlying transport.
+   */
+  public EloquentRaft(int targetQuorumSize) throws IOException {
+    this(
+        defaultServerName.get(),
+        RaftTransport.create(defaultServerName.get(), RaftTransport.Type.NET),
+        targetQuorumSize,
+        RaftLifecycle.global);
+  }
+
+
+  /**
+   * The default name for this server, assuming only one Raft is running
+   * per box (i.e., IP address)
+   */
+  private static Lazy<String> defaultServerName = Lazy.of( () -> {
+    // 1. Get the server name
+    // 1.1. Get the host name, so that we're human readable
+    String serverNameBuilder;
+    try {
+      serverNameBuilder = InetAddress.getLocalHost().toString();
+    } catch (UnknownHostException e) {
+      log.warn("Could not get InetAddress.getLocalHost() in order to determine Theseus' hostname", e);
+      Optional<String> hostname = Optional.ofNullable(System.getenv("HOST"));
+      serverNameBuilder = hostname.orElseGet(() -> UUID.randomUUID().toString());
+    }
+    if (serverNameBuilder.contains("/")) {
+      serverNameBuilder = serverNameBuilder.substring(serverNameBuilder.indexOf('/') + 1);
+    }
+    // 1.1. Append a random ID to avoid conflicts
+    serverNameBuilder += "_" + System.currentTimeMillis();
+    return serverNameBuilder;
+  } );
 
 
   /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
