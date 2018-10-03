@@ -253,7 +253,6 @@ public class EloquentRaftTest extends WithLocalTransport {
     EloquentRaft L = new EloquentRaft("L", transport, new HashSet<>(Arrays.asList("L", "A")), RaftLifecycle.newBuilder().mockTime().build());
     EloquentRaft A = new EloquentRaft("A", transport, new HashSet<>(Arrays.asList("L", "A")), RaftLifecycle.newBuilder().mockTime().build());
     withNodes(transport, nodes -> {
-      log.info("-----------BEGIN TEST-------------");
       // 1. Take the lock
       assertEquals(Collections.emptyList(), L.unreleasedLocks);
       EloquentRaft.LongLivedLock lock = L.tryLock("lock", Duration.ofMinutes(1)).orElseThrow(() -> new AssertionError("Could not take lock"));
@@ -288,7 +287,6 @@ public class EloquentRaftTest extends WithLocalTransport {
       assertEquals("We should clear out our unreleased lock", 0, L.unreleasedLocks.size());
       assertFalse(lock.isCertainlyHeld());
       assertFalse("Lock should no longer be held", lock.isPerhapsHeld());
-      log.info("-----------END TEST-------------");
     }, L, A);
     transport.stop();
   }
@@ -303,7 +301,6 @@ public class EloquentRaftTest extends WithLocalTransport {
     EloquentRaft L = new EloquentRaft("L", transport, new HashSet<>(Arrays.asList("L", "A")), RaftLifecycle.newBuilder().mockTime().build());
     EloquentRaft A = new EloquentRaft("A", transport, new HashSet<>(Arrays.asList("L", "A")), RaftLifecycle.newBuilder().mockTime().build());
     withNodes(transport, nodes -> {
-      log.info("-----------BEGIN TEST-------------");
       // 1. Take a lock and then partition off before releasing
       assertEquals(Collections.emptyList(), L.unreleasedLocks);
       L.withElementAsync("foo", x -> {
@@ -315,7 +312,7 @@ public class EloquentRaftTest extends WithLocalTransport {
       }, true);
       // 2. Check that we registered the failsafe
       for (int i = 0; i < 100 && L.unreleasedLocks.size() == 0; ++i) {
-        Uninterruptably.sleep(10);
+        Uninterruptably.sleep(100);
       }
       assertEquals("We should have registered our lock as unreleased", 1, L.unreleasedLocks.size());
       // 3. Check that we can't make progress
@@ -330,7 +327,7 @@ public class EloquentRaftTest extends WithLocalTransport {
         L.unreleasedLocks.notifyAll();
       }
       for (int i = 0; i < 100 && L.unreleasedLocks.size() > 0; ++i) {
-        Uninterruptably.sleep(10);
+        Uninterruptably.sleep(100);
       }
       // 5. Check that the lock unlocked
       // 5.1. ...In theory
@@ -342,7 +339,6 @@ public class EloquentRaftTest extends WithLocalTransport {
         return x;
       }, () -> new byte[0], true).get(5, TimeUnit.SECONDS);
       assertTrue("We should be able to complete withElement on the previously locked key", result);
-      log.info("-----------END TEST-------------");
     }, L, A);
     transport.stop();
   }
