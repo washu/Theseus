@@ -10,6 +10,13 @@ import java.util.Arrays;
 import java.util.HashMap;
 import java.util.Objects;
 
+/**
+ * A facade for handling calls to Prometheus
+ * When Prometheus is not found in the classpath, or a different version is found, we revert to a mocked version of Prometheus
+ *
+ * We enforce that 2 metrics with the same name refer to the same metric.
+ * Author: zameschua
+ */
 public class Prometheus {
 
   /**
@@ -24,14 +31,17 @@ public class Prometheus {
   private Prometheus() {
   }
 
-  /** Mocked gauges, in case we don't have Prometheus in our classpath */
-  private static final HashMap<Object, Double> gaugeMocks = new HashMap<>();
+  /** A flag to indicate if we are using prometheus or mocking it */
+  private static boolean havePrometheus = false;
 
-  /** Mocked timers, in case we don't have Prometheus in our classpath */
-  private static final HashMap<Object, Long> timerMocks = new HashMap<>();
+  /** Mocked gauges, in case we don't have Prometheus in our classpath */
+  private static final HashMap<String, Object> summaries = new HashMap<>();
+
+  /** Mocked gauges, in case we don't have Prometheus in our classpath */
+  private static final HashMap<String, Object> gauges = new HashMap<>();
 
   /** Mocked counters, in case we don't have Prometheus in our classpath */
-  private static final HashMap<Object, Double> counterMocks = new HashMap<>();
+  private static final HashMap<String, Object> counters = new HashMap<>();
 
   @Nullable
   private static Method SUMMARY_METHOD_BUILD;
@@ -103,6 +113,7 @@ public class Prometheus {
       COUNTER_METHOD_INC = CounterClass.getMethod("inc");
       COUNTER_METHOD_BUILD = CounterClass.getMethod("build", String.class, String.class);
       COUNTERBUILDER_METHOD_REGISTER = CounterBuilderClass.getMethod("register");
+      havePrometheus = true;
     } catch (ClassNotFoundException e) {
       log.info("Could not find Prometheus in your classpath -- not logging statistics", e);
     } catch (NoSuchMethodException e) {
@@ -130,25 +141,14 @@ public class Prometheus {
   /**
    * Clear all of our mock metrics
    */
-  static void resetMockMetrics() {
-    gaugeMocks.clear();
-    timerMocks.clear();
-    counterMocks.clear();
+  static void resetMetrics() {
+    summaries.clear();
+    gauges.clear();
+    counters.clear();
   }
 
-
   /**
-   * If true, we have a working Prometheus instance in our classpath.
-   * Otherwise, we are using a mocked version.
-   */
-  public static boolean havePrometheus() {
-    return SUMMARY_METHOD_BUILD != null;
-  }
-
-
-  /**
-   * Overloaded method
-   * Builds a new Prometheus Summary, if possible.
+   * Builds and returns a new Prometheus Summary object, if possible.
    *
    * @param name The name of the metric
    * @param help The help string of the metric
@@ -157,24 +157,50 @@ public class Prometheus {
    * @return The Summary object
    */
   public static Object summaryBuild(String name, String help, String... labels) {
-    if (SUMMARY_METHOD_BUILD == null || SUMMARYBUILDER_METHOD_LABELNAMES == null || SUMMARYBUILDER_METHOD_REGISTER == null) {
-      return new SummaryMock(name, labels);
-    }
-    try {
-      Object builder = SUMMARY_METHOD_BUILD.invoke(null, name, help);
-      builder = SUMMARYBUILDER_METHOD_LABELNAMES.invoke(builder, new Object[]{labels});
-      return SUMMARYBUILDER_METHOD_REGISTER.invoke(builder);
-    } catch (InvocationTargetException e) {
-      if (e.getCause() != null && e.getCause() instanceof RuntimeException) {
-        throw (RuntimeException) e.getCause();
-      } else {
-        log.warn("Invocation target exception", e);
-        return new SummaryMock(name, labels);
+    Object result;
+    if (havePrometheus && name != null) {
+      try {
+
+        // 1a: Using Prometheus and summary does not exist yet
+        if (!summaries.containsKey(name)) {
+          Object builder = SUMMARY_METHOD_BUILD.invoke(null, name, help);
+          builder = SUMMARYBUILDER_METHOD_LABELNAMES.invoke(builder, new Object[]{labels});
+          result = SUMMARYBUILDER_METHOD_REGISTER.invoke(builder);
+          summaries.put(name, result);
+
+        // 1b: Using Prometheus and summary already exists
+        } else {
+          result = summaries.get(name);
+        }
+
+      } catch (InvocationTargetException e) {
+        if (e.getCause() != null && e.getCause() instanceof RuntimeException) {
+          throw (RuntimeException) e.getCause();
+        } else {
+          log.warn("Invocation target exception", e);
+          return new SummaryMock(name, labels);
+        }
+      } catch (IllegalAccessException e) {
+        log.warn("Prometheus methods could not be invoked (version mismatch?) -- not logging statistics", e);
+        result = new SummaryMock(name, labels);
       }
-    } catch (IllegalArgumentException | IllegalAccessException e) {
-      log.warn("Prometheus methods could not be invoked (version mismatch?) -- not logging statistics", e);
-      return new SummaryMock(name, labels);
+    } else {
+      // 2a. Guard against null name
+      if (name == null) {
+        log.warn("Trying to build a Summary with null name");
+        result = new SummaryMock(name, labels);
+      // 2b. If we are mocking Prometheus and the Summary does not exist yet
+      } else if (!summaries.containsKey(name) && name != null) {
+        result = new SummaryMock(name, labels);
+        summaries.put(name, result);
+
+      // 2c: If we are mocking Prometheus and the Summary already exists
+      } else {
+        log.warn("Trying to build a Summary with duplicate names: ", name);
+        result = summaries.get(name);
+      }
     }
+    return result;
   }
 
 
@@ -187,39 +213,41 @@ public class Prometheus {
    * @return the Prometheus Timer object
    */
   public static Object startTimer(@Nullable Object summary, String... labels) {
-    if (summary == null || SUMMARY_METHOD_STARTTIMER == null || SUMMARY_METHOD_LABELS == null) {
-      TimerMock timerMock;
+    Object timerMetric;
+    if (havePrometheus && summary != null) {
+      try {
+        Object timer = null;
+        Object withLabels = SUMMARY_METHOD_LABELS.invoke(summary, new Object[]{ labels });
+        if (withLabels != null) {
+          timer = SUMMARY_METHOD_STARTTIMER.invoke(withLabels);
+        }
+        return timer;
+      } catch (InvocationTargetException e) {
+        if (e.getCause() != null && e.getCause() instanceof RuntimeException) {
+          throw (RuntimeException) e.getCause();
+        } else {
+          log.warn("Invocation target exception", e);
+          timerMetric = new TimerMock(null, labels);
+        }
+      } catch (IllegalArgumentException | IllegalAccessException e) {
+        log.warn("Prometheus methods could not be invoked (version mismatch?) -- not logging statistics", e);
+        e.printStackTrace();
+        //noinspection ConstantConditions
+        timerMetric = new TimerMock(null, labels);
+      }
+    } else {
+      // If we are mocking Prometheus
       if (summary != null && !(summary instanceof SummaryMock)) {
         log.error("Starting a timer on something other than a SummaryMock: {}", summary.getClass());
         //noinspection ConstantConditions
-        timerMock = new TimerMock(null, labels);
+        timerMetric = new TimerMock(null, labels);
+      // If we are mocking Prometheus and calling startTimer on something other than a SummaryMock
       } else {
         //noinspection ConstantConditions
-        timerMock = new TimerMock((SummaryMock) summary, labels);
+        timerMetric = new TimerMock((SummaryMock) summary, labels);
       }
-      timerMocks.put(timerMock, System.nanoTime());
-      return timerMock;
     }
-    try {
-      Object timer = null;
-      Object withLabels = SUMMARY_METHOD_LABELS.invoke(summary, new Object[]{ labels });
-      if (withLabels != null) {
-        timer = SUMMARY_METHOD_STARTTIMER.invoke(withLabels);
-      }
-      return timer;
-    } catch (InvocationTargetException e) {
-      if (e.getCause() != null && e.getCause() instanceof RuntimeException) {
-        throw (RuntimeException) e.getCause();
-      } else {
-        log.warn("Invocation target exception", e);
-        return new TimerMock(null, labels);
-      }
-    } catch (IllegalArgumentException | IllegalAccessException e) {
-      log.warn("Prometheus methods could not be invoked (version mismatch?) -- not logging statistics", e);
-      e.printStackTrace();
-      //noinspection ConstantConditions
-      return new TimerMock(null, labels);
-    }
+    return timerMetric;
   }
 
 
@@ -228,17 +256,11 @@ public class Prometheus {
    * @param timer The prometheus timer.
    */
   public static double observeDuration(@Nullable Object timer) {
-    if (timer == null) {
-      return 0.0;
-    } else if (TIMER_METHOD_OBSERVE_DURATION == null) {
-      long startTime = timerMocks.get(timer);
-      long timeNanoseconds = System.nanoTime() - startTime;
-      return (double) timeNanoseconds / 1000000000.0;
-    } else {
+    if (havePrometheus && timer != null) {
       try {
         Double rtn = (Double) TIMER_METHOD_OBSERVE_DURATION.invoke(timer);
         if (rtn == null) {
-          return 0.0;
+          return 0.;
         } else {
           return rtn;
         }
@@ -249,10 +271,20 @@ public class Prometheus {
           log.warn("Invocation target exception", e);
           return 0.;
         }
-      } catch (IllegalArgumentException | IllegalAccessException e) {
+      } catch (IllegalAccessException e) {
         log.warn("Prometheus methods could not be invoked (version mismatch?) -- not logging statistics", e);
         return 0.;
+      } catch (IllegalArgumentException e) {
+        log.warn("Invalid parameter supplied: {}, should be of Prometheus.Summary.Timer or TimerMock class", timer.getClass());
+        return 0.;
       }
+    // If we are mocking Prometheus
+    } else if (timer instanceof TimerMock) {
+      return ((TimerMock)timer).observeDuration();
+    // Fallback case where we are not sure what went wrong
+    } else {
+      log.warn("Something probably went wrong in Prometheus#observeDuration: Expected Timer or TimerMock but received {}", timer == null ? "null" : timer.getClass());
+      return 0.;
     }
   }
 
@@ -266,26 +298,39 @@ public class Prometheus {
    * @return The Gauge object, or a mock if necessary.
    */
   public static Object gaugeBuild(String name, String help) {
-    if (GAUGE_METHOD_BUILD == null || GAUGEBUILDER_METHOD_REGISTER == null) {
-      GaugeMock gaugeMock = new GaugeMock(name);
-      gaugeMocks.put(gaugeMock, 0.0);
-      return gaugeMock;
-    } else {
+    Object result;
+    if (havePrometheus) {
       try {
-        Object builder = GAUGE_METHOD_BUILD.invoke(null, name, help);
-        return GAUGEBUILDER_METHOD_REGISTER.invoke(builder);
+        // 1a. Using Prometheus and we already have a Gauge with this name yet
+        if (gauges.containsKey(name)) {
+          result = gauges.get(name);
+        // 1b. Using Prometheus and don't have a Gauge with this name yet
+        } else {
+          Object builder = GAUGE_METHOD_BUILD.invoke(null, name, help);
+          result = GAUGEBUILDER_METHOD_REGISTER.invoke(builder);
+        }
       } catch (InvocationTargetException e) {
         if (e.getCause() != null && e.getCause() instanceof RuntimeException) {
           throw (RuntimeException) e.getCause();
         } else {
           log.warn("Invocation target exception", e);
-          return new GaugeMock(name);
+          result = new GaugeMock(name);
         }
       } catch (IllegalArgumentException | IllegalAccessException e) {
         log.warn("Prometheus methods could not be invoked (version mismatch?) -- not logging statistics", e);
-        return new GaugeMock(name);
+        result = new GaugeMock(name);
+      }
+    } else {
+      // 2a. We are mocking Prometheus and we already have a Gauge with this name
+      if (gauges.containsKey(name)) {
+        result = gauges.get(name);
+      // 2b. We are mocking Prometheus and we don't have a Guage with this name yet
+      } else {
+        result = new GaugeMock(name);
       }
     }
+    gauges.put(name, result);
+    return result;
   }
 
 
@@ -297,9 +342,7 @@ public class Prometheus {
    * @return The value of the Gauge as a Double
    */
   public static double gaugeGet(Object gauge) {
-    if (gauge == null || GAUGE_METHOD_GET == null) {
-      return gaugeMocks.getOrDefault(gauge, 0.0);
-    } else {
+    if (havePrometheus && gauge != null) {
       try {
         Double rtn = (Double) GAUGE_METHOD_GET.invoke(gauge);
         if (rtn == null) {
@@ -318,6 +361,12 @@ public class Prometheus {
         log.warn("Prometheus methods could not be invoked (version mismatch?) -- not logging statistics", e);
         return 0.;
       }
+    // If we are mocking Prometheus
+    } else if (gauge instanceof GaugeMock) {
+      return ((GaugeMock) gauge).get();
+    } else {
+      log.warn("Something probably went wrong in Prometheus#gaugeGet: Expected Gauge or GaugeMock but received {}", gauge == null ? "null" : gauge.getClass());
+      return 0.;
     }
   }
 
@@ -326,9 +375,7 @@ public class Prometheus {
    * Sets the Prometheus Gauge to a given value, if possible.
    */
   public static void gaugeSet(Object gauge, double val) {
-    if (gauge == null || GAUGE_METHOD_SET == null) {
-      gaugeMocks.put(gauge, val);
-    } else {
+    if (havePrometheus && gauge != null) {
       try {
         GAUGE_METHOD_SET.invoke(gauge, val);
       } catch (InvocationTargetException e) {
@@ -340,6 +387,11 @@ public class Prometheus {
       } catch (IllegalArgumentException | IllegalAccessException e) {
         log.warn("Prometheus methods could not be invoked (version mismatch?) -- not logging statistics", e);
       }
+    // If we are mocking Prometheus
+    } else if (gauge instanceof GaugeMock) {
+      ((GaugeMock) gauge).set(val);
+    } else {
+      log.warn("Something probably went wrong in Prometheus#gaugeSet: Expected Gauge or GaugeMock but received {}", gauge == null ? "null" : gauge.getClass());
     }
   }
 
@@ -348,9 +400,7 @@ public class Prometheus {
    * Increments the value in the Prometheus Gauge by 1, if possible.
    */
   public static void gaugeInc(Object gauge) {
-    if (gauge == null || GAUGE_METHOD_INC == null) {
-      gaugeMocks.put(gauge, gaugeMocks.getOrDefault(gauge, 0.0) + 1);
-    } else {
+    if (havePrometheus && gauge != null) {
       try {
         GAUGE_METHOD_INC.invoke(gauge);
       } catch (InvocationTargetException e) {
@@ -362,6 +412,11 @@ public class Prometheus {
       } catch (IllegalArgumentException | IllegalAccessException e) {
         log.warn("Prometheus methods could not be invoked (version mismatch?) -- not logging statistics", e);
       }
+    // We are mocking Prometheus
+    } else if (gauge instanceof GaugeMock){
+      ((GaugeMock) gauge).inc();
+    } else {
+      log.warn("Something probably went wrong in Prometheus#gaugeInc: Expected Gauge or GaugeMock but received {}", gauge == null ? "null" : gauge.getClass());
     }
   }
 
@@ -370,9 +425,7 @@ public class Prometheus {
    * Decrements the value in the Prometheus Gauge by 1, if possible.
    */
   public static void gaugeDec(Object gauge) {
-    if (gauge == null || GAUGE_METHOD_DEC == null) {
-      gaugeMocks.put(gauge, gaugeMocks.getOrDefault(gauge, 0.0) - 1);
-    } else {
+    if (havePrometheus && gauge != null) {
       try {
         GAUGE_METHOD_DEC.invoke(gauge);
       } catch (InvocationTargetException e) {
@@ -384,6 +437,11 @@ public class Prometheus {
       } catch (IllegalArgumentException | IllegalAccessException e) {
         log.warn("Prometheus methods could not be invoked (version mismatch?) -- not logging statistics", e);
       }
+    // We are mocking Prometheus
+    } else if (gauge instanceof GaugeMock) {
+      ((GaugeMock) gauge).dec();
+    } else {
+      log.warn("Something probably went wrong in Prometheus#gaugeDec: Expected Gauge or GaugeMock but received {}", gauge == null ? "null" : gauge.getClass());
     }
   }
 
@@ -396,36 +454,37 @@ public class Prometheus {
    * @return The Prometheus counter, or a mock if necessary.
    */
   public static Object counterBuild(String name, String help) {
-    if (COUNTER_METHOD_BUILD == null || COUNTERBUILDER_METHOD_REGISTER == null) {
-      CounterMock counterMock = new CounterMock(name);
-      counterMocks.put(counterMock, 0.0);
-      return counterMock;
-    } else {
+    Object result;
+    if (havePrometheus) {
       try {
         Object builder = COUNTER_METHOD_BUILD.invoke(null, name, help);
-        return COUNTERBUILDER_METHOD_REGISTER.invoke(builder);
+        result =  COUNTERBUILDER_METHOD_REGISTER.invoke(builder);
       } catch (InvocationTargetException e) {
         if (e.getCause() != null && e.getCause() instanceof RuntimeException) {
           throw (RuntimeException) e.getCause();
         } else {
           log.warn("Invocation target exception", e);
-          return new CounterMock(name);
+          result =  new CounterMock(name);
         }
       } catch (IllegalArgumentException | IllegalAccessException e) {
         log.warn("Prometheus methods could not be invoked (version mismatch?) -- not logging statistics", e);
-        return new CounterMock(name);
+        result =  new CounterMock(name);
       }
+    // If we are mocking Prometheus
+    } else {
+      result = new CounterMock(name);
     }
+    counters.put(name, result);
+    return result;
   }
 
 
   /**
    * Increments the value in the Prometheus Counter by 1, if possible.
+   * We never do any other operations to Counter except increment it (for now)
    */
   public static void counterInc(Object counter) {
-    if (counter == null || COUNTER_METHOD_INC == null) {
-      counterMocks.put(counter, counterMocks.getOrDefault(counter, 0.0) + 1);
-    } else {
+    if (havePrometheus && counter != null) {
       try {
         COUNTER_METHOD_INC.invoke(counter);
       } catch (InvocationTargetException e) {
@@ -437,7 +496,19 @@ public class Prometheus {
       } catch (IllegalArgumentException | IllegalAccessException e) {
         log.warn("Prometheus methods could not be invoked (version mismatch?) -- not logging statistics", e);
       }
+    // If we are mocking Prometheus
+    } else if (counter instanceof CounterMock) {
+      ((CounterMock) counter).inc();
+    } else {
+      log.warn("Something probably went wrong in Prometheus#counterInc: Expected Gauge or GaugeMock but received {}", counter == null ? "null" : counter.getClass());
     }
+  }
+
+  /**
+   * Getter method for this.havePrometheus
+   */
+  public static boolean havePrometheus() {
+    return havePrometheus;
   }
 
 
@@ -484,6 +555,8 @@ public class Prometheus {
     public final SummaryMock summary;
     /** The label values on this timer */
     public final String[] labels;
+    /** The time that this timer was created */
+    public final long startTime;
     /** The straightforward constructor */
     public TimerMock(SummaryMock summary, String[] labels) {
       this.summary = summary;
@@ -494,6 +567,13 @@ public class Prometheus {
       if (summary != null && summary.labels != null && labels.length != summary.labels.length) {
         throw new IllegalArgumentException("Summary labels + timer label values should have the same length: " + summary.labels.length + " vs " + labels.length);
       }
+      this.startTime = System.nanoTime();
+    }
+
+    /** Returns the time (in milliseconds) elapsed since this TimerMock was created */
+    protected double observeDuration() {
+      long timeNanoseconds = System.nanoTime() - this.startTime;
+      return (double) timeNanoseconds / 1000000000.0;
     }
 
     /** {@inheritDoc} */
@@ -521,10 +601,33 @@ public class Prometheus {
    */
   private static class GaugeMock {
     /** The name of the gauge */
-    public final String name;
+    private final String name;
+    /** The value stored in this Gauge **/
+    private double value = 0;
+
     /** A straightforward constructor */
     public GaugeMock(String name) {
       this.name = name;
+    }
+
+    /** Gets the value of this mock */
+    public double get() {
+      return this.value;
+    }
+
+    /** Sets the value of this mock */
+    public void set(double val) {
+      this.value = val;
+    }
+
+    /** Increments the value of this mock */
+    public void inc() {
+      this.value += 1;
+    }
+
+    /** Decrements the value of this mock */
+    public void dec() {
+      this.value -= 1;
     }
 
     /** {@inheritDoc} */
@@ -550,9 +653,32 @@ public class Prometheus {
   private static class CounterMock {
     /** The name of the counter */
     public final String name;
+    /** The name of the counter */
+    private double value = 0.;
+
     /** A straightforward constructor */
     public CounterMock(String name) {
       this.name = name;
+    }
+
+    /** Increments the value of this mock */
+    public void inc() {
+      this.value += 1;
+    }
+
+    /** Decrements the value of this mock */
+    public void dec() {
+      this.value -= 1;
+    }
+
+    /** Sets the value of this mock to `val`*/
+    public void set(double val) {
+      this.value = val;
+    }
+
+    /** Gets the value of this mock */
+    public double get() {
+      return this.value;
     }
 
     /** {@inheritDoc} */

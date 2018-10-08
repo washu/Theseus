@@ -14,7 +14,7 @@ public class PrometheusTest {
    */
   @Before
   public void resetMetrics() {
-    Prometheus.resetMockMetrics();
+    Prometheus.resetMetrics();
   }
 
 
@@ -39,6 +39,7 @@ public class PrometheusTest {
 
   /**
    * Test that the summary's equals() and hashCode() are stable.
+   * Also enforce that 2 metrics with the same name will refer to the same object
    */
   @Test
   public void summaryBuildEqualsHashCode() {
@@ -53,10 +54,10 @@ public class PrometheusTest {
     assertEquals(summary, same);
     assertEquals(summary.hashCode(), same.hashCode());
     assertNotEquals(summary, differentName);
-    assertNotEquals(summary, differentLabels);
+    assertEquals(summary, differentLabels);
     assertEquals(summary, differentHelp);
     assertEquals(summary.hashCode(), differentHelp.hashCode());
-    assertNotEquals(summary, noLabels);
+    assertEquals(summary, noLabels);
   }
 
 
@@ -67,7 +68,7 @@ public class PrometheusTest {
   public void startTimerCrashTest() {
     Object summary = Prometheus.summaryBuild("name", "help", "label");
     assertNotNull(Prometheus.startTimer(summary, "label_value"));
-    Object noLabels = Prometheus.summaryBuild("name", "help");
+    Object noLabels = Prometheus.summaryBuild("name2", "help");
     assertNotNull(Prometheus.startTimer(noLabels));
   }
 
@@ -99,7 +100,7 @@ public class PrometheusTest {
 
 
   /**
-   * Test that we can start a timer and not crash
+   * Test that 2 Timers with the same label should point to the same Timer object
    */
   @Test
   public void startTimerEqualsHashCode() {

@@ -37,7 +37,7 @@ public class KeyValueStateMachine extends RaftStateMachine {
   private static final Logger log = LoggerFactory.getLogger(KeyValueStateMachine.class);
 
   /** The number of elements currently in the queue. */
-  private static final Object Gauge_NUM_LISTENERS = Prometheus.gaugeBuild("kv_state_machine_listeners", "The number of listeners on Raft's Key/Value state machine");
+  private static final Object gaugeNumListeners = Prometheus.gaugeBuild("kv_state_machine_listeners", "The number of listeners on Raft's Key/Value state machine");
 
   /** Keeps track of existing {@link RaftErrorListener} **/
   private static ArrayList<RaftErrorListener> errorListeners = new ArrayList<>();
@@ -667,7 +667,7 @@ public class KeyValueStateMachine extends RaftStateMachine {
       assert this.changeListenerToTrace.containsKey(changeListener);
 
       // Register the listener in Prometheus
-      Prometheus.gaugeSet(Gauge_NUM_LISTENERS, (double) numListeners);
+      Prometheus.gaugeSet(gaugeNumListeners, (double) numListeners);
     }
 
     // Make sure we don't have too many listeners
@@ -695,7 +695,7 @@ public class KeyValueStateMachine extends RaftStateMachine {
     }
 
       // Deregister the listener in Prometheus
-      Prometheus.gaugeSet(Gauge_NUM_LISTENERS, (double) numListeners);
+      Prometheus.gaugeSet(gaugeNumListeners, (double) numListeners);
     }
   }
 

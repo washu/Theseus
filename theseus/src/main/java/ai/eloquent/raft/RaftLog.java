@@ -202,7 +202,7 @@ public class RaftLog {
   /**
    * Metrics on Raft timing.
    */
-  private static Object Summary_timing = Prometheus.summaryBuild("raft_log", "Timing on the Raft log methods");
+  private static Object summaryTiming = Prometheus.summaryBuild("raft_log", "Timing on the Raft log methods");
 
 
   /** Create a log from a state machine and initial configuration. */
@@ -220,13 +220,13 @@ public class RaftLog {
    * Assert that the given operation was fast enough that we're likely not waiting on a lock somewhere.
    *
    * @param description The action we're performing.
-   * @param Summary_startTime The time the action started.
+   * @param summaryStartTime The time the action started.
    *
    * @return Always true, so we can be put into asserts
    */
   @SuppressWarnings("Duplicates")
-  private boolean fast(String description, Object Summary_startTime) {
-    long duration =  (long) (Prometheus.observeDuration(Summary_startTime) * 1000);
+  private boolean fast(String description, Object summaryStartTime) {
+    long duration =  (long) (Prometheus.observeDuration(summaryStartTime) * 1000);
     if (duration > 5) {
       long lastGcTime = -1L;
       try {
@@ -255,7 +255,7 @@ public class RaftLog {
    * The state machine is not copied, and the futures are not copied, but the cluster configuration is.
    */
   public RaftLog copy() {
-    Object Timer_start = Prometheus.startTimer(Summary_timing);
+    Object timerStart = Prometheus.startTimer(summaryTiming);
     try {
       assertConsistency();
       RaftLog copy = new RaftLog(this.stateMachine, Collections.emptyList(), this.pool);
@@ -268,7 +268,7 @@ public class RaftLog {
       assert copy.equals(this) : "Copy did not copy the log state entirely";
       return copy;
     } finally {
-      assert fast("copy", Timer_start);
+      assert fast("copy", timerStart);
     }
   }
 
@@ -281,7 +281,7 @@ public class RaftLog {
    *                             native {@link #initialQuorumMembers}.
    */
   void unsafeBootstrapQuorum(Collection<String> initialConfiguration) {
-    Object Timer_start = Prometheus.startTimer(Summary_timing);
+    Object timerStart = Prometheus.startTimer(summaryTiming);
     assertConsistency();
     try {
       assert getQuorumMembers().isEmpty() : "Cannot bootstrap from an existing quorum";
@@ -292,7 +292,7 @@ public class RaftLog {
       this.logEntries.clear();
       this.commitIndex = 0;
     } finally {
-      assert fast("unsafeBootstrapQuorum", Timer_start);
+      assert fast("unsafeBootstrapQuorum", timerStart);
       assertConsistency();
     }
   }
@@ -381,7 +381,7 @@ public class RaftLog {
    * return empty.
    */
   public Optional<List<EloquentRaftProto.LogEntry>> getEntriesSinceInclusive(long startIndex) {
-    Object Timer_start = Prometheus.startTimer(Summary_timing);
+    Object timerStart = Prometheus.startTimer(summaryTiming);
     assertConsistency();
     try {
       // Requesting an update in the future is just requesting a heartbeat
@@ -400,7 +400,7 @@ public class RaftLog {
       return Optional.of(entries);
     } finally {
       assertConsistency();
-      assert fast("getEntriesSinceInclusive", Timer_start);
+      assert fast("getEntriesSinceInclusive", timerStart);
     }
   }
 
@@ -413,7 +413,7 @@ public class RaftLog {
    * @return the term, if this entry is in our logs
    */
   public Optional<Long> getPreviousEntryTerm(long index) {
-    Object Timer_start = Prometheus.startTimer(Summary_timing);
+    Object timerStart = Prometheus.startTimer(summaryTiming);
     assertConsistency();
     try {
       // Requesting an update in the future
@@ -437,7 +437,7 @@ public class RaftLog {
       return Optional.empty();
     } finally {
       assertConsistency();
-      assert fast("getPreviousEntryTerm", Timer_start);
+      assert fast("getPreviousEntryTerm", timerStart);
     }
   }
 
@@ -451,7 +451,7 @@ public class RaftLog {
    * @return if it's safe to add an uncommitted membership change to the log.
    */
   public boolean getSafeToChangeMembership() {
-    Object Timer_start = Prometheus.startTimer(Summary_timing);
+    Object timerStart = Prometheus.startTimer(summaryTiming);
     assertConsistency();
     try {
       // If any uncommitted entry is of type CONFIGURATION, return false
@@ -464,7 +464,7 @@ public class RaftLog {
       return true;
     } finally {
       assertConsistency();
-      assert fast("getSafeToChangeMembership", Timer_start);
+      assert fast("getSafeToChangeMembership", timerStart);
     }
   }
 
@@ -477,7 +477,7 @@ public class RaftLog {
    * @return The index of the most recent log entry.
    */
   public Optional<RaftLogEntryLocation> lastConfigurationEntryLocation() {
-    Object Timer_start = Prometheus.startTimer(Summary_timing);
+    Object timerStart = Prometheus.startTimer(summaryTiming);
     assertConsistency();
     try {
       Iterator<EloquentRaftProto.LogEntry> iter = this.logEntries.descendingIterator();
@@ -490,7 +490,7 @@ public class RaftLog {
       return Optional.empty();
     } finally {
       assertConsistency();
-      assert fast("lastConfigurationEntryLocation", Timer_start);
+      assert fast("lastConfigurationEntryLocation", timerStart);
     }
   }
 
@@ -509,7 +509,7 @@ public class RaftLog {
    * @return a CompletableFuture
    */
   CompletableFuture<Boolean> createCommitFuture(long index, long term, boolean isInternal) {
-    Object Timer_start = Prometheus.startTimer(Summary_timing);
+    Object timerStart = Prometheus.startTimer(summaryTiming);
     assertConsistency();
     try {
       CompletableFuture<Boolean> listener = new CompletableFuture<>();
@@ -538,7 +538,7 @@ public class RaftLog {
       return listener;
     } finally {
       assertConsistency();
-      assert fast("createCommitFuture", Timer_start);
+      assert fast("createCommitFuture", timerStart);
     }
   }
 
@@ -565,7 +565,7 @@ public class RaftLog {
    * @param leaderCommit the commit from the leader
    */
   public void setCommitIndex(long leaderCommit, long now) {
-    Object Timer_start = Prometheus.startTimer(Summary_timing);
+    Object timerStart = Prometheus.startTimer(summaryTiming);
     assertConsistency();
     try {
       if (leaderCommit > commitIndex) {
@@ -618,7 +618,7 @@ public class RaftLog {
       }
     } finally {
       assertConsistency();
-      assert fast("setCommitIndex", Timer_start);
+      assert fast("setCommitIndex", timerStart);
     }
   }
 
@@ -640,7 +640,7 @@ public class RaftLog {
    */
   @SuppressWarnings("ConstantConditions")
   public boolean appendEntries(long prevLogIndex, long prevLogTerm, List<EloquentRaftProto.LogEntry> entries) {
-    Object Timer_start = Prometheus.startTimer(Summary_timing);
+    Object timerStart = Prometheus.startTimer(summaryTiming);
     assertConsistency();
 
     try {
@@ -729,7 +729,7 @@ public class RaftLog {
       return true;
     } finally {
       assertConsistency();
-      assert fast("appendEntries", Timer_start);
+      assert fast("appendEntries", timerStart);
     }
   }
 
@@ -751,7 +751,7 @@ public class RaftLog {
    * @return true if the snapshot got committed
    */
   public boolean installSnapshot(Snapshot snapshot, long now) {
-    Object Timer_start = Prometheus.startTimer(Summary_timing);
+    Object timerStart = Prometheus.startTimer(summaryTiming);
     assertConsistency();
     try {
       // 1. If lastIndex is larger than the latest Snapshot's, then save the snapshot file and Raft state (lastIndex,
@@ -792,7 +792,7 @@ public class RaftLog {
       return true;
     } finally {
       assertConsistency();
-      assert fast("installSnapshot", Timer_start);
+      assert fast("installSnapshot", timerStart);
     }
   }
 
@@ -802,7 +802,7 @@ public class RaftLog {
    * single snapshot of the state machine. The resulting snapshot is returned.
    */
   public Snapshot forceSnapshot() {
-    Object Timer_start = Prometheus.startTimer(Summary_timing);
+    Object timerStart = Prometheus.startTimer(summaryTiming);
     assertConsistency();
     try {
       Optional<EloquentRaftProto.LogEntry> optionalCommitEntry = getEntryAtIndex(commitIndex);
@@ -833,7 +833,7 @@ public class RaftLog {
       return snapshot;
     } finally {
       assertConsistency();
-      assert fast("forceSnapshot", Timer_start);
+      assert fast("forceSnapshot", timerStart);
     }
   }
 
@@ -847,7 +847,7 @@ public class RaftLog {
    * @param log The new log to set. The old log is cleared in favor of these entries
    */
   public void unsafeSetLog(List<EloquentRaftProto.LogEntry> log) {
-    Object Timer_start = Prometheus.startTimer(Summary_timing);
+    Object timerStart = Prometheus.startTimer(summaryTiming);
     if ("true".equals(System.getenv("ELOQUENT_PRODUCTION"))) {
       System.err.println("Called unsafeSetLog in production! Ignoring the call");
       return;
@@ -859,7 +859,7 @@ public class RaftLog {
       this.commitIndex = 0;
     } finally {
       assertConsistency();
-      assert fast("unsafeSetLog", Timer_start);
+      assert fast("unsafeSetLog", timerStart);
     }
   }
 
@@ -877,7 +877,7 @@ public class RaftLog {
    * @return a log entry, unless it's already been compacted in which case we return empty
    */
   Optional<EloquentRaftProto.LogEntry> getEntryAtIndex(long index) {
-    Object Timer_start = Prometheus.startTimer(Summary_timing);
+    Object timerStart = Prometheus.startTimer(summaryTiming);
     assertConsistency();
     try {
       // Some shortcuts
@@ -909,7 +909,7 @@ public class RaftLog {
       return Optional.empty();
     } finally {
       assertConsistency();
-      assert fast("getEntryAtIndex", Timer_start);
+      assert fast("getEntryAtIndex", timerStart);
     }
   }
 
@@ -920,7 +920,7 @@ public class RaftLog {
    * @param index the index (inclusive) to delete from
    */
   void truncateLogAfterIndexInclusive(long index) {
-    Object Timer_start = Prometheus.startTimer(Summary_timing);
+    Object timerStart = Prometheus.startTimer(summaryTiming);
     assertConsistency();
     assert(index > this.commitIndex);
     try {
@@ -975,7 +975,7 @@ public class RaftLog {
       this.latestQuorumMembers.addAll(latestConfiguration);
     } finally {
       assertConsistency();
-      assert fast("truncateLogAfterIndexInclusive", Timer_start);
+      assert fast("truncateLogAfterIndexInclusive", timerStart);
     }
   }
 
@@ -986,7 +986,7 @@ public class RaftLog {
    * @param index the index (inclusive) to delete up to
    */
   void truncateLogBeforeIndexInclusive(long index) {
-    Object Timer_start = Prometheus.startTimer(Summary_timing);
+    Object timerStart = Prometheus.startTimer(summaryTiming);
     assertConsistency();
     try {
       // 1. Check if this request is out of bounds
@@ -1013,7 +1013,7 @@ public class RaftLog {
       assert logEntries.size() <= 0 || logEntries.getFirst().getIndex() == index + 1;
     } finally {
       assertConsistency();
-      assert fast("truncateLogBeforeIndexInclusive", Timer_start);
+      assert fast("truncateLogBeforeIndexInclusive", timerStart);
     }
   }
 

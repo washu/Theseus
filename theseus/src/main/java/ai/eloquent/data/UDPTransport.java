@@ -152,7 +152,7 @@ public class UDPTransport implements Transport {
   /**
    * Timing statistics for Raft.
    */
-  Object METRIC_TIMING = Prometheus.summaryBuild("udp_transport", "Statistics on the UDP Transport calls", "operation");
+  Object summaryTimer = Prometheus.summaryBuild("udp_transport", "Statistics on the UDP Transport calls", "operation");
 
 
   /**
@@ -275,7 +275,7 @@ public class UDPTransport implements Transport {
             }
             serverSocket.receive(packet);
 
-            Object prometheusBegin = Prometheus.startTimer(METRIC_TIMING, "parse_upd_packet");
+            Object prometheusBegin = Prometheus.startTimer(summaryTimer, "parse_upd_packet");
             // 2. Parse the packet
             byte[] datagram = new byte[packet.getLength()];
             System.arraycopy(packet.getData(), packet.getOffset(), datagram, 0, datagram.length);
@@ -354,7 +354,7 @@ public class UDPTransport implements Transport {
                   }
 
                   // 3. Notify listeners
-                  Object prometheusBegin = Prometheus.startTimer(METRIC_TIMING, "parse_tcp_packet");
+                  Object prometheusBegin = Prometheus.startTimer(summaryTimer, "parse_tcp_packet");
                   IdentityHashSet<Consumer<byte[]>> listeners;
                   synchronized (this.listeners) {
                     listeners = new IdentityHashSet<>(this.listeners.get(proto.getType()));  // copy, to prevent concurrency bugs
