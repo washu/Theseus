@@ -19,7 +19,7 @@ and general ease-of-use of the API.
     * [From Gradle](#from-gradle)
     * [From Source](#from-source)
 * [Usage](#usage)
-    * [Create a node](#create-a-node)
+    * [Create a server](#create-a-server)
     * [The key-value store](#the-key-value-store)
     * [Distributed locks](#distributed-locks)
     * [Change listeners](#change-listeners)
@@ -86,21 +86,51 @@ list of ways in which Theseus is different from other Raft implementations:
 
 ## Installation
 
-TODO Talk about the different installation methods.
+Theseus can be installed from either Maven Central, or directly from source.
+Each of these is documented below:
 
 ### From Maven
 
-TODO Push to Maven and describe installation
+Theseus is not yet on Maven, but will be soon!
+The most recent version of Theseus on Maven can be found
+[here](https://mvnrepository.com/artifact/ai.eloquent/theseus/0.3.0).
+It can be included in a Maven project by adding the following
+to the `<dependencies>` section of the project's `pom.xml` file:
+
+```xml
+<dependency>
+    <groupId>ai.eloquent</groupId>
+    <artifactId>theseus</artifactId>
+    <version>0.3.0</version>
+</dependency>
+```
 
 ### From Gradle
 
-TODO Push to Gradle and describe installation
+Installation from Gradle is similar to Maven. The most recent release
+can be found
+[here](https://mvnrepository.com/artifact/ai.eloquent/theseus/0.3.0).
+It can be included in a Gradle project by adding the following
+to the `dependencies` section of the project's `build.gradle` file:
+
+```
+compile group: 'ai.eloquent', name: 'theseus', version: '0.3.0'
+```
 
 ### From Source
 
-TODO how to download + install
+Theseus uses Gradle and Make as its build system.
+You can build the project either by calling:
 
-Theseus requires a number of dependencies in order to run. These are:
+    make
+
+or by invoking Gradle directly:
+
+    cd theseus; ./gradlew compileJava processResources
+
+
+If you want to compile directly without using Gradle, you'll need to ensure
+that the following dependencies are in your classpath:
 
 * [Gradle](https://gradle.org/) - Dependency management.
 * [SLF4J](https://www.slf4j.org/) - For unified logging.
@@ -112,28 +142,154 @@ For running the tests, Theseus additionally depends on:
 * [JUnit 4](https://junit.org/junit4/) - Unit testing.
 * [Guava](https://github.com/google/guava) - Utility classes for Java.
 
+Theseus is also released on GitHub in the 
+[releases section](https://github.com/eloquentlabs/Theseus/releases).
 
-##Usage
 
-TODO Introduce the main API and link to subsections
+## Usage
 
-###Create a node
+This section goes over the basics of how to use Theseus. More in-depth
+documentation is coming soon on the 
+[wiki](https://github.com/eloquentlabs/Theseus/wiki).
 
-TODO Go over the constructors and what they mean.
+### Create a server
 
-###The key-value store
+A _server_ is Raft "node," consisting of a replica of the key-value
+state machine and a transport on which the server can listen for and send RPCs
+to other servers in the cluster. Although it's possible to have multiple servers
+on a single machine -- in fact, the unit tests do this regularly -- in most
+situations a single machine will have only one running server.
 
-TODO Go over getting, setting, and removing values from the store
+At a high level, there are two ways to create a Raft server:
 
-###Distributed locks
+1. If the cluster is known in advance, the server can (and should) be told about
+   the other servers in the cluster. This is done by constructing a new `Theseus`
+   object with the appropriate quorum. For example, if my server name is 192.168.1.1,
+   and I have two other members in my quorum: 192.168.1.2 and 192.168.1.3, I can create a
+   Raft implementation with:
+
+   ```java
+   import java.util.Arrays;
+   import ai.eloquent.raft.Theseus;
+   ...
+
+   Theseus raft = new Theseus("192.168.1.1", Arrays.asList("192.168.1.1", "192.168.1.2", "192.168.1.3"));
+   ```
+
+   Note that the server names have to be valid IP addresses, or a valid IP 
+   address followed by an underscore (`_`) and a user-specified name (e.g.,
+   `192.168.1.1_achilles`).
+
+2. If the cluster is not known in advance -- for example, if running on
+   Kubernetes -- a Theseus instance can be created with just the target
+   quorum size. This can be done with something like the following:
+
+   ```java
+   import ai.eloquent.raft.Theseus;
+   ...
+
+   Theseus raft = new Theseus(3);  // create a quorum with 3 members
+   ```
+
+In either of these cases, you then need to _bootstrap_ the quorum.
+Bootstrapping is idempotent, which means calling it multiple times, or calling
+it from multiple servers, is harmless. However, traditionally, onlye one of
+the servers should be bootstrapped, and the others should automatically
+detect the bootstrapped server and join the quorum.
+
+The call to bootstrap the server is straightforward:
+
+```java
+Theseus raft = ...;
+raft.bootstrap();
+```
+
+That's it! With a Theseus instance created and bootstrapped, 
+Raft you're ready to go and receive requests.
+The following sections go over some of the common features of Theseus.
+
+### The key-value store
+
+Although Theseus can work with any number of state machines (as per the
+Raft spec), the most common one and the one included in the distribution
+is a key-value state machine. That is, String keys are used to store
+arbitrary byte values.
+
+Note that all of the operations on the state machine are asynchronous, 
+returning a `CompletableFuture` for when the computation finishes. To
+ensure that this is clear in the calling code, most of the public methods
+on `Theseus` are suffixed with `Async`.
+
+The recommended way to access an element in the key value store is with the
+`withElementAsync()` function. This will take a 
+[distributed lock](#distributed-locks) on the given element, create or mutate
+it, and then release the lock. This comes at the overhead of an additional
+RPC call (one to take the lock, one to mutate the value + release the lock
+as a single operation). 
+The `withElementAsync()` function takes four arguments:
+
+1. THe key of the element we're mutating.
+2. A mutator, which takes a byte array and returns a mutated
+   byte array.
+3. An optional creator. This is a `Supplier` that produces a new instance,
+   if nothing is in the key value store.
+   Note that either the creator or the mutator is run, but not both in the
+   same call.
+4. A boolean indicating whether this value is permanent. Permanent values are
+   persisted even if the machine that created the value is
+   removed from the cluster. In most cases, this should be set to `true`, 
+   though there are some use-cases where you want Raft to "garbage collect"
+   values whose creator is permanently down (e.g., tracking connected
+   sessions -- if a server goes down, sessions connected to it should 
+   disappear).
+
+An example usage is given below, representing a simple single-byte counter with
+a key name of "counter":
+
+```java
+Theseus raft = ...;
+raft.bootstrap();
+...
+
+raft.withElementAsync(
+    "counter",  // The key we're saving the element under
+    v -> {      // The mutator
+      byte[] mutated = new byte[1];
+      mutated[0] = (byte) (v[0] + 1);
+      return mutated;
+    },
+    () -> new byte[1],  // The creator
+    true                // Store this value permanently
+);
+```
+
+In addition, Theseus implements the usual get/put/delete methods -- though
+without taking a lock on an element, you of course risk race conditions
+if two servers are writing at once.
+These remaining methods are:
+
+* `Optional<byte[]> getElement(String key)`: Gets an element at the given key,
+  or `Optional.empty()` if none exists.
+* `CompletableFuture<Boolean> setElementAsync(String key, byte[] value, boolean permanent, Duration timeout)`: 
+  Sets the given bytes value for the given key. Like `withElementAsync()`, 
+  permanent denotes whether this object should persist even if the creator 
+  (as distinct from the last setter!) becomes permanently unavailable.
+  The timeout argument specifies a timeout after which the set is considered 
+  failed, and the system stops retrying and fails the future.
+* `CompletableFuture<Boolean> removeElementAsync(String key, Duration timeout)`:
+  Removes an element from the key value state machine.
+  The timeout argument specifies a timeout after which the set is considered 
+  failed, and the system stops retrying and fails the future.
+
+### Distributed locks
 
 TODO Go over taking and releasing locks
 
-###Change listeners
+### Change listeners
 
 TODO Go over adding and removing change listeners
 
-###Error handling
+### Error handling
 
 TODO Go over error listeners and Prometheus monitoring.
 
@@ -151,7 +307,7 @@ requests to us.
 
 
 ## Versioning
-* v0.3.0 [2018-10-??] - Initial public release
+* 0.3.0 [2018-10-??] - Initial public release
 
 For the versions available, see the 
 [releases page](https://github.com/eloquentlabs/theseus/releases). 

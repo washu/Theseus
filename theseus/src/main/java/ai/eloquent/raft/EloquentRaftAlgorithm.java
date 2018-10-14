@@ -139,7 +139,7 @@ public class EloquentRaftAlgorithm implements RaftAlgorithm {
    * @param raftStateThreadPool A pool to pass to RaftState for it to use
    */
   public EloquentRaftAlgorithm(String serverName, RaftStateMachine stateMachine,
-                               RaftTransport transport, Set<String> quorum, ExecutorService raftStateThreadPool, Optional<RaftLifecycle> lifecycle) {
+                               RaftTransport transport, Collection<String> quorum, ExecutorService raftStateThreadPool, Optional<RaftLifecycle> lifecycle) {
     this(new RaftState(serverName, stateMachine, quorum, raftStateThreadPool), transport, lifecycle);
   }
 

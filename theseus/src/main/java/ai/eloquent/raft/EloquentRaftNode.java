@@ -96,7 +96,7 @@ public class EloquentRaftNode implements AutoCloseable {
 
   /**
    * These are hooks we can register on this RaftNode to run right before we begin the official shutdown process.
-   * Created for EloquentRaft to be able to close itself when EloquentRaftNode is shut down by RaftLifecycle.
+   * Created for Theseus to be able to close itself when EloquentRaftNode is shut down by RaftLifecycle.
    */
   private List<Runnable> shutdownHooks = new ArrayList<>();
 

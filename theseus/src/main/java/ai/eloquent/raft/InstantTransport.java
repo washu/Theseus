@@ -99,7 +99,7 @@ public class InstantTransport implements RaftTransport {
    * @param L node to burn in on
    * @param numIterations the number of iterations to run
    */
-  private static double burnInRun(EloquentRaft L, long numIterations) {
+  private static double burnInRun(Theseus L, long numIterations) {
     long startTime = System.nanoTime();
     for (int i = 0; i < numIterations; i++) {
       try {
@@ -132,9 +132,9 @@ public class InstantTransport implements RaftTransport {
 
     InstantTransport transport = new InstantTransport();
     RaftLifecycle lifecycle = RaftLifecycle.newBuilder().mockTime().build();
-    EloquentRaft L = new EloquentRaft(new SingleThreadedRaftAlgorithm(new EloquentRaftAlgorithm("L", new KeyValueStateMachine("L"), transport, 3, MoreExecutors.newDirectExecutorService(), Optional.of(lifecycle)), MoreExecutors.newDirectExecutorService()), transport, lifecycle);
-    EloquentRaft A = new EloquentRaft(new SingleThreadedRaftAlgorithm(new EloquentRaftAlgorithm("A", new KeyValueStateMachine("A"), transport, 3, MoreExecutors.newDirectExecutorService(), Optional.of(lifecycle)), MoreExecutors.newDirectExecutorService()), transport, lifecycle);
-    EloquentRaft B = new EloquentRaft(new SingleThreadedRaftAlgorithm(new EloquentRaftAlgorithm("B", new KeyValueStateMachine("B"), transport, 3, MoreExecutors.newDirectExecutorService(), Optional.of(lifecycle)), MoreExecutors.newDirectExecutorService()), transport, lifecycle);
+    Theseus L = new Theseus(new SingleThreadedRaftAlgorithm(new EloquentRaftAlgorithm("L", new KeyValueStateMachine("L"), transport, 3, MoreExecutors.newDirectExecutorService(), Optional.of(lifecycle)), MoreExecutors.newDirectExecutorService()), transport, lifecycle);
+    Theseus A = new Theseus(new SingleThreadedRaftAlgorithm(new EloquentRaftAlgorithm("A", new KeyValueStateMachine("A"), transport, 3, MoreExecutors.newDirectExecutorService(), Optional.of(lifecycle)), MoreExecutors.newDirectExecutorService()), transport, lifecycle);
+    Theseus B = new Theseus(new SingleThreadedRaftAlgorithm(new EloquentRaftAlgorithm("B", new KeyValueStateMachine("B"), transport, 3, MoreExecutors.newDirectExecutorService(), Optional.of(lifecycle)), MoreExecutors.newDirectExecutorService()), transport, lifecycle);
     L.start();
     A.start();
     B.start();

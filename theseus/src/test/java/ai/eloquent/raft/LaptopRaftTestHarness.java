@@ -191,7 +191,7 @@ public class LaptopRaftTestHarness {
     RaftState state = new RaftState(hostname, new KeyValueStateMachine(hostname), pool);
     RaftTransport transport = new NetRaftTransport(hostname);
     RaftAlgorithm algorithm = new SingleThreadedRaftAlgorithm(new EloquentRaftAlgorithm(state, transport, Optional.empty()), pool);
-    EloquentRaft raft = new EloquentRaft(algorithm, transport, lifecycle);
+    Theseus raft = new Theseus(algorithm, transport, lifecycle);
 
     raft.node.start();
 

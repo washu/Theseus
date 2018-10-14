@@ -34,7 +34,7 @@ public class RaftBackedCacheTest {
     /** The "permanent" store, passed in by each test */
     public Map<String, String>  permanentStore;
 
-    protected Cache(EloquentRaft raft, Map<String, String>  permanentStore) {
+    protected Cache(Theseus raft, Map<String, String>  permanentStore) {
       super(raft, IDLE_TIMEOUT, IDLE_TIMEOUT, CACHE_SIZE_BYTES);
       this.permanentStore = permanentStore;
     }
@@ -66,9 +66,9 @@ public class RaftBackedCacheTest {
   }
 
   /** A dummy raft node, that doesn't have to go out to Rabbit. */
-  private EloquentRaft raft;
+  private Theseus raft;
 
-  private EloquentRaft[] nodes;
+  private Theseus[] nodes;
 
 
   protected LocalTransport transport;
@@ -78,14 +78,14 @@ public class RaftBackedCacheTest {
   public void createRaft() {
     this.transport = new LocalTransport(true);
     // Create a cluster
-    nodes = new EloquentRaft[]{
-        new EloquentRaft("L", transport, new HashSet<>(Arrays.asList("L", "A", "B")), RaftLifecycle.newBuilder().mockTime().build()),
-        new EloquentRaft("A", transport, new HashSet<>(Arrays.asList("L", "A", "B")), RaftLifecycle.newBuilder().mockTime().build()),
-        new EloquentRaft("B", transport, new HashSet<>(Arrays.asList("L", "A", "B")), RaftLifecycle.newBuilder().mockTime().build()),
+    nodes = new Theseus[]{
+        new Theseus("L", transport, new HashSet<>(Arrays.asList("L", "A", "B")), RaftLifecycle.newBuilder().mockTime().build()),
+        new Theseus("A", transport, new HashSet<>(Arrays.asList("L", "A", "B")), RaftLifecycle.newBuilder().mockTime().build()),
+        new Theseus("B", transport, new HashSet<>(Arrays.asList("L", "A", "B")), RaftLifecycle.newBuilder().mockTime().build()),
     };
     raft = nodes[0];
     // Start the cluster
-    Arrays.stream(nodes).forEach(EloquentRaft::start);
+    Arrays.stream(nodes).forEach(Theseus::start);
     // Wait for an election
     for (int i = 0;
          i < 1000 &&
@@ -107,7 +107,7 @@ public class RaftBackedCacheTest {
 
   @After
   public void killRaft() {
-    for (EloquentRaft raft : nodes) {
+    for (Theseus raft : nodes) {
       if (raft.node.algorithm instanceof SingleThreadedRaftAlgorithm) {
         ((SingleThreadedRaftAlgorithm) raft.node.algorithm).flush(() -> {});
       }
@@ -140,7 +140,7 @@ public class RaftBackedCacheTest {
     try (Cache cache = new Cache(raft, permanentStore)) {
       assertEquals(Optional.empty(), cache.get("key"));
       RaftBackedCache.Entry<String> entry = new RaftBackedCache.Entry<>("key", false, "A");
-      raft.setElementRetryAsync("junit_key", entry.serialize(cache::serialize), true, Duration.ofSeconds(5)).get();  // manually set
+      raft.setElementAsync("junit_key", entry.serialize(cache::serialize), true, Duration.ofSeconds(5)).get();  // manually set
       cache.withElementAsync("key", str -> str + "B").get();
       assertEquals(Optional.of("AB"), cache.get("key"));
     }
@@ -157,7 +157,7 @@ public class RaftBackedCacheTest {
     try (Cache cache = new Cache(raft, permanentStore)) {
       assertEquals(Optional.empty(), cache.get("key"));
       RaftBackedCache.Entry<String> entry = new RaftBackedCache.Entry<>("key", false, "A");
-      raft.setElementRetryAsync("junit_key", entry.serialize(cache::serialize), true, Duration.ofSeconds(5)).get();  // manually set
+      raft.setElementAsync("junit_key", entry.serialize(cache::serialize), true, Duration.ofSeconds(5)).get();  // manually set
       assertEquals("A", cache.getIfPresent("key").get());
     }
   }

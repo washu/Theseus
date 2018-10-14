@@ -9,7 +9,7 @@ import java.util.*;
 import java.util.concurrent.ExecutorService;
 
 /**
- * This is the interface that any state machine needs to implement in order to be used with EloquentRaft.
+ * This is the interface that any state machine needs to implement in order to be used with Theseus.
  */
 public abstract class RaftStateMachine {
   /**

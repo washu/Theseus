@@ -36,7 +36,7 @@ public abstract class RaftBackedCache<V> implements Iterable<Map.Entry<String,V>
   /**
    * The implementing Raft for the cache.
    */
-  public final EloquentRaft raft;
+  public final Theseus raft;
 
   /**
    * This manages evicting elements from the RaftBackedCache. We hold onto a handle so we can cancel() it when we close
@@ -167,7 +167,7 @@ public abstract class RaftBackedCache<V> implements Iterable<Map.Entry<String,V>
   /**
    * Create a Raft backed cache with a particular Raft implementation.
    */
-  protected RaftBackedCache(EloquentRaft raft, Duration idleDuration, Duration elementLifetime, int maxSizeBytes) {
+  protected RaftBackedCache(Theseus raft, Duration idleDuration, Duration elementLifetime, int maxSizeBytes) {
     this.raft = raft;
 
     // This task is responsible for saving changes to SQL. It is NOT, however, responsible for removing elements from Raft
@@ -206,7 +206,7 @@ public abstract class RaftBackedCache<V> implements Iterable<Map.Entry<String,V>
 
                       // Save the fact that we've persisted this key back to raft, so we don't keep hitting SQL
                       entry.isPersisted = true;
-                      return raft.setElementRetryAsync(key, entry.serialize(RaftBackedCache.this::serialize), true, Duration.ofSeconds(30));
+                      return raft.setElementAsync(key, entry.serialize(RaftBackedCache.this::serialize), true, Duration.ofSeconds(30));
                     } catch (Throwable t) {
                       log.warn("Could not evict element from RaftBackedCache; not removing from Raft", t);
                     }
@@ -256,7 +256,7 @@ public abstract class RaftBackedCache<V> implements Iterable<Map.Entry<String,V>
 
                   log.info("Evicting RaftBackedCache element with key {}", localKey);
                   // 5. Remove the value from the Raft state machine.
-                  return raft.removeElementRetryAsync(key, Duration.ofSeconds(30));
+                  return raft.removeElementAsync(key, Duration.ofSeconds(30));
                 }
                 return CompletableFuture.completedFuture(false);
               }));
@@ -272,7 +272,7 @@ public abstract class RaftBackedCache<V> implements Iterable<Map.Entry<String,V>
   /**
    * Create a Raft backed cache with the default Raft implementation.
    */
-  protected RaftBackedCache(EloquentRaft raft, Duration idleDuration, Duration elementLifetime) {
+  protected RaftBackedCache(Theseus raft, Duration idleDuration, Duration elementLifetime) {
     this(raft, idleDuration, elementLifetime, DEFAULT_MAX_SIZE_BYTES);
   }
 
@@ -370,7 +370,7 @@ public abstract class RaftBackedCache<V> implements Iterable<Map.Entry<String,V>
         toRemove.add(key);
       }
     }
-    return this.raft.removeElementsRetryAsync(toRemove, Duration.ofSeconds(30));
+    return this.raft.removeElementsAsync(toRemove, Duration.ofSeconds(30));
   }
 
 
@@ -481,7 +481,7 @@ public abstract class RaftBackedCache<V> implements Iterable<Map.Entry<String,V>
         // Optionally, we can save intermediate states during our mutation. This implements those intermediate saves
         try {
           Entry<V> updatedEntry = new Entry<>(key, false, entry.value);
-          this.raft.setElementRetryAsync(prefix() + key, updatedEntry.serialize(this::serialize), true, Duration.ofSeconds(5)).get(6, TimeUnit.SECONDS);
+          this.raft.setElementAsync(prefix() + key, updatedEntry.serialize(this::serialize), true, Duration.ofSeconds(5)).get(6, TimeUnit.SECONDS);
         } catch (InterruptedException | ExecutionException | TimeoutException e) {
           log.warn("Could not save intermediate state during withElementAsyc call in RaftBackedCache: ", e);
         }
@@ -581,7 +581,7 @@ public abstract class RaftBackedCache<V> implements Iterable<Map.Entry<String,V>
       }
     } else {
       Optional<V> value = restore(key);
-      value.ifPresent(v -> raft.setElementRetryAsync(prefix() + key, new Entry<>(key, false, v).serialize(this::serialize), true, Duration.ofSeconds(5)));
+      value.ifPresent(v -> raft.setElementAsync(prefix() + key, new Entry<>(key, false, v).serialize(this::serialize), true, Duration.ofSeconds(5)));
       return value;
     }
   }
@@ -607,7 +607,7 @@ public abstract class RaftBackedCache<V> implements Iterable<Map.Entry<String,V>
 
 
   /**
-   * Set an element in Raft. This is really just an alias for {@link EloquentRaft#setElementRetryAsync(String, byte[], boolean, Duration)}
+   * Set an element in Raft. This is really just an alias for {@link Theseus#setElementAsync(String, byte[], boolean, Duration)}
    * with permanent set to true and a 5 second timeout.
    */
   public CompletableFuture<Boolean> put(String key, V value, boolean persist) {
@@ -618,15 +618,15 @@ public abstract class RaftBackedCache<V> implements Iterable<Map.Entry<String,V>
       this.persist(key, value, false);
     }
     // Set the element in Raft
-    return raft.setElementRetryAsync(prefix() + key, newEntry.serialize(this::serialize), true, Duration.ofSeconds(5));
+    return raft.setElementAsync(prefix() + key, newEntry.serialize(this::serialize), true, Duration.ofSeconds(5));
   }
 
 
   /**
-   * Remove an element in Raft. This is really just an alias for {@link EloquentRaft#removeElementRetryAsync(String, Duration)}.
+   * Remove an element in Raft. This is really just an alias for {@link Theseus#removeElementAsync(String, Duration)}.
    */
   public CompletableFuture<Boolean> evictWithoutSaving(String key) {
-    return raft.removeElementRetryAsync(prefix() + key, Duration.ofSeconds(5));
+    return raft.removeElementAsync(prefix() + key, Duration.ofSeconds(5));
   }
 
 

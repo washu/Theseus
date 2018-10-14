@@ -33,7 +33,7 @@ public class RaftLifecycle {
   /** The set of managed thread pools, which run core system-level things (e.g., Rabbit or the DB connections). */
   protected final Map<String, ExecutorService> coreThreadPools = new HashMap<>();
 
-  /** This is the EloquentRaft that's tied to this RaftLifecycle - if any. We use this knowledge on shutdown. */
+  /** This is the Theseus that's tied to this RaftLifecycle - if any. We use this knowledge on shutdown. */
   protected Optional<EloquentRaftNode> registeredRaft = Optional.empty();
 
   public RaftLifecycle(Lazy<SafeTimer> timer) {

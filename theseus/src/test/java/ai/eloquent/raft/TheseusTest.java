@@ -28,11 +28,11 @@ import static org.junit.Assert.*;
  * This runs fuzz tests on our implementation of Raft
  */
 @SuppressWarnings("OptionalGetWithoutIsPresent")
-public class EloquentRaftTest extends WithLocalTransport {
+public class TheseusTest extends WithLocalTransport {
   /**
    * An SLF4J Logger for this class.
    */
-  private static final Logger log = LoggerFactory.getLogger(EloquentRaftTest.class);
+  private static final Logger log = LoggerFactory.getLogger(TheseusTest.class);
 
 
   /**
@@ -54,8 +54,8 @@ public class EloquentRaftTest extends WithLocalTransport {
   /**
    * Wait for a cluster to establish itself, starting the nodes and awaiting an election.
    */
-   protected void awaitElection(LocalTransport transport, EloquentRaft... nodes) {
-    Arrays.stream(nodes).forEach(EloquentRaft::start);
+   protected void awaitElection(LocalTransport transport, Theseus... nodes) {
+    Arrays.stream(nodes).forEach(Theseus::start);
     for (int i = 0;
          i < 1000 &&
              !( Arrays.stream(nodes).anyMatch(x -> x.node.algorithm.state().isLeader()) &&
@@ -86,7 +86,7 @@ public class EloquentRaftTest extends WithLocalTransport {
   /**
    * Run a function on a cluster of nodes, starting them, waiting for an election, and then closing them.
    */
-  private void withNodes(LocalTransport transport, ThrowableConsumer<EloquentRaft[]> fn, EloquentRaft... nodes) {
+  private void withNodes(LocalTransport transport, ThrowableConsumer<Theseus[]> fn, Theseus... nodes) {
     try {
       // quietly(() -> {
         awaitElection(transport, nodes);
@@ -121,14 +121,14 @@ public class EloquentRaftTest extends WithLocalTransport {
     quietly(() -> {
       // Create the bootstrapped cluster
       RaftLifecycle lifecycle = RaftLifecycle.newBuilder().mockTime().build();
-      EloquentRaft raft = new EloquentRaft("10.0.0.1", transport, Collections.singleton("10.0.0.1"), lifecycle);
+      Theseus raft = new Theseus("10.0.0.1", transport, Collections.singleton("10.0.0.1"), lifecycle);
       raft.start();
-      Optional<EloquentRaft.LongLivedLock> lock = raft.tryLock("test", Duration.ofSeconds(5));
+      Optional<Theseus.LongLivedLock> lock = raft.tryLock("test", Duration.ofSeconds(5));
       assertTrue(lock.isPresent());
-      Optional<EloquentRaft.LongLivedLock> secondAttempt = raft.tryLock("test", Duration.ofSeconds(5));
+      Optional<Theseus.LongLivedLock> secondAttempt = raft.tryLock("test", Duration.ofSeconds(5));
       assertFalse(secondAttempt.isPresent());
       lock.get().release().get(10, TimeUnit.SECONDS);
-      Optional<EloquentRaft.LongLivedLock> thirdAttempt = raft.tryLock("test", Duration.ofSeconds(5));
+      Optional<Theseus.LongLivedLock> thirdAttempt = raft.tryLock("test", Duration.ofSeconds(5));
       assertTrue(thirdAttempt.isPresent());
 
       // Release the reference to it, to check if the GC cleanup will work
@@ -143,7 +143,7 @@ public class EloquentRaftTest extends WithLocalTransport {
       }
 
       // The lock should have been released
-      Optional<EloquentRaft.LongLivedLock> fourthAttempt = raft.tryLock("test", Duration.ofSeconds(5));
+      Optional<Theseus.LongLivedLock> fourthAttempt = raft.tryLock("test", Duration.ofSeconds(5));
       assertTrue(fourthAttempt.isPresent());
 
       // Wait till well after the timer should fire to auto-release the lock
@@ -152,7 +152,7 @@ public class EloquentRaftTest extends WithLocalTransport {
       // The lock should have been released
       assertFalse(fourthAttempt.get().isCertainlyHeld());
 
-      Optional<EloquentRaft.LongLivedLock> fifthAttempt = raft.tryLock("test", Duration.ofSeconds(5));
+      Optional<Theseus.LongLivedLock> fifthAttempt = raft.tryLock("test", Duration.ofSeconds(5));
       assertTrue(fifthAttempt.isPresent());
 
       transport.stop();
@@ -172,15 +172,15 @@ public class EloquentRaftTest extends WithLocalTransport {
     quietly(() -> {
       // Create the bootstrapped cluster
       RaftLifecycle lifecycle = RaftLifecycle.newBuilder().mockTime().build();
-      EloquentRaft raft = new EloquentRaft("10.0.0.1", transport, Collections.singleton("10.0.0.1"), lifecycle);
+      Theseus raft = new Theseus("10.0.0.1", transport, Collections.singleton("10.0.0.1"), lifecycle);
       raft.start();
       awaitElection(transport, raft);
 
       assertFalse(raft.getElement("test").isPresent());
-      raft.setElementRetryAsync("test", new byte[]{1}, true, Duration.ofSeconds(2)).get(10, TimeUnit.SECONDS);
+      raft.setElementAsync("test", new byte[]{1}, true, Duration.ofSeconds(2)).get(10, TimeUnit.SECONDS);
       assertTrue(raft.getElement("test").isPresent());
       assertEquals(1, (int) raft.getElement("test").get()[0]);
-      raft.removeElementRetryAsync("test", Duration.ofMinutes(1)).get(10, TimeUnit.SECONDS);
+      raft.removeElementAsync("test", Duration.ofMinutes(1)).get(10, TimeUnit.SECONDS);
       assertFalse("The element 'test' should not in Raft", raft.getElement("test").isPresent());
 
       transport.stop();
@@ -193,10 +193,10 @@ public class EloquentRaftTest extends WithLocalTransport {
    */
   @Test
   public void withDistributedLock() {
-    EloquentRaft L = new EloquentRaft("L", transport, new HashSet<>(Arrays.asList("L", "A")), RaftLifecycle.newBuilder().mockTime().build());
-    EloquentRaft A = new EloquentRaft("A", transport, new HashSet<>(Arrays.asList("L", "A")), RaftLifecycle.newBuilder().mockTime().build());
+    Theseus L = new Theseus("L", transport, new HashSet<>(Arrays.asList("L", "A")), RaftLifecycle.newBuilder().mockTime().build());
+    Theseus A = new Theseus("A", transport, new HashSet<>(Arrays.asList("L", "A")), RaftLifecycle.newBuilder().mockTime().build());
 
-    CompletableFuture<Optional<EloquentRaft.LongLivedLock>> lockFuture = new CompletableFuture<>();
+    CompletableFuture<Optional<Theseus.LongLivedLock>> lockFuture = new CompletableFuture<>();
 
     withNodes(transport, nodes -> {
       // Try to have both nodes take a lock
@@ -230,7 +230,7 @@ public class EloquentRaftTest extends WithLocalTransport {
     byte[] differentRequester = KeyValueStateMachine.createReleaseLockTransition("lock", "requester2", "hash");
     byte[] differentLock = KeyValueStateMachine.createReleaseLockTransition("lock2", "requester", "hash");
     // 2. Tests
-    EloquentRaft L = new EloquentRaft("L", transport, new HashSet<>(Arrays.asList("L", "A")), RaftLifecycle.newBuilder().mockTime().build());
+    Theseus L = new Theseus("L", transport, new HashSet<>(Arrays.asList("L", "A")), RaftLifecycle.newBuilder().mockTime().build());
     L.queueFailedLock(lock);
     assertEquals(1, L.unreleasedLocks.size());
     L.queueFailedLock(lock);
@@ -250,12 +250,12 @@ public class EloquentRaftTest extends WithLocalTransport {
    */
   @Test
   public void distributedLockFailsafe() {
-    EloquentRaft L = new EloquentRaft("L", transport, new HashSet<>(Arrays.asList("L", "A")), RaftLifecycle.newBuilder().mockTime().build());
-    EloquentRaft A = new EloquentRaft("A", transport, new HashSet<>(Arrays.asList("L", "A")), RaftLifecycle.newBuilder().mockTime().build());
+    Theseus L = new Theseus("L", transport, new HashSet<>(Arrays.asList("L", "A")), RaftLifecycle.newBuilder().mockTime().build());
+    Theseus A = new Theseus("A", transport, new HashSet<>(Arrays.asList("L", "A")), RaftLifecycle.newBuilder().mockTime().build());
     withNodes(transport, nodes -> {
       // 1. Take the lock
       assertEquals(Collections.emptyList(), L.unreleasedLocks);
-      EloquentRaft.LongLivedLock lock = L.tryLock("lock", Duration.ofMinutes(1)).orElseThrow(() -> new AssertionError("Could not take lock"));
+      Theseus.LongLivedLock lock = L.tryLock("lock", Duration.ofMinutes(1)).orElseThrow(() -> new AssertionError("Could not take lock"));
       assertTrue(lock.isCertainlyHeld());
       assertTrue(lock.isPerhapsHeld());
       // 2. Break consensus
@@ -298,8 +298,8 @@ public class EloquentRaftTest extends WithLocalTransport {
    */
   @Test
   public void distributedLockReleasesOnReleaseTimeout() {
-    EloquentRaft L = new EloquentRaft("L", transport, new HashSet<>(Arrays.asList("L", "A")), RaftLifecycle.newBuilder().mockTime().build());
-    EloquentRaft A = new EloquentRaft("A", transport, new HashSet<>(Arrays.asList("L", "A")), RaftLifecycle.newBuilder().mockTime().build());
+    Theseus L = new Theseus("L", transport, new HashSet<>(Arrays.asList("L", "A")), RaftLifecycle.newBuilder().mockTime().build());
+    Theseus A = new Theseus("A", transport, new HashSet<>(Arrays.asList("L", "A")), RaftLifecycle.newBuilder().mockTime().build());
     withNodes(transport, nodes -> {
       // 1. Take a lock and then partition off before releasing
       assertEquals(Collections.emptyList(), L.unreleasedLocks);
@@ -345,14 +345,14 @@ public class EloquentRaftTest extends WithLocalTransport {
 
 
   /**
-   * Test that if a release fails on a {@link EloquentRaft.LongLivedLock}, we still queue it up for retrying.
+   * Test that if a release fails on a {@link Theseus.LongLivedLock}, we still queue it up for retrying.
    */
   @Test
   public void longLivedLockReleaseFails() {
-    EloquentRaft L = new EloquentRaft("L", transport, new HashSet<>(Arrays.asList("L", "A")), RaftLifecycle.newBuilder().mockTime().build());
-    EloquentRaft A = new EloquentRaft("A", transport, new HashSet<>(Arrays.asList("L", "A")), RaftLifecycle.newBuilder().mockTime().build());
+    Theseus L = new Theseus("L", transport, new HashSet<>(Arrays.asList("L", "A")), RaftLifecycle.newBuilder().mockTime().build());
+    Theseus A = new Theseus("A", transport, new HashSet<>(Arrays.asList("L", "A")), RaftLifecycle.newBuilder().mockTime().build());
     withNodes(transport, nodes -> {
-      Optional<EloquentRaft.LongLivedLock> lock = L.tryLock("lockName", Duration.ofSeconds(10));
+      Optional<Theseus.LongLivedLock> lock = L.tryLock("lockName", Duration.ofSeconds(10));
       assertTrue(lock.isPresent());
       transport.sleep(Duration.ofSeconds(20).toMillis());
       assertFalse("Lock should be unlocking", lock.get().isCertainlyHeld());
@@ -367,8 +367,8 @@ public class EloquentRaftTest extends WithLocalTransport {
    */
   @Test
   public void withDistributedLockBlockingRunnable() {
-    EloquentRaft L = new EloquentRaft("L", transport, new HashSet<>(Arrays.asList("L", "A")), RaftLifecycle.newBuilder().mockTime().build());
-    EloquentRaft A = new EloquentRaft("A", transport, new HashSet<>(Arrays.asList("L", "A")), RaftLifecycle.newBuilder().mockTime().build());
+    Theseus L = new Theseus("L", transport, new HashSet<>(Arrays.asList("L", "A")), RaftLifecycle.newBuilder().mockTime().build());
+    Theseus A = new Theseus("A", transport, new HashSet<>(Arrays.asList("L", "A")), RaftLifecycle.newBuilder().mockTime().build());
 
     withNodes(transport, nodes -> {
       // Deliberately block inside this call
@@ -392,7 +392,7 @@ public class EloquentRaftTest extends WithLocalTransport {
    */
   @Test
   public void withDistributedLockSingleNode() {
-    EloquentRaft L = new EloquentRaft("L", transport, Collections.singleton("L"), RaftLifecycle.newBuilder().mockTime().build());
+    Theseus L = new Theseus("L", transport, Collections.singleton("L"), RaftLifecycle.newBuilder().mockTime().build());
     withNodes(transport, nodes -> L.withDistributedLockAsync("key", () -> log.info("Got lock on L")).get(), L);
     transport.stop();
   }
@@ -409,10 +409,10 @@ public class EloquentRaftTest extends WithLocalTransport {
       int numThreads = 5;
       int numIters = 20;
       Random r = new Random(42L);
-      EloquentRaft[] nodes = new EloquentRaft[]{
-          new EloquentRaft("L", transport, new HashSet<>(Arrays.asList("L", "A", "B")), RaftLifecycle.newBuilder().mockTime().build()),
-          new EloquentRaft("A", transport, new HashSet<>(Arrays.asList("L", "A", "B")), RaftLifecycle.newBuilder().mockTime().build()),
-          new EloquentRaft("B", transport, new HashSet<>(Arrays.asList("L", "A", "B")), RaftLifecycle.newBuilder().mockTime().build())
+      Theseus[] nodes = new Theseus[]{
+          new Theseus("L", transport, new HashSet<>(Arrays.asList("L", "A", "B")), RaftLifecycle.newBuilder().mockTime().build()),
+          new Theseus("A", transport, new HashSet<>(Arrays.asList("L", "A", "B")), RaftLifecycle.newBuilder().mockTime().build()),
+          new Theseus("B", transport, new HashSet<>(Arrays.asList("L", "A", "B")), RaftLifecycle.newBuilder().mockTime().build())
       };
       withNodes(transport, (raftNodes) -> {
         // Run the sum computation
@@ -428,7 +428,7 @@ public class EloquentRaftTest extends WithLocalTransport {
               boolean success = false;
               long start = System.currentTimeMillis();
               try {
-                EloquentRaft node = raftNodes[r.nextInt(raftNodes.length)];
+                Theseus node = raftNodes[r.nextInt(raftNodes.length)];
                 CompletableFuture<Boolean> future = node.withElementAsync("running_sum", (oldBytes) -> {
                   callCount.incrementAndGet();
                   fnCallCount.incrementAndGet();
@@ -482,10 +482,10 @@ public class EloquentRaftTest extends WithLocalTransport {
    */
   @Test
   public void getSetElement() {
-    EloquentRaft leader = new EloquentRaft("L", transport, new HashSet<>(Arrays.asList("L", "A")), RaftLifecycle.newBuilder().mockTime().build());
-    EloquentRaft follower = new EloquentRaft("A", transport, new HashSet<>(Arrays.asList("L", "A")), RaftLifecycle.newBuilder().mockTime().build());
+    Theseus leader = new Theseus("L", transport, new HashSet<>(Arrays.asList("L", "A")), RaftLifecycle.newBuilder().mockTime().build());
+    Theseus follower = new Theseus("A", transport, new HashSet<>(Arrays.asList("L", "A")), RaftLifecycle.newBuilder().mockTime().build());
     withNodes(transport, nodes -> {
-      nodes[1].setElementRetryAsync("element", new byte[]{42}, true, Duration.ofMinutes(1)).get();
+      nodes[1].setElementAsync("element", new byte[]{42}, true, Duration.ofMinutes(1)).get();
       Optional<byte[]> elem = nodes[0].getElement("element");
       assertTrue("Element committed to a node should be available on another node", elem.isPresent());
       assertArrayEquals("Should have been able to retrieve the set element", new byte[]{42}, elem.get());
@@ -499,9 +499,9 @@ public class EloquentRaftTest extends WithLocalTransport {
    */
   @Test
   public void getSetElementSingleNode() {
-    EloquentRaft leader = new EloquentRaft("L", transport, Collections.singleton("L"), RaftLifecycle.newBuilder().mockTime().build());
+    Theseus leader = new Theseus("L", transport, Collections.singleton("L"), RaftLifecycle.newBuilder().mockTime().build());
     withNodes(transport, nodes -> {
-      nodes[0].setElementRetryAsync("element", new byte[]{42}, true, Duration.ofMinutes(1)).get(1, TimeUnit.SECONDS);
+      nodes[0].setElementAsync("element", new byte[]{42}, true, Duration.ofMinutes(1)).get(1, TimeUnit.SECONDS);
       Optional<byte[]> elem = nodes[0].getElement("element");
       assertTrue("Element committed to a node should be available on the same node", elem.isPresent());
       assertArrayEquals("Should have been able to retrieve the set element", new byte[]{42}, elem.get());
@@ -515,17 +515,17 @@ public class EloquentRaftTest extends WithLocalTransport {
    */
   @Test
   public void removeElement() {
-    EloquentRaft leader = new EloquentRaft("L", transport, new HashSet<>(Arrays.asList("L", "A")), RaftLifecycle.newBuilder().mockTime().build());
-    EloquentRaft follower = new EloquentRaft("A", transport, new HashSet<>(Arrays.asList("L", "A")), RaftLifecycle.newBuilder().mockTime().build());
+    Theseus leader = new Theseus("L", transport, new HashSet<>(Arrays.asList("L", "A")), RaftLifecycle.newBuilder().mockTime().build());
+    Theseus follower = new Theseus("A", transport, new HashSet<>(Arrays.asList("L", "A")), RaftLifecycle.newBuilder().mockTime().build());
     withNodes(transport, nodes -> {
       // Set an element
-      nodes[1].setElementRetryAsync("element", new byte[]{42}, true, Duration.ofMinutes(1)).get();
+      nodes[1].setElementAsync("element", new byte[]{42}, true, Duration.ofMinutes(1)).get();
       Optional<byte[]> elem = nodes[0].getElement("element");
       assertTrue("Element committed to a node should be available on another node", elem.isPresent());
       assertArrayEquals("Should have been able to retrieve the set element", new byte[]{42}, elem.get());
 
       // Remove the element
-      nodes[1].removeElementRetryAsync("element", Duration.ofMinutes(1)).get();
+      nodes[1].removeElementAsync("element", Duration.ofMinutes(1)).get();
 
       // Element should not exist (on other server)
       Optional<byte[]> reread = nodes[0].getElement("element");
@@ -540,13 +540,13 @@ public class EloquentRaftTest extends WithLocalTransport {
    */
   @Test
   public void removeElements() {
-    EloquentRaft leader = new EloquentRaft("L", transport, new HashSet<>(Arrays.asList("L", "A")), RaftLifecycle.newBuilder().mockTime().build());
-    EloquentRaft follower = new EloquentRaft("A", transport, new HashSet<>(Arrays.asList("L", "A")), RaftLifecycle.newBuilder().mockTime().build());
+    Theseus leader = new Theseus("L", transport, new HashSet<>(Arrays.asList("L", "A")), RaftLifecycle.newBuilder().mockTime().build());
+    Theseus follower = new Theseus("A", transport, new HashSet<>(Arrays.asList("L", "A")), RaftLifecycle.newBuilder().mockTime().build());
     withNodes(transport, nodes -> {
       // Set an element
       Set<String> keys = new HashSet<>();
       for (int i = 0; i < 10; i++) {
-        nodes[1].setElementRetryAsync("element"+i, new byte[]{42}, true, Duration.ofMinutes(1)).get();
+        nodes[1].setElementAsync("element"+i, new byte[]{42}, true, Duration.ofMinutes(1)).get();
         keys.add("element"+i);
       }
 
@@ -557,7 +557,7 @@ public class EloquentRaftTest extends WithLocalTransport {
       }
 
       // Remove the element
-      nodes[1].removeElementsRetryAsync(keys, Duration.ofMinutes(1)).get();
+      nodes[1].removeElementsAsync(keys, Duration.ofMinutes(1)).get();
 
       // Element should not exist (on other server)
       for (int i = 0; i < 10; i++) {
@@ -574,11 +574,11 @@ public class EloquentRaftTest extends WithLocalTransport {
    */
   @Test
   public void getMap() {
-    EloquentRaft leader = new EloquentRaft("L", transport, new HashSet<>(Arrays.asList("L", "A")), RaftLifecycle.newBuilder().mockTime().build());
-    EloquentRaft follower = new EloquentRaft("A", transport, new HashSet<>(Arrays.asList("L", "A")), RaftLifecycle.newBuilder().mockTime().build());
+    Theseus leader = new Theseus("L", transport, new HashSet<>(Arrays.asList("L", "A")), RaftLifecycle.newBuilder().mockTime().build());
+    Theseus follower = new Theseus("A", transport, new HashSet<>(Arrays.asList("L", "A")), RaftLifecycle.newBuilder().mockTime().build());
     withNodes(transport, nodes -> {
       // Set an element
-      nodes[1].setElementRetryAsync("element", new byte[]{42}, true, Duration.ofMinutes(1)).get();
+      nodes[1].setElementAsync("element", new byte[]{42}, true, Duration.ofMinutes(1)).get();
       Map<String, byte[]> map = nodes[0].getMap();
       assertEquals("Leader should see the set element", 1, map.size());
       assertArrayEquals("Leader should see the correct set element", new byte[]{42}, map.get("element"));
@@ -595,16 +595,16 @@ public class EloquentRaftTest extends WithLocalTransport {
    */
   @Test
   public void addChangeListener() {
-    EloquentRaft leader = new EloquentRaft("L", transport, new HashSet<>(Arrays.asList("L", "A")), RaftLifecycle.newBuilder().mockTime().build());
-    EloquentRaft follower = new EloquentRaft("A", transport, new HashSet<>(Arrays.asList("L", "A")), RaftLifecycle.newBuilder().mockTime().build());
+    Theseus leader = new Theseus("L", transport, new HashSet<>(Arrays.asList("L", "A")), RaftLifecycle.newBuilder().mockTime().build());
+    Theseus follower = new Theseus("A", transport, new HashSet<>(Arrays.asList("L", "A")), RaftLifecycle.newBuilder().mockTime().build());
     AtomicInteger changesSeen = new AtomicInteger(0);
     withNodes(transport, nodes -> {
       KeyValueStateMachine.ChangeListener changeListener = (changedKey, newValue, state) -> changesSeen.incrementAndGet();
       nodes[0].addChangeListener(changeListener);
       // Set an element
-      nodes[1].setElementRetryAsync("element", new byte[]{42}, true, Duration.ofMinutes(1)).get();
+      nodes[1].setElementAsync("element", new byte[]{42}, true, Duration.ofMinutes(1)).get();
       nodes[0].removeChangeListener(changeListener);
-      nodes[1].setElementRetryAsync("element", new byte[]{43}, true, Duration.ofMinutes(1)).get();
+      nodes[1].setElementAsync("element", new byte[]{43}, true, Duration.ofMinutes(1)).get();
     }, leader, follower);
 
     assertEquals("Should have seen one (but only one) change on the cluster", 1, changesSeen.get());
@@ -618,27 +618,27 @@ public class EloquentRaftTest extends WithLocalTransport {
    * @see #transientSet()
    * @see #transientSetDynamicCluster()
    */
-  private void permanence(boolean permanent, boolean dynamic, boolean shadow, Consumer<EloquentRaft> killMethod) {
-    EloquentRaft L;
-    EloquentRaft A;
-    EloquentRaft B;
+  private void permanence(boolean permanent, boolean dynamic, boolean shadow, Consumer<Theseus> killMethod) {
+    Theseus L;
+    Theseus A;
+    Theseus B;
     if (dynamic) {
-      L = new EloquentRaft("L", transport, 3, RaftLifecycle.newBuilder().mockTime().build());
-      A = new EloquentRaft("A", transport, 3, RaftLifecycle.newBuilder().mockTime().build());
-      B = new EloquentRaft("B", transport, 3, RaftLifecycle.newBuilder().mockTime().build());
+      L = new Theseus("L", transport, 3, RaftLifecycle.newBuilder().mockTime().build());
+      A = new Theseus("A", transport, 3, RaftLifecycle.newBuilder().mockTime().build());
+      B = new Theseus("B", transport, 3, RaftLifecycle.newBuilder().mockTime().build());
       L.bootstrap(false);
     } else {
-      L = new EloquentRaft("L", transport, new HashSet<>(Arrays.asList("L", "A", "B")), RaftLifecycle.newBuilder().mockTime().build());
-      A = new EloquentRaft("A", transport, new HashSet<>(Arrays.asList("L", "A", "B")), RaftLifecycle.newBuilder().mockTime().build());
-      B = new EloquentRaft("B", transport, new HashSet<>(Arrays.asList("L", "A", "B")), RaftLifecycle.newBuilder().mockTime().build());
+      L = new Theseus("L", transport, new HashSet<>(Arrays.asList("L", "A", "B")), RaftLifecycle.newBuilder().mockTime().build());
+      A = new Theseus("A", transport, new HashSet<>(Arrays.asList("L", "A", "B")), RaftLifecycle.newBuilder().mockTime().build());
+      B = new Theseus("B", transport, new HashSet<>(Arrays.asList("L", "A", "B")), RaftLifecycle.newBuilder().mockTime().build());
     }
     withNodes(transport, (nodes) -> {
-      EloquentRaft submitter = A;
+      Theseus submitter = A;
       if (shadow) {
-        submitter = new EloquentRaft("C", transport, 3, RaftLifecycle.newBuilder().mockTime().build());
+        submitter = new Theseus("C", transport, 3, RaftLifecycle.newBuilder().mockTime().build());
         transport.sleep(1000);  // wait for the submitter to join
       }
-      submitter.setElementRetryAsync("transient", new byte[]{42}, permanent, Duration.ofSeconds(5)).get();
+      submitter.setElementAsync("transient", new byte[]{42}, permanent, Duration.ofSeconds(5)).get();
       killMethod.accept(submitter);
       transport.sleep(EloquentRaftAlgorithm.MACHINE_DOWN_TIMEOUT);
       transport.sleep(5000);
@@ -733,10 +733,10 @@ public class EloquentRaftTest extends WithLocalTransport {
   /**
    * Boots and shuts down three nodes. Runs some code in the middle.
    */
-  private void threeNodeSimpleTest(ThrowableConsumer<EloquentRaft[]> withNodes) {
-    EloquentRaft L = new EloquentRaft("L", transport, new HashSet<>(Arrays.asList("L", "A", "B")), RaftLifecycle.newBuilder().mockTime().build());
-    EloquentRaft A = new EloquentRaft("A", transport, new HashSet<>(Arrays.asList("L", "A", "B")), RaftLifecycle.newBuilder().mockTime().build());
-    EloquentRaft B = new EloquentRaft("B", transport, new HashSet<>(Arrays.asList("L", "A", "B")), RaftLifecycle.newBuilder().mockTime().build());
+  private void threeNodeSimpleTest(ThrowableConsumer<Theseus[]> withNodes) {
+    Theseus L = new Theseus("L", transport, new HashSet<>(Arrays.asList("L", "A", "B")), RaftLifecycle.newBuilder().mockTime().build());
+    Theseus A = new Theseus("A", transport, new HashSet<>(Arrays.asList("L", "A", "B")), RaftLifecycle.newBuilder().mockTime().build());
+    Theseus B = new Theseus("B", transport, new HashSet<>(Arrays.asList("L", "A", "B")), RaftLifecycle.newBuilder().mockTime().build());
     withNodes(transport, withNodes, L, A, B);
     transport.stop();
     if (L.node.algorithm instanceof SingleThreadedRaftAlgorithm) {
@@ -855,7 +855,7 @@ public class EloquentRaftTest extends WithLocalTransport {
    */
   @Test
   public void withElementNoMutationSaves() {
-    EloquentRaft raft = new EloquentRaft("L", transport, Collections.singleton("L"), RaftLifecycle.newBuilder().mockTime().build());
+    Theseus raft = new Theseus("L", transport, Collections.singleton("L"), RaftLifecycle.newBuilder().mockTime().build());
     withNodes(transport, (nodes) -> {
       raft.withElementAsync("key", Function.identity(), () -> new byte[]{42}, false).get(1, TimeUnit.SECONDS);
       Optional<byte[]> retrieved = raft.getElement("key");

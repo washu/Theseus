@@ -34,11 +34,11 @@ import java.util.stream.Collectors;
  * - Keep it simple
  *
  */
-public class EloquentRaft {
+public class Theseus {
   /**
    * An SLF4J Logger for this class.
    */
-  private static final Logger log = LoggerFactory.getLogger(EloquentRaft.class);
+  private static final Logger log = LoggerFactory.getLogger(Theseus.class);
 
 
   /**
@@ -46,7 +46,7 @@ public class EloquentRaft {
    * associated with a resource that the holder is responsible for. Because forgetting/failing to release long lived
    * locks can be catastrophic, this class packages up a number of safegaurds to ensure that the lock does eventually
    * get released. Since locks auto-release when their owner disconnects from the cluster, this can safely be a part of
-   * EloquentRaft, since as soon as EloquentRaft closes these locks no longer need cleaning up anyways.
+   * Theseus, since as soon as Theseus closes these locks no longer need cleaning up anyways.
    */
   public interface LongLivedLock extends AutoCloseable {
     /**
@@ -265,7 +265,7 @@ public class EloquentRaft {
   final KeyValueStateMachine stateMachine;
 
   /**
-   * The RaftLifecycle that governs this EloquentRaft
+   * The RaftLifecycle that governs this Theseus
    */
   public final RaftLifecycle lifecycle;
 
@@ -296,14 +296,14 @@ public class EloquentRaft {
 
   /**
    * The constructor takes three arguments: a cluster name (for discovery), a server name (for identifying ourselves,
-   * must be unique within the cluster), and a reference to the lifecycle object that governs this EloquentRaft (so that
+   * must be unique within the cluster), and a reference to the lifecycle object that governs this Theseus (so that
    * tests can pass different RaftLifecycle objects to different Raft instances).
    *
    * @param algo The Raft algorithm to use. Defaults to {@link EloquentRaftAlgorithm}.
    * @param transport The type of transport to use for this Raft cluster.
-   * @param lifecycle The governing RaftLifecycle for this EloquentRaft, so that we can pass mock ones in inside tests
+   * @param lifecycle The governing RaftLifecycle for this Theseus, so that we can pass mock ones in inside tests
    */
-  public EloquentRaft(RaftAlgorithm algo, RaftTransport transport, RaftLifecycle lifecycle) {
+  public Theseus(RaftAlgorithm algo, RaftTransport transport, RaftLifecycle lifecycle) {
     //
     // I. Set variables
     //
@@ -360,9 +360,9 @@ public class EloquentRaft {
         } catch (Throwable t) {
           if (t instanceof TimeoutException ||
               (t instanceof CompletionException && t.getCause() != null && t.getCause() instanceof TimeoutException)) {
-            log.info("Caught a timeout exception in the lockCleanupThread in EloquentRaft");
+            log.info("Caught a timeout exception in the lockCleanupThread in Theseus");
           } else {
-            log.warn("Caught an exception in the lockCleanupThread in EloquentRaft", t);
+            log.warn("Caught an exception in the lockCleanupThread in Theseus", t);
           }
         }
       }
@@ -380,9 +380,9 @@ public class EloquentRaft {
    * @param serverName The name of this server in the cluster.
    * @param transport The transport to use to communicate with the cluster.
    * @param targetClusterSize The target quorum size we try to maintain with auto-resizing
-   * @param lifecycle The governing RaftLifecycle for this EloquentRaft, so that we can pass mock ones in inside tests
+   * @param lifecycle The governing RaftLifecycle for this Theseus, so that we can pass mock ones in inside tests
    */
-  public EloquentRaft(String serverName, RaftTransport transport, int targetClusterSize, RaftLifecycle lifecycle) {
+  public Theseus(String serverName, RaftTransport transport, int targetClusterSize, RaftLifecycle lifecycle) {
     this(
         new SingleThreadedRaftAlgorithm(
             new EloquentRaftAlgorithm(
@@ -402,9 +402,9 @@ public class EloquentRaft {
    *
    * @param serverName The name of this server in the cluster.
    * @param initialMembership The initial cluster membership.
-   * @param lifecycle The governing EloquentLifecycle for this EloquentRaft, so that we can pass mock ones in inside tests
+   * @param lifecycle The governing EloquentLifecycle for this Theseus, so that we can pass mock ones in inside tests
    */
-  public EloquentRaft(String serverName, RaftTransport transport, Set<String> initialMembership, RaftLifecycle lifecycle) {
+  public Theseus(String serverName, RaftTransport transport, Collection<String> initialMembership, RaftLifecycle lifecycle) {
     this(
         new SingleThreadedRaftAlgorithm(
             new EloquentRaftAlgorithm(
@@ -428,7 +428,7 @@ public class EloquentRaft {
    *
    * @throws IOException Thrown if we could not create the underlying transport.
    */
-  public EloquentRaft(String serverName, Set<String> quorum) throws IOException {
+  public Theseus(String serverName, Collection<String> quorum) throws IOException {
     this(
         serverName,
         RaftTransport.create(serverName, RaftTransport.Type.NET),
@@ -447,7 +447,7 @@ public class EloquentRaft {
    *
    * @throws IOException Thrown if we could not create the underlying transport.
    */
-  public EloquentRaft(int targetQuorumSize) throws IOException {
+  public Theseus(int targetQuorumSize) throws IOException {
     this(
         defaultServerName.get(),
         RaftTransport.create(defaultServerName.get(), RaftTransport.Type.NET),
@@ -509,13 +509,26 @@ public class EloquentRaft {
 
 
   /**
-   * Bootstrap this cluster, if there are leaders.
+   * Bootstrap this cluster, if there are no leaders.
+   *
+   * @param force If true, attempt to take leadership by force.
+   *              That is, massively increase the term number.
    *
    * @return True if the cluster was successfully bootstrapped
    */
   public boolean bootstrap(boolean force) {
     log.info("Bootstrapping Raft");
     return node.bootstrap(force);
+  }
+
+
+  /**
+   * Bootstrap this cluster, if there are no leaders.
+   *
+   * @return True if the cluster was successfully bootstrapped
+   */
+  public boolean bootstrap() {
+    return bootstrap(false);
   }
 
 
@@ -951,7 +964,7 @@ public class EloquentRaft {
    *                  the last people to have edited the element. If true, the element will stick around forever.
    */
   @SuppressWarnings("unused")
-  public CompletableFuture<Boolean> setElementRetryAsync(String elementName, byte[] value, boolean permanent, Duration timeout) {
+  public CompletableFuture<Boolean> setElementAsync(String elementName, byte[] value, boolean permanent, Duration timeout) {
     return retryTransitionAsync(createSetValueTransition(elementName, value, permanent), timeout);
   }
 
@@ -977,7 +990,7 @@ public class EloquentRaft {
    *
    * @param elementName the name of the element to remove
    */
-  public CompletableFuture<Boolean> removeElementRetryAsync(String elementName, Duration timeout) {
+  public CompletableFuture<Boolean> removeElementAsync(String elementName, Duration timeout) {
     // Remove the object from the map
     return retryTransitionAsync(KeyValueStateMachine.createRemoveValueTransition(elementName), timeout);
   }
@@ -988,7 +1001,7 @@ public class EloquentRaft {
    *
    * @param elementName the name of the element to remove
    */
-  public CompletableFuture<Boolean> removeElementsRetryAsync(Set<String> elementName, Duration timeout) {
+  public CompletableFuture<Boolean> removeElementsAsync(Set<String> elementName, Duration timeout) {
     // Create a grouped transition to remove all the elements from Raft at once
     return retryTransitionAsync(KeyValueStateMachine.createGroupedTransition(elementName.stream().map(KeyValueStateMachine::createRemoveValueTransition).collect(Collectors.toList()).toArray(new byte[elementName.size()][])), timeout);
   }
