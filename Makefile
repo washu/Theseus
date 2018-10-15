@@ -23,7 +23,7 @@ release/theseus-${VERSION}.jar: theseus/build/classpath.txt ${COMMON_SOURCES} ${
 	cd public_common && ./gradlew generateProto
 	cd theseus && ./gradlew generateProto
 	@echo "Compiling Java..."
-	@javac -cp "`cat theseus/build/classpath.txt`" -d ./build ${COMMON_SOURCES} ${THESEUS_SOURCES}
+	@javac -encoding utf8 -cp "`cat theseus/build/classpath.txt`" -d ./build ${COMMON_SOURCES} ${THESEUS_SOURCES}
 	@echo "Creating Jar..."
 	mkdir -p ./release/
 	jar cvf release/theseus-${VERSION}.jar -C build .
