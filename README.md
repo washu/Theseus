@@ -29,7 +29,6 @@ and general ease-of-use of the API.
 * [Versioning](#versioning)
 * [Authors](#authors)
 * [License](#license)
-* [References](#references)
 
 
 ## Features
@@ -132,7 +131,6 @@ or by invoking Gradle directly:
 If you want to compile directly without using Gradle, you'll need to ensure
 that the following dependencies are in your classpath:
 
-* [Gradle](https://gradle.org/) - Dependency management.
 * [SLF4J](https://www.slf4j.org/) - For unified logging.
 * [gRPC](https://grpc.io/) - RPC library.
 * [protobuf](https://developers.google.com/protocol-buffers/) - Interchange and data storage format.
@@ -228,7 +226,7 @@ RPC call (one to take the lock, one to mutate the value + release the lock
 as a single operation). 
 The `withElementAsync()` function takes four arguments:
 
-1. THe key of the element we're mutating.
+1. The key of the element we're mutating.
 2. A mutator, which takes a byte array and returns a mutated
    byte array.
 3. An optional creator. This is a `Supplier` that produces a new instance,
@@ -283,25 +281,170 @@ These remaining methods are:
 
 ### Distributed locks
 
-TODO Go over taking and releasing locks
+One of the more commonly used features of distributed consensus algorithms are
+distributed locks. Theseus' locks have the following guarantees:
+
+1. If a lock is taken on a given server, no other live server holds the lock 
+   (this is the basic lock guarantee).
+2. If a lock is held by a server that is considered _dead_ (i.e., has been down
+   for longer than the specified machine down timeout or explicitly shutdown), 
+   then that lock is
+   automatically released. While useful in practice, this does create the 
+   possibility of two servers holding a lock if there is a prolonged network
+   partition. See the [caveats](#caveats) section below.
+3. A lock can be automatically released after a user-specified safety window, 
+   to prevent a server from accidentally keeping a critical lock past when
+   it should.
+4. Locks that could not release because there was no valid quorum are
+   automatically retried until a quorum is restored.
+
+The central theme in all of these guarantees is an emphasis on ensuring
+that locks are released when they should be, to prevent deadlocks.
+
+In addition to the implicit locks taken in `withElementAsync()`, a lock can be
+explicitly taken either with `withDistributedLockAsync()` -- which handles
+releasing the lock automatically -- or with `tryLock()` or `tryLockAsync()`,
+which return explicit lock objects.
+
+A sample usage of `withElementAsync()` could be:
+
+```java
+Theseus raft = ...
+raft.bootstrap();
+...
+
+System.out.println("I am taking the lock");
+CompletableFuture<Boolean> future = raft.withDistributedLockAsync("my-lock", () ->
+  System.out.println("I have the lock")
+);
+try {
+  boolean success = future.get();
+  System.out.println("I released the lock and " + (success ? "ran" : "did not run") + " the code in the runnable");
+} catch (InterruptedException | ExecutionException e) {
+  e.printStackTrace();
+}
+```
+
+A sample usage of `tryLock()` could be:
+
+```java
+Theseus raft = ...
+raft.bootstrap();
+...
+
+System.out.println("I am taking the lock");
+Optional<Theseus.LongLivedLock> lock = raft.tryLock("my-lock", Duration.ofDays(365));
+if (lock.isPresent()) {
+  try {
+    System.out.println("I have the lock");
+  } finally {
+    try {
+      lock.get().release().get();
+      System.out.println("I released the lock");
+    } catch (InterruptedException | ExecutionException e) {
+      System.out.println("Theseus will try release the lock automatically later");
+    }
+  }
+}
+
+```
 
 ### Change listeners
 
-TODO Go over adding and removing change listeners
+One of the more useful features of Theseus is the implementation of 
+_change listeners_. A change listener is a block of code that is executed 
+whenever a value is changed in the key-value state machine.
+This is useful for, e.g., updating the frontends of all connected sessions
+when a value is changed on the backend.
+You can think of change listeners as a heavyweight version of messaging
+services like RabbitMQ or Kafka.
+
+A change listener takes as arguments three fields: the key being changed, the 
+new value (or empty if it's been deleted), and the current entire state of the 
+state machine as a read-only map.
+
+An example change listener could be something like below:
+
+```java
+Theseus raft = ...
+raft.bootstrap();
+...
+
+raft.addChangeListener((String changedKey, Optional<byte[]> newValue, Map<String, byte[]> state) -> {
+  if (newValue.isPresent()) {
+    System.out.println("Key " + changedKey + " changed.");
+  } else {
+    System.out.println("Key " + changedKey + " was deleted.");
+  }
+});
+```
 
 ### Error handling
 
-TODO Go over error listeners and Prometheus monitoring.
+An important part of any long-running system is being able to log and report
+errors. These are meant to be errors that should signal pages -- in fact, in
+Eloquent's codebase, they do!
+
+By default, Raft has no registered error handlers.
+You can register an error handler directly on the `Theseus` class via:
+
+```java
+Theseus raft = ...
+raft.bootstrap();
+...
+
+raft.addErrorListener((String incidentKey, String debugMessage, StackTraceElement[] stackTrace) -> {
+  System.err.println("Raft encountered an error!");
+});
+```
 
 
 ## Caveats
 
-TODO Go over CAP theorem theory
+As a necessary drawback to its design, Theseus has weaker guarantees than the
+default Raft implementation. This falls out necessarily from the fact that 
+__it's impossible to distinguish a killed machine from a long network
+partition__. This comes into play in two situations:
+
+1. Locks are automatically released when a machine goes down. In the case of a
+   long network partition, this means it's possible for two servers to hold the
+   same lock at the same time.
+
+2. In rare corner cases, it's possible for Raft to lose committed entries.
+
+Both of these should be exceedingly rare in practice, but are important to keep
+in mind for environments that are sensitive to them.
+
+The second of the caveats in particular deserves a bit more explanation. 
+Assuming a quorum size of 3+, Theseus is tolerant to a single partition of 
+arbitrary length, and is tolerant to a complete network partition (where no
+node can see any other node).
+But, importantly, it is not robust to multiple carefully timed simultaneous 
+partitions. 
+
+To illustrate the failure case in a 3-node 
+cluster (server names: `A`, `B`, `C`):
+
+1. `A`,`B`,`C` are all in a single partition, with `A` as the leader.
+2. `A` is partitioned off. `B` is elected leader. 
+   After 30 sseconds, `B` and `C` resize their quorum size to 2. 
+   `A` is unable to resize the quorum, as it lacks a majority, and
+   therefore does not make progress.
+   Note that there is no possible partition that would allow the minority
+   group to submit a membership change and make progress.
+3. `C` is partitioned off. `B` remains leader. 
+   After 30 seconds, `B` resizes its quorum size to 1.
+   At roughly the same time, `C` resizes the quorum size to 1 and elects 
+   itself leader.
+   At this point, both `B` and `C` can make progress!
+4. The partition is lifted. One of `B` or `C` becomes the leader, clobbering
+   the progress of the other since the partition went up.
 
 
 ## Contributing
 
-Please read [CONTRIBUTING.md](https://gist.github.com/eloquentlabs/theseus/CONTRIBUTING.md)
+Contributions to Theseus are welcome and encouraged!
+Please read [CONTRIBUTING.md](https://github.com/eloquentlabs/Theseus/blob/master/CONTRIBUTING.md)
 for details on our code of conduct, and the process for submitting pull 
 requests to us.
 
@@ -315,15 +458,15 @@ For the versions available, see the
 
 ## Authors
 
-Theseus is a collaborative effort of many of us here at Eloquent, and we hope
-others will join in as well.
+Theseus is a collaborative effort of many of us here at Eloquent, and we invite
+others from the open source community to join as well.
 The current main authors are:
 
-* [**Gabor Angeli**](https://github.com/gangeli)
 * [**Keenon Werling**](https://github.com/keenon)
+* [**Gabor Angeli**](https://github.com/gangeli)
 * [**Zames Chua**](https://github.com/zameschua)
 
-Also, special thanks to the rest of the team here at Eloquent Labs!
+Though, many of the other members of the Eloquent team are occasional contributors.
 Subscribe to our [blog](https://blog.eloquent.ai/) for updates on our technology.
 
 ![cropped-group_brick-1](https://user-images.githubusercontent.com/18271085/45569463-76653100-b814-11e8-9b12-6a6ac344ef76.jpg)
@@ -332,10 +475,4 @@ Subscribe to our [blog](https://blog.eloquent.ai/) for updates on our technology
 ## License
 
 This project is licensed under the MIT License - see the [LICENSE.md](LICENSE.md) file for details
-
-
-## References
-
-* [Stanford CoreNLP](https://github.com/stanfordnlp/CoreNLP)
-* [Diego Ongaro's work on Raft Consensus algorithm](https://raft.github.io/)
 
