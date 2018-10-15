@@ -1096,7 +1096,7 @@ public class Theseus {
    *
    *
    * Usage:
-   *  RaftErrorHandler errorListener = (debugMessage, stackTrace) -> {
+   *  RaftErrorHandler errorListener = (debugMessage, stackTrace) -&gt; {
    *    // Do something with the debug message / stackTrace
    *    // Eg. Logging, or alerting via PagerDuty
    *  }

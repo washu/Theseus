@@ -193,7 +193,7 @@ public class Span implements Iterable<Long>, Comparable<Span>, Serializable {
    *
    * @param i The value we are checking.
    *
-   * @return True if begin <= i < end.
+   * @return True if begin &lt;= i &lt; end.
    */
   public boolean contains(int i) {
     return i >= this.begin && i < this.end;

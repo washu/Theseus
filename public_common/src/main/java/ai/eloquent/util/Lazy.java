@@ -6,7 +6,7 @@ import java.util.function.Supplier;
 /**
  * An instantiation of a lazy object.
  *
- * @author Gabor Angeli <gabor@eloquent.ai>
+ * @author Gabor Angeli &lt;gabor@eloquent.ai&gt;
  */
 public abstract class Lazy<E> {
   /** If this lazy should cache, this is the cached value. */

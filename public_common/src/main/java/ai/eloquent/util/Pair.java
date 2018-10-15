@@ -103,7 +103,7 @@ public class Pair <T1,T2> implements Comparable<Pair<T1,T2>> {
    * the elements of the <code>Pair</code> are themselves comparable.
    * It will then return a value based on the pair of objects, where
    * <code>p &gt; q iff p.first() &gt; q.first() ||
-   * (p.first().equals(q.first()) && p.second() &gt; q.second())</code>.
+   * (p.first().equals(q.first()) &amp;&amp; p.second() &gt; q.second())</code>.
    * If the other object is not a <code>Pair</code>, it throws a
    * <code>ClassCastException</code>.
    *

@@ -725,7 +725,7 @@ public class KeyValueStateMachine extends RaftStateMachine {
 
 
   /**
-   * This returns a copy of the key->value map in the state machine.
+   * This returns a copy of the key-&gt;value map in the state machine.
    */
   public Map<String, byte[]> map() {
     return new ValueWithOptionalOwnerMapView(new HashMap<>(this.values));

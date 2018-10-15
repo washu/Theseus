@@ -137,3 +137,10 @@ dependencies {
   testCompile group: 'org.slf4j', name: 'slf4j-simple',      version: '1.7.13'
 
 }
+  
+task writeTheseusClasspath {
+  doLast {
+    buildDir.mkdirs()
+    new File(buildDir, "classpath.txt").text = configurations.runtime.asPath
+  }
+}

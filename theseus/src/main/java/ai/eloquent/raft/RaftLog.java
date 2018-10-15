@@ -560,7 +560,7 @@ public class RaftLog {
 
 
   /**
-   * If leaderCommit > commitIndex, set commitIndex = min(leaderCommit, index of last new entry)
+   * If leaderCommit &gt; commitIndex, set commitIndex = min(leaderCommit, index of last new entry)
    *
    * @param leaderCommit the commit from the leader
    */
