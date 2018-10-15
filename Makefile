@@ -53,6 +53,9 @@ release: release/theseus-${VERSION}.jar release/theseus-${VERSION}-sources.jar r
 	cd release; gpg -ab theseus-${VERSION}-sources.jar
 	@echo "Signing javadoc..."
 	cd release; gpg -ab theseus-${VERSION}-javadoc.jar
+	@echo "Copying pom.xml..."
+	cp pom.xml release/theseus-${VERSION}.pom
+
 
 #
 # Run the unit tests
