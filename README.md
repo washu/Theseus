@@ -70,12 +70,12 @@ list of ways in which Theseus is different from other Raft implementations:
    does not have time to clean up after itself at all, much less update Raft's
    distributed state reliably.
 
-3. **Change Listeners**. Theseus allows for arbitrary user code to listern to
+3. **Change Listeners**. Theseus allows for arbitrary user code to listen to
    changes to its underlying key-value store. This allows Theseus to act as a
    sort of low-bandwidth pseudo-messaging service, where listening nodes are 
    informed of changes to the value of a given key.
 
-4. **Simple, Safe APIS**. We constructed our top-level API to be as simple and
+4. **Simple, Safe APIs**. We constructed our top-level API to be as simple and
    safe as possible. Mutating elements in the key-value store ensures locks are
    taken on that element before the mutation happens, and are guaranteed to 
    release safely afterwards. Distributed locks have an expiration date by 
@@ -93,7 +93,7 @@ Each of these is documented below:
 ### From Maven
 
 The most recent version of Theseus on Maven can be found
-[here](https://mvnrepository.com/artifact/ai.eloquent/theseus/0.3.0).
+[here](https://search.maven.org/artifact/ai.eloquent/theseus/0.3.0/jar).
 It can be included in a Maven project by adding the following
 to the `<dependencies>` section of the project's `pom.xml` file:
 
@@ -109,7 +109,7 @@ to the `<dependencies>` section of the project's `pom.xml` file:
 
 Installation from Gradle is similar to Maven. The most recent release
 can be found
-[here](https://mvnrepository.com/artifact/ai.eloquent/theseus/0.3.0).
+[here](https://search.maven.org/artifact/ai.eloquent/theseus/0.3.0/jar).
 It can be included in a Gradle project by adding the following
 to the `dependencies` section of the project's `build.gradle` file:
 
@@ -192,7 +192,7 @@ At a high level, there are two ways to create a Raft server:
 
 In either of these cases, you then need to _bootstrap_ the quorum.
 Bootstrapping is idempotent, which means calling it multiple times, or calling
-it from multiple servers, is harmless. However, traditionally, onlye one of
+it from multiple servers, is harmless. However, traditionally, only one of
 the servers should be bootstrapped, and the others should automatically
 detect the bootstrapped server and join the quorum.
 
@@ -428,7 +428,7 @@ cluster (server names: `A`, `B`, `C`):
 
 1. `A`,`B`,`C` are all in a single partition, with `A` as the leader.
 2. `A` is partitioned off. `B` is elected leader. 
-   After 30 sseconds, `B` and `C` resize their quorum size to 2. 
+   After 30 seconds, `B` and `C` resize their quorum size to 2. 
    `A` is unable to resize the quorum, as it lacks a majority, and
    therefore does not make progress.
    Note that there is no possible partition that would allow the minority
