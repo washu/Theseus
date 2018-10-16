@@ -46,6 +46,10 @@ release/theseus-${VERSION}-javadoc.jar: ${COMMON_SOURCES} ${THESEUS_SOURCES}
 	mkdir -p ./release/
 	jar cvf release/theseus-${VERSION}-javadoc.jar -C doc .
 
+release/theseus-${VERSION}.pom:
+	@echo "Copying pom.xml..."
+	cp pom.xml release/theseus-${VERSION}.pom
+
 release: release/theseus-${VERSION}.jar release/theseus-${VERSION}-sources.jar release/theseus-${VERSION}-javadoc.jar
 	@echo "Signing code..."
 	cd release; gpg -ab theseus-${VERSION}.jar
@@ -53,8 +57,10 @@ release: release/theseus-${VERSION}.jar release/theseus-${VERSION}-sources.jar r
 	cd release; gpg -ab theseus-${VERSION}-sources.jar
 	@echo "Signing javadoc..."
 	cd release; gpg -ab theseus-${VERSION}-javadoc.jar
-	@echo "Copying pom.xml..."
-	cp pom.xml release/theseus-${VERSION}.pom
+	@echo "Signing pom.xml..."
+	cd release; gpg -ab theseus-${VERSION}.pom
+	@echo "Creating bundle..."
+	cd release; jar -cvf bundle.jar `find . -name "*"`
 
 
 #

@@ -12,6 +12,8 @@ Theseus is written in Java, with a special emphasis on being robust
 to modern cloud infrastructure (e.g., [Kubernetes](https://kubernetes.io/))
 and general ease-of-use of the API.
 
+**Note that this is a pre-release; APIs are liable to change with minor versions**
+
 ## Table of Contents
 * [Features](#features)
 * [Installation](#installation)
@@ -90,7 +92,6 @@ Each of these is documented below:
 
 ### From Maven
 
-Theseus is not yet on Maven, but will be soon!
 The most recent version of Theseus on Maven can be found
 [here](https://mvnrepository.com/artifact/ai.eloquent/theseus/0.3.0).
 It can be included in a Maven project by adding the following
