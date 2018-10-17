@@ -9,7 +9,9 @@ import org.slf4j.LoggerFactory;
 
 import javax.annotation.Nonnull;
 import javax.annotation.Nullable;
+import java.io.ByteArrayInputStream;
 import java.lang.ref.WeakReference;
+import java.nio.ByteBuffer;
 import java.time.Duration;
 import java.util.*;
 import java.util.concurrent.*;
@@ -78,23 +80,11 @@ public abstract class RaftBackedCache<V> implements Iterable<Map.Entry<String,V>
     /**
      * This deserializes a single entry from its raw bytes.
      */
-    public static <V> Entry<V> deserialize(String key, byte[] raw, Function<byte[], Optional<V>> deserialize) throws InvalidProtocolBufferException {
+    public static <V> Entry<V> deserialize(String key, byte[] raw, Function<ByteArrayInputStream, Optional<V>> deserialize) throws InvalidProtocolBufferException {
       byte persistedSinceLastWrite = raw[0];
-      // TODO:opt if this copy proves to be inefficient, we should replace this with buffers
-      byte[] rest = new byte[raw.length - 1];
-      System.arraycopy(raw, 1, rest, 0, rest.length);
+      ByteArrayInputStream rest = new ByteArrayInputStream(raw, 1, raw.length - 1);
       Optional<V> value = deserialize.apply(rest);
       if (!value.isPresent()) {
-
-        // TODO: get rid of this in the next version
-        // In order to be backwards compatible, we now back off to reading the raw data, without the prepended flag for
-        // persistence
-
-        Optional<V> backwardsCompatibleValue = deserialize.apply(raw);
-        if (backwardsCompatibleValue.isPresent()) {
-          return new Entry<>(key, false, backwardsCompatibleValue.get());
-        }
-
         throw new InvalidProtocolBufferException("Deserialization returned Optional.empty()");
       }
       return new Entry<>(key, persistedSinceLastWrite == 1, value.get());
@@ -308,13 +298,13 @@ public abstract class RaftBackedCache<V> implements Iterable<Map.Entry<String,V>
   /**
    * Serialize an object of our value type into a byte array. We need to be able to do this
    * so that we can store it in the Raft state machine.
-   * This must be able to be reread with {@link #deserialize(byte[])}.
+   * This must be able to be reread with {@link #deserialize(ByteArrayInputStream)}.
    *
    * @param object The object we are serializing.
    *
    * @return A byte[] representation of the object.
    *
-   * @see #deserialize(byte[])
+   * @see #deserialize(ByteArrayInputStream)
    */
   public abstract byte[] serialize(V object);
 
@@ -328,7 +318,7 @@ public abstract class RaftBackedCache<V> implements Iterable<Map.Entry<String,V>
    *
    * @see #serialize(Object)
    */
-  public abstract Optional<V> deserialize(byte[] serialized);
+  public abstract Optional<V> deserialize(ByteArrayInputStream serialized);
 
 
   /**
@@ -564,6 +554,14 @@ public abstract class RaftBackedCache<V> implements Iterable<Map.Entry<String,V>
 
 
   /**
+   * This just returns whatever byte array we have stored in the cache for this key, if any.
+   */
+  public Optional<ByteArrayInputStream> getRawIfPresent(String key) {
+    return raft.stateMachine.get(prefix() + key, TimerUtils.mockableNow().toEpochMilli()).flatMap(raw -> Optional.of(new ByteArrayInputStream(raw, 1, raw.length - 1)));
+  }
+
+
+  /**
    * Get an element from the cache.
    *
    * @param key The key of the element to get
@@ -646,6 +644,17 @@ public abstract class RaftBackedCache<V> implements Iterable<Map.Entry<String,V>
         })
         .filter(Objects::nonNull)
         .iterator();
+  }
+
+  /**
+   * Returns an iterator over the keys in the RaftBackedCache.
+   */
+  public Set<String> keySet() {
+    String prefix = prefix();
+    return raft.getMap().keySet().stream()
+        .filter(x -> x.startsWith(prefix))
+        .map(x -> x.substring(prefix.length()))
+        .collect(Collectors.toSet());
   }
 
   /**
