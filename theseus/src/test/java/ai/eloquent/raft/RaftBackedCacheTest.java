@@ -8,7 +8,6 @@ import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
 
-import java.io.ByteArrayInputStream;
 import java.time.Duration;
 import java.util.*;
 import java.util.concurrent.ExecutionException;
@@ -51,7 +50,7 @@ public class RaftBackedCacheTest {
     }
 
     @Override
-    public Optional<String> deserialize(ByteArrayInputStream serialized) {
+    public Optional<String> deserialize(byte[] serialized) {
       return Optional.of(new String(ZipUtils.gunzip(serialized), Charsets.UTF_8));
     }
 
@@ -322,11 +321,7 @@ public class RaftBackedCacheTest {
     r.nextBytes(buffer);
 
     byte[] serialized = new RaftBackedCache.Entry<>("key", false, buffer).serialize(x -> x);
-    RaftBackedCache.Entry<byte[]> deserialized = RaftBackedCache.Entry.deserialize("key", serialized, a -> {
-      byte[] retrieved = new byte[buffer.length];
-      a.read(retrieved, 0, buffer.length);
-      return Optional.of(retrieved);
-    });
+    RaftBackedCache.Entry<byte[]> deserialized = RaftBackedCache.Entry.deserialize("key", serialized, Optional::of);
     assertArrayEquals("Simple serialization should be stable",
         buffer, deserialized.value);
   }
@@ -344,11 +339,7 @@ public class RaftBackedCacheTest {
     RaftBackedCache.Entry<byte[]> entry = new RaftBackedCache.Entry<>("key", false, buffer);
     entry.isPersisted = false;
     byte[] serialized = entry.serialize(Function.identity());
-    RaftBackedCache.Entry<byte[]> deserialized = RaftBackedCache.Entry.deserialize("key", serialized, a -> {
-      byte[] retrieved = new byte[buffer.length];
-      a.read(retrieved, 0, buffer.length);
-      return Optional.of(retrieved);
-    });
+    RaftBackedCache.Entry<byte[]> deserialized = RaftBackedCache.Entry.deserialize("key", serialized, Optional::of);
     assertArrayEquals("Simple serialization should be stable",
         buffer, deserialized.value);
   }

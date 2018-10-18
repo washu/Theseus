@@ -391,7 +391,8 @@ You can register an error handler directly on the `Theseus` class via:
 
 ```java
 Theseus raft = ...
-raft.bootstrap()15...
+raft.bootstrap();
+...
 
 raft.addErrorListener((String incidentKey, String debugMessage, StackTraceElement[] stackTrace) -> {
   System.err.println("Raft encountered an error!");
@@ -416,8 +417,8 @@ Both of these should be exceedingly rare in practice, but are important to keep
 in mind for environments that are sensitive to them.
 
 The second of the caveats in particular deserves a bit more explanation. 
-Assuming an odd quorum size, Theseus is tolerant to a single partition of 
-arbitrary length, including a complete network partition (where no
+Assuming a quorum size of 3+, Theseus is tolerant to a single partition of 
+arbitrary length, and is tolerant to a complete network partition (where no
 node can see any other node).
 But, importantly, it is not robust to multiple carefully timed simultaneous 
 partitions. 
@@ -440,9 +441,6 @@ cluster (server names: `A`, `B`, `C`):
 4. The partition is lifted. One of `B` or `C` becomes the leader, clobbering
    the progress of the other since the partition went up.
 
-Of course, these caveats are only applicable to the dynamically resizing
-version of Theseus. If the cluster size is fixed, Theseus maintains all of
-the original Raft guarantees.
 
 ## Contributing
 
@@ -453,7 +451,7 @@ requests to us.
 
 
 ## Versioning
-* 0.3.0 [2018-10-15] - Initial public release
+* 0.3.0 [2018-10-??] - Initial public release
 
 For the versions available, see the 
 [releases page](https://github.com/eloquentlabs/theseus/releases). 

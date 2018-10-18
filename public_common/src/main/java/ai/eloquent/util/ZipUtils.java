@@ -4,7 +4,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.*;
-import java.nio.ByteBuffer;
 import java.util.zip.DeflaterInputStream;
 import java.util.zip.GZIPInputStream;
 import java.util.zip.GZIPOutputStream;
@@ -81,22 +80,6 @@ public class ZipUtils {
           copy(stream, out);
           return out.toByteArray();
         }
-      }
-    } catch (IOException e) {
-      log.error("gunzip threw an exception on a byte array stream", e);
-      throw new RuntimeIOException(e);
-    }
-  }
-
-
-  /**
-   * Unzip a byte stream.
-   */
-  public static byte[] gunzip(ByteArrayInputStream in) throws RuntimeIOException {
-    try (GZIPInputStream stream = new GZIPInputStream(in)) {
-      try (ByteArrayOutputStream out = new ByteArrayOutputStream(Math.max(32, stream.available()))) {
-        copy(stream, out);
-        return out.toByteArray();
       }
     } catch (IOException e) {
       log.error("gunzip threw an exception on a byte array stream", e);
