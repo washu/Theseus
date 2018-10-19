@@ -1214,7 +1214,7 @@ public class Theseus {
         // A. Case: the future was successful
         return CompletableFuture.completedFuture(true);
       } else {
-        log.warn("Retrying a failed transition @ {} - this is fine, but should be rare", node.transport.now());
+        log.info("Retrying a failed transition @ {} - this is fine, but should be rare", node.transport.now());
         // B. Case: the future failed
         // B.1. Get the remaining time on the timeout
         long elapsed = node.transport.now() - startTime;
