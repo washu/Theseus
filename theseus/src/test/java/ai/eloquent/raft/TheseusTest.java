@@ -271,7 +271,7 @@ public class TheseusTest extends WithLocalTransport {
       assertFalse(lock.isCertainlyHeld());
       assertTrue("Lock should still be releasing after 10s -- we don't have consensus", lock.isPerhapsHeld());
       // 5. Check that we registered the failsafe
-      for (int i = 0; i < 100 && L.unreleasedLocks.size() == 0; ++i) {
+      for (int i = 0; i < 1000 && L.unreleasedLocks.size() == 0; ++i) {
         Uninterruptably.sleep(10);
       }
       assertEquals("We should have registered our lock as unreleased", 1, L.unreleasedLocks.size());
@@ -280,7 +280,7 @@ public class TheseusTest extends WithLocalTransport {
       synchronized (L.unreleasedLocks) {
         L.unreleasedLocks.notifyAll();
       }
-      for (int i = 0; i < 100 && L.unreleasedLocks.size() > 0; ++i) {
+      for (int i = 0; i < 1000 && L.unreleasedLocks.size() > 0; ++i) {
         Uninterruptably.sleep(10);
       }
       // 7. Check that the locks unlocked
@@ -311,7 +311,7 @@ public class TheseusTest extends WithLocalTransport {
         return new byte[0];
       }, true);
       // 2. Check that we registered the failsafe
-      for (int i = 0; i < 100 && L.unreleasedLocks.size() == 0; ++i) {
+      for (int i = 0; i < 1000 && L.unreleasedLocks.size() == 0; ++i) {
         Uninterruptably.sleep(100);
       }
       assertEquals("We should have registered our lock as unreleased", 1, L.unreleasedLocks.size());
@@ -326,7 +326,7 @@ public class TheseusTest extends WithLocalTransport {
       synchronized (L.unreleasedLocks) {
         L.unreleasedLocks.notifyAll();
       }
-      for (int i = 0; i < 100 && L.unreleasedLocks.size() > 0; ++i) {
+      for (int i = 0; i < 1000 && L.unreleasedLocks.size() > 0; ++i) {
         Uninterruptably.sleep(100);
       }
       // 5. Check that the lock unlocked
