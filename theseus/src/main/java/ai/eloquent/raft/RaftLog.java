@@ -244,7 +244,11 @@ public class RaftLog {
       if (lastGcTime > System.currentTimeMillis() - duration && lastGcTime < System.currentTimeMillis()) {
         interruptedByGC = true;
       }
-      log.warn("{} took {};  interrupted_by_gc={}", description, TimerUtils.formatTimeDifference(duration), interruptedByGC);
+      if (duration > 1000) {
+        log.warn("{} took {};  interrupted_by_gc={}", description, TimerUtils.formatTimeDifference(duration), interruptedByGC);
+      } else {
+        log.info("{} took {};  interrupted_by_gc={}", description, TimerUtils.formatTimeDifference(duration), interruptedByGC);
+      }
     }
     return true;
   }
