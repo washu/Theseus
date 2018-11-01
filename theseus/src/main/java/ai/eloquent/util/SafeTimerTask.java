@@ -27,7 +27,7 @@ public abstract class SafeTimerTask extends TimerTask {
   /**
    * A thread pool for our timer tasks.
    */
-  private static final Lazy<ExecutorService> POOL = Lazy.of(() -> RaftLifecycle.global.managedThreadPool("timertask"));
+  private static final Lazy<ExecutorService> POOL = Lazy.of(() -> RaftLifecycle.global.managedThreadPool("safetimer"));
 
   /**
    * If true, this task has been cancelled.

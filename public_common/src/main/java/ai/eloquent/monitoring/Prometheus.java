@@ -65,6 +65,9 @@ public class Prometheus {
   private static Method GAUGE_METHOD_BUILD;
 
   @Nullable
+  private static Method GAUGE_METHOD_LABELS;
+
+  @Nullable
   private static Method GAUGE_METHOD_GET;
 
   @Nullable
@@ -77,6 +80,21 @@ public class Prometheus {
   private static Method GAUGE_METHOD_DEC;
 
   @Nullable
+  private static Method GAUGECHILD_METHOD_GET;
+
+  @Nullable
+  private static Method GAUGECHILD_METHOD_SET;
+
+  @Nullable
+  private static Method GAUGECHILD_METHOD_INC;
+
+  @Nullable
+  private static Method GAUGECHILD_METHOD_DEC;
+
+  @Nullable
+  private static Method GAUGEBUILDER_METHOD_LABELNAMES;
+
+  @Nullable
   private static Method GAUGEBUILDER_METHOD_REGISTER;
 
   @Nullable
@@ -86,7 +104,16 @@ public class Prometheus {
   private static Method COUNTER_METHOD_INC;
 
   @Nullable
+  private static Method COUNTERCHILD_METHOD_INC;
+
+  @Nullable
+  private static Method COUNTER_METHOD_LABEL;
+
+  @Nullable
   private static Method COUNTERBUILDER_METHOD_REGISTER;
+
+  @Nullable
+  private static Method COUNTERBUILDER_METHOD_LABELNAMES;
 
   static {
     try {
@@ -95,9 +122,11 @@ public class Prometheus {
       Class<?> SummaryBuilderClass = Class.forName("io.prometheus.client.Summary$Builder");
       Class<?> SummaryTimerClass = Class.forName("io.prometheus.client.Summary$Timer");
       Class<?> GaugeClass = Class.forName("io.prometheus.client.Gauge");
+      Class<?> GaugeChildClass = Class.forName("io.prometheus.client.Gauge$Child");
       Class<?> GaugeBuilderClass = Class.forName("io.prometheus.client.Gauge$Builder");
-      Class<?> CounterClass = Class.forName("io.prometheus.client.Gauge");
-      Class<?> CounterBuilderClass = Class.forName("io.prometheus.client.Gauge$Builder");
+      Class<?> CounterClass = Class.forName("io.prometheus.client.Counter");
+      Class<?> CounterChildClass = Class.forName("io.prometheus.client.Counter$Child");
+      Class<?> CounterBuilderClass = Class.forName("io.prometheus.client.Counter$Builder");
       SUMMARY_METHOD_BUILD = SummaryClass.getMethod("build", String.class, String.class);
       SUMMARY_METHOD_LABELS = SummaryClass.getMethod("labels", String[].class);
       SUMMARY_METHOD_STARTTIMER = summaryChildClass.getMethod("startTimer");
@@ -109,15 +138,24 @@ public class Prometheus {
       GAUGE_METHOD_SET = GaugeClass.getMethod("set", double.class);
       GAUGE_METHOD_INC = GaugeClass.getMethod("inc");
       GAUGE_METHOD_DEC = GaugeClass.getMethod("dec");
+      GAUGECHILD_METHOD_GET = GaugeChildClass.getMethod("get");
+      GAUGECHILD_METHOD_SET = GaugeChildClass.getMethod("set", double.class);
+      GAUGECHILD_METHOD_INC = GaugeChildClass.getMethod("inc");
+      GAUGECHILD_METHOD_DEC = GaugeChildClass.getMethod("dec");
+      GAUGE_METHOD_LABELS = GaugeClass.getMethod("labels", String[].class);
+      GAUGEBUILDER_METHOD_LABELNAMES = GaugeBuilderClass.getMethod("labelNames", String[].class);
       GAUGEBUILDER_METHOD_REGISTER = GaugeBuilderClass.getMethod("register");
       COUNTER_METHOD_INC = CounterClass.getMethod("inc");
+      COUNTERCHILD_METHOD_INC = CounterChildClass.getMethod("inc");
+      COUNTER_METHOD_LABEL = CounterClass.getMethod("labels", String[].class);
       COUNTER_METHOD_BUILD = CounterClass.getMethod("build", String.class, String.class);
+      COUNTERBUILDER_METHOD_LABELNAMES = CounterBuilderClass.getMethod("labelNames", String[].class);
       COUNTERBUILDER_METHOD_REGISTER = CounterBuilderClass.getMethod("register");
       havePrometheus = true;
     } catch (ClassNotFoundException e) {
-      log.info("Could not find Prometheus in your classpath -- not logging statistics", e);
+      log.info("Could not find Prometheus in your classpath -- not logging statistics");
     } catch (NoSuchMethodException e) {
-      log.warn("Prometheus methods are not as expected (version mismatch?) -- not logging statistics", e);
+      log.warn("Prometheus methods are not as expected (version mismatch?) -- not logging statistics");
       e.printStackTrace();
       SUMMARY_METHOD_BUILD = null;
       SUMMARY_METHOD_STARTTIMER = null;
@@ -294,10 +332,11 @@ public class Prometheus {
    *
    * @param name The name of the metric
    * @param help The help string of the metric
+   * @param labelNames The labels to assign to this gauge
    *
    * @return The Gauge object, or a mock if necessary.
    */
-  public static Object gaugeBuild(String name, String help) {
+  public static Object gaugeBuild(String name, String help, String... labelNames) {
     Object result;
     if (havePrometheus) {
       try {
@@ -307,6 +346,9 @@ public class Prometheus {
         // 1b. Using Prometheus and don't have a Gauge with this name yet
         } else {
           Object builder = GAUGE_METHOD_BUILD.invoke(null, name, help);
+          if (labelNames.length > 0) {
+            builder = GAUGEBUILDER_METHOD_LABELNAMES.invoke(builder, new Object[]{labelNames});
+          }
           result = GAUGEBUILDER_METHOD_REGISTER.invoke(builder);
         }
       } catch (InvocationTargetException e) {
@@ -344,7 +386,12 @@ public class Prometheus {
   public static double gaugeGet(Object gauge) {
     if (havePrometheus && gauge != null) {
       try {
-        Double rtn = (Double) GAUGE_METHOD_GET.invoke(gauge);
+        Double rtn;
+        if (gauge.getClass().getName().endsWith("$Child")) {
+          rtn = (Double) GAUGECHILD_METHOD_GET.invoke(gauge);
+        } else {
+          rtn = (Double) GAUGE_METHOD_GET.invoke(gauge);
+        }
         if (rtn == null) {
           return 0.0;
         } else {
@@ -377,7 +424,11 @@ public class Prometheus {
   public static void gaugeSet(Object gauge, double val) {
     if (havePrometheus && gauge != null) {
       try {
-        GAUGE_METHOD_SET.invoke(gauge, val);
+        if (gauge.getClass().getName().endsWith("$Child")) {
+          GAUGECHILD_METHOD_SET.invoke(gauge, val);
+        } else {
+          GAUGE_METHOD_SET.invoke(gauge, val);
+        }
       } catch (InvocationTargetException e) {
         if (e.getCause() != null && e.getCause() instanceof RuntimeException) {
           throw (RuntimeException) e.getCause();
@@ -402,7 +453,11 @@ public class Prometheus {
   public static void gaugeInc(Object gauge) {
     if (havePrometheus && gauge != null) {
       try {
-        GAUGE_METHOD_INC.invoke(gauge);
+        if (gauge.getClass().getName().endsWith("$Child")) {
+          GAUGECHILD_METHOD_INC.invoke(gauge);
+        } else {
+          GAUGE_METHOD_INC.invoke(gauge);
+        }
       } catch (InvocationTargetException e) {
         if (e.getCause() != null && e.getCause() instanceof RuntimeException) {
           throw (RuntimeException) e.getCause();
@@ -427,7 +482,11 @@ public class Prometheus {
   public static void gaugeDec(Object gauge) {
     if (havePrometheus && gauge != null) {
       try {
-        GAUGE_METHOD_DEC.invoke(gauge);
+        if (gauge.getClass().getName().endsWith("$Child")) {
+          GAUGECHILD_METHOD_DEC.invoke(gauge);
+        } else {
+          GAUGE_METHOD_DEC.invoke(gauge);
+        }
       } catch (InvocationTargetException e) {
         if (e.getCause() != null && e.getCause() instanceof RuntimeException) {
           throw (RuntimeException) e.getCause();
@@ -453,11 +512,14 @@ public class Prometheus {
    *
    * @return The Prometheus counter, or a mock if necessary.
    */
-  public static Object counterBuild(String name, String help) {
+  public static Object counterBuild(String name, String help, String... labelNames) {
     Object result;
     if (havePrometheus) {
       try {
         Object builder = COUNTER_METHOD_BUILD.invoke(null, name, help);
+        if (labelNames.length > 0) {
+          builder = COUNTERBUILDER_METHOD_LABELNAMES.invoke(builder, new Object[]{labelNames});
+        }
         result =  COUNTERBUILDER_METHOD_REGISTER.invoke(builder);
       } catch (InvocationTargetException e) {
         if (e.getCause() != null && e.getCause() instanceof RuntimeException) {
@@ -486,7 +548,11 @@ public class Prometheus {
   public static void counterInc(Object counter) {
     if (havePrometheus && counter != null) {
       try {
-        COUNTER_METHOD_INC.invoke(counter);
+        if (counter.getClass().getName().endsWith("$Child")) {
+          COUNTERCHILD_METHOD_INC.invoke(counter);
+        } else {
+          COUNTER_METHOD_INC.invoke(counter);
+        }
       } catch (InvocationTargetException e) {
         if (e.getCause() != null && e.getCause() instanceof RuntimeException) {
           throw (RuntimeException) e.getCause();
@@ -503,6 +569,76 @@ public class Prometheus {
       log.warn("Something probably went wrong in Prometheus#counterInc: Expected Gauge or GaugeMock but received {}", counter == null ? "null" : counter.getClass());
     }
   }
+
+
+  /**
+   * Label a counter instance, returning the instance with labels attached.
+   *
+   * @param counter The counter to label
+   * @param labels The labels to attach
+   *
+   * @return The labeled counter
+   */
+  public static Object labelCounter(Object counter, String... labels) {
+    if (havePrometheus && counter != null) {
+      try {
+        return COUNTER_METHOD_LABEL.invoke(counter, new Object[]{labels});
+      } catch (InvocationTargetException e) {
+        if (e.getCause() != null && e.getCause() instanceof RuntimeException) {
+          throw (RuntimeException) e.getCause();
+        } else {
+          log.warn("Invocation target exception", e);
+          return counter;
+        }
+      } catch (IllegalArgumentException | IllegalAccessException e) {
+        log.warn("Prometheus methods could not be invoked (version mismatch?) -- not logging statistics", e);
+        return counter;
+      }
+      // If we are mocking Prometheus
+    } else if (counter instanceof CounterMock) {
+      return counter;
+    } else {
+      log.warn("Something probably went wrong in Prometheus#counterInc: Expected Gauge or GaugeMock but received {}", counter == null ? "null" : counter.getClass());
+      return counter;
+    }
+  }
+
+
+  /**
+   * Label a gauge instance, returning the instance with labels attached.
+   *
+   * @param gauge The gauge to label
+   * @param labels The labels to attach
+   *
+   * @return The labeled gauge
+   */
+  public static Object labelGauge(Object gauge, String... labels) {
+    if (havePrometheus && gauge != null) {
+      try {
+        return GAUGE_METHOD_LABELS.invoke(gauge, new Object[]{labels});
+      } catch (InvocationTargetException e) {
+        if (e.getCause() != null && e.getCause() instanceof RuntimeException) {
+          e.printStackTrace();
+          throw (RuntimeException) e.getCause();
+        } else {
+          log.warn("Invocation target exception", e);
+          e.printStackTrace();
+          return gauge;
+        }
+      } catch (IllegalArgumentException | IllegalAccessException e) {
+        log.warn("Prometheus methods could not be invoked (version mismatch?) -- not logging statistics", e);
+        e.printStackTrace();
+        return gauge;
+      }
+      // If we are mocking Prometheus
+    } else if (gauge instanceof GaugeMock) {
+      return gauge;
+    } else {
+      log.warn("Something probably went wrong in Prometheus#gaugeInc: Expected Gauge or GaugeMock but received {}", gauge == null ? "null" : gauge.getClass());
+      return gauge;
+    }
+  }
+
 
   /**
    * Getter method for this.havePrometheus

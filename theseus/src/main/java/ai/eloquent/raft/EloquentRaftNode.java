@@ -152,7 +152,7 @@ public class EloquentRaftNode implements AutoCloseable {
     SafeTimerTask heartbeatTask = new SafeTimerTask() {
       /** A thread pool for running Raft heartbeats */
       private final ExecutorService pool = lifecycle.managedThreadPool(
-              "raft-heartbeat-" + algorithm.serverName().replace('.', '_'),
+              "raft-heartbeat",
               Math.max(Thread.MAX_PRIORITY - 1, Thread.MIN_PRIORITY)  // Raft heartbeats are high priority
       );
 
@@ -191,7 +191,7 @@ public class EloquentRaftNode implements AutoCloseable {
     SafeTimerTask failsafeTask = new SafeTimerTask() {
       /** A thread pool for running Raft heartbeats */
       private final ExecutorService pool = lifecycle.managedThreadPool(
-          "raft-failsafe-" + algorithm.serverName().replace('.', '_'),
+          "raft-failsafe",
           Math.max(Thread.MAX_PRIORITY - 1, Thread.MIN_PRIORITY)  // Raft heartbeats are high priority
       );
 

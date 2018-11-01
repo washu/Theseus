@@ -48,7 +48,7 @@ public interface Transport {
   /**
    * A thread pool from which to run tasks.
    */
-  ExecutorService POOL = RaftLifecycle.global.managedThreadPool("TransportWorker", true);  // we need this to be core for Raft
+  ExecutorService POOL = RaftLifecycle.global.managedThreadPool("transport_worker", true);  // we need this to be core for Raft
 
 
   /**

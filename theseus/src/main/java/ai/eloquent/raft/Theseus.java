@@ -319,7 +319,7 @@ public class Theseus {
     this.defaultTimeout = Duration.ofMillis(node.algorithm.electionTimeoutMillisRange().end * 2);
     this.stateMachine = (KeyValueStateMachine) algo.mutableStateMachine();
     this.lifecycle = lifecycle;
-    this.pool = lifecycle.managedThreadPool("eloquent-raft-async", true);
+    this.pool = lifecycle.managedThreadPool("raft-async", true);
 
     //
     // II. Create lock cleanup thread

@@ -23,12 +23,19 @@ public class TrackedExecutorService implements ExecutorService {
    */
   private static final Logger log = LoggerFactory.getLogger(TrackedExecutorService.class);
 
+  private static final Object gaugeQueueSizeBase = Prometheus.gaugeBuild("executor_queue_size","The number of tasks currently in the given pool", "pool");
+  private static final Object counterTaskCountBase = Prometheus.counterBuild("executor_total_tasks", "The number of tasks that have run in the given", "pool");
+  private static final Object summaryRuntime = Prometheus.summaryBuild("executor_runtime", "The time it takes for tasks to run in the given pool", "pool");
+  private static final Object summaryQueueTime = Prometheus.summaryBuild("executor_queuetime", "The time it takes for tasks to be scheduled in the given pool", "pool");
+
+
   /** Keeps track of existing {@link RaftErrorListener} **/
   private static ArrayList<RaftErrorListener> errorListeners = new ArrayList<>();
 
   /**
    * Keeps track of an additional {@link RaftErrorListener} in this class
-   * @param errorListener
+   *
+   * @param errorListener The error listener to be added.
    */
   public void addErrorListener(RaftErrorListener errorListener) {
     errorListeners.add(errorListener);
@@ -36,7 +43,8 @@ public class TrackedExecutorService implements ExecutorService {
 
   /**
    * Stop listening from a specific {@link RaftErrorListener}
-   * @param errorListener The error listener to be removed
+   *
+   * @param errorListener The error listener to be removed.
    */
   public void removeErrorListener(RaftErrorListener errorListener) {
     errorListeners.remove(errorListener);
@@ -68,12 +76,6 @@ public class TrackedExecutorService implements ExecutorService {
   /** The number of tasks ever run on this executor. */
   private final Object counterTaskCount;
 
-  /** The runtime of tasks in this executor. */
-  private final Object summaryRuntime;
-
-  /** The amount of time threads spend in the queue before starting. */
-  private final Object summaryQueueTime;
-
   /** The last time we issued a page, to prevent spamming PagerDuty. */
   private long lastPaged = 0L;
 
@@ -85,10 +87,8 @@ public class TrackedExecutorService implements ExecutorService {
   public TrackedExecutorService(String name, ExecutorService impl) {
     this.impl = impl;
     this.name = name.replace('-', '_').replace(' ', '_');
-    gaugeQueueSize = Prometheus.gaugeBuild(this.name + "_queue_size","The number of tasks currently in pool " + this.name);
-    counterTaskCount = Prometheus.counterBuild(this.name + "_total_tasks", "The number of tasks that have run in pool " + this.name);
-    summaryRuntime = Prometheus.summaryBuild(this.name + "_runtime", "The time it takes for tasks to run in pool " + this.name);
-    summaryQueueTime = Prometheus.summaryBuild(this.name + "_queuetime", "The time it takes for tasks to be scheduled in pool " + this.name);
+    this.gaugeQueueSize = Prometheus.labelGauge(gaugeQueueSizeBase, this.name);
+    this.counterTaskCount = Prometheus.labelCounter(counterTaskCountBase, this.name);
   }
 
 
@@ -142,22 +142,22 @@ public class TrackedExecutorService implements ExecutorService {
    * Wrap a runnable in our metrics
    */
   private Runnable wrap(Runnable task) {
-    Object timerQueueTimer = Prometheus.startTimer(summaryQueueTime);
+    Object timerQueueTimer = Prometheus.startTimer(summaryQueueTime, this.name);
     Prometheus.gaugeInc(gaugeQueueSize);
     Prometheus.counterInc(counterTaskCount);
     checkQueueSize();
 //      StackTraceElement[] callerTrace = Thread.currentThread().getStackTrace();
     return () -> {
       Prometheus.observeDuration(timerQueueTimer);
-      Object timerRunTimer = Prometheus.startTimer(summaryRuntime);
+      Object timerRunTimer = Prometheus.startTimer(summaryRuntime, this.name);
       try {
         task.run();
       } finally {
         Prometheus.gaugeDec(gaugeQueueSize);
-        Double duration = Prometheus.observeDuration(timerRunTimer);
-        if (duration > 60.0 && duration != null) {
+        double duration = Prometheus.observeDuration(timerRunTimer);
+        if (duration > 60.0) {
           log.warn("Thread on executor {} took >1m to finish ({})",
-              this.name, TimerUtils.formatTimeDifference(duration.longValue() * 1000));
+              this.name, TimerUtils.formatTimeDifference(((long) duration) * 1000));
 //                this.name, TimeUtils.formatTimeDifference((long) duration * 1000), new StackTrace(callerTrace));
         }
       }
@@ -169,13 +169,13 @@ public class TrackedExecutorService implements ExecutorService {
    * Wrap a callable in our metrics
    */
   private <T> Callable<T> wrap(Callable<T> task) {
-    Object timerQueueTimer = Prometheus.startTimer(summaryQueueTime);
+    Object timerQueueTimer = Prometheus.startTimer(summaryQueueTime, this.name);
     checkQueueSize();
     Prometheus.gaugeInc(gaugeQueueSize);
     Prometheus.counterInc(counterTaskCount);
     return () -> {
       Prometheus.observeDuration(timerQueueTimer);
-      Object timerRunTimer = Prometheus.startTimer(summaryRuntime);
+      Object timerRunTimer = Prometheus.startTimer(summaryRuntime, this.name);
       try {
         return task.call();
       } finally {
