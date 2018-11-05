@@ -325,21 +325,24 @@ public class Theseus {
     // II. Create lock cleanup thread
     //
     Thread lockCleanupThread = new Thread(() -> {
+      long lastTry = 0;  // not Long#MIN_VALUE so we don't accidentally underflow
+      long timeout = node.algorithm.electionTimeoutMillisRange().end * 2;
       while (alive) {
         try {
           // 1. Wait on new unreleased locks
           byte[][] unreleasedLocksCopy;
           synchronized (unreleasedLocks) {
-            while (unreleasedLocks.isEmpty() && alive) {
+            while (unreleasedLocks.isEmpty() && alive && (System.currentTimeMillis() - lastTry) < timeout) {  // We have locks, we're alive, and we haven't tried to release recently
               try {
-                unreleasedLocks.wait(node.algorithm.electionTimeoutMillisRange().end * 2);  // allow any outstanding election to finish
+                unreleasedLocks.wait(timeout);  // allow any outstanding election to finish
               } catch (InterruptedException ignored) {}
             }
             unreleasedLocksCopy = unreleasedLocks.toArray(new byte[0][]);
           }
+          lastTry = System.currentTimeMillis();  // This counts as a try, even if we don't end up doing anything
           if (unreleasedLocksCopy.length > 0 &&                      // note[gabor]: only run if we have something to run
               (!alive || this.errors().isEmpty()) &&                 // note[gabor]: only run if we're error free (or shutting down). Otherwise this is a foolish attempt
-              this.node.algorithm.mutableState().leader.isPresent()  // note[gabor]: if we have no leader (we're in the middle of an election), we're just asking for pain/
+              this.node.algorithm.mutableState().leader.isPresent()  // note[gabor]: if we have no leader (we're in the middle of an election), we're just asking for pain
           ) {
             // 2. Release the locks
             log.warn("Trying to release {} unreleased locks", unreleasedLocksCopy.length);
