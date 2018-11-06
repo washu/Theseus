@@ -92,7 +92,7 @@ public class NetRaftTransport implements RaftTransport {
             try {
               UDPTransport.DEFAULT.get().doAction(async, "handle inbound RPC", () -> {
                 for (RaftAlgorithm listener : boundAlgorithms) {
-                  listener.receiveRPC(request, now()).whenComplete((EloquentRaftProto.RaftMessage response, Throwable exception) -> {
+                  listener.receiveRPC(request).whenComplete((EloquentRaftProto.RaftMessage response, Throwable exception) -> {
                     if (exception != null || response == null) {
                       responseObserver.onError(exception == null ? new RuntimeException() : exception);
                     } else {
@@ -143,7 +143,7 @@ public class NetRaftTransport implements RaftTransport {
           EloquentRaftProto.RaftMessage message = EloquentRaftProto.RaftMessage.parseFrom(data);
           if (!message.getSender().equals(this.serverName)) {  // don't send ourselves messages
             assert ConcurrencyUtils.ensureNoLocksHeld();
-            listener.receiveMessage(message, reply -> sendTransport(listener.serverName(), message.getSender(), reply), now());
+            listener.receiveMessage(message, reply -> sendTransport(listener.serverName(), message.getSender(), reply));
           }
         } catch (InvalidProtocolBufferException e) {
           log.warn("Not a Raft message: ", e);

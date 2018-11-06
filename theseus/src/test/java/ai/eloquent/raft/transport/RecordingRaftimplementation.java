@@ -73,32 +73,32 @@ public class RecordingRaftimplementation implements RaftAlgorithm {
   }
 
   @Override
-  public void receiveInstallSnapshotRPC(EloquentRaftProto.InstallSnapshotRequest snapshot, Consumer<EloquentRaftProto.RaftMessage> replyLeader, long now) {
+  public void receiveInstallSnapshotRPC(EloquentRaftProto.InstallSnapshotRequest snapshot, Consumer<EloquentRaftProto.RaftMessage> replyLeader) {
     installSnapshotsReceived.add(snapshot);
   }
 
   @Override
-  public void receiveInstallSnapshotReply(EloquentRaftProto.InstallSnapshotReply reply, long now) {
+  public void receiveInstallSnapshotReply(EloquentRaftProto.InstallSnapshotReply reply) {
     installSnapshotReplies.add(reply);
   }
 
   @Override
-  public void receiveAppendEntriesRPC(EloquentRaftProto.AppendEntriesRequest heartbeat, Consumer<EloquentRaftProto.RaftMessage> replyLeader, long now) {
+  public void receiveAppendEntriesRPC(EloquentRaftProto.AppendEntriesRequest heartbeat, Consumer<EloquentRaftProto.RaftMessage> replyLeader) {
     appendEntriesReceived.add(heartbeat);
   }
 
   @Override
-  public void receiveAppendEntriesReply(EloquentRaftProto.AppendEntriesReply reply, long now) {
+  public void receiveAppendEntriesReply(EloquentRaftProto.AppendEntriesReply reply) {
     appendEntriesReplies.add(reply);
   }
 
   @Override
-  public void receiveRequestVotesReply(EloquentRaftProto.RequestVoteReply reply, long now) {
+  public void receiveRequestVotesReply(EloquentRaftProto.RequestVoteReply reply) {
     requestVoteResplies.add(reply);
   }
 
   @Override
-  public CompletableFuture<EloquentRaftProto.RaftMessage> receiveAddServerRPC(EloquentRaftProto.AddServerRequest addServerRequest, long now) {
+  public CompletableFuture<EloquentRaftProto.RaftMessage> receiveAddServerRPC(EloquentRaftProto.AddServerRequest addServerRequest) {
     addServersReceived.add(addServerRequest);
     return CompletableFuture.completedFuture(EloquentRaftProto.RaftMessage.newBuilder()
         .setSender(this.serverName())
@@ -109,7 +109,7 @@ public class RecordingRaftimplementation implements RaftAlgorithm {
   }
 
   @Override
-  public CompletableFuture<EloquentRaftProto.RaftMessage> receiveRemoveServerRPC(EloquentRaftProto.RemoveServerRequest removeServerRequest, long now) {
+  public CompletableFuture<EloquentRaftProto.RaftMessage> receiveRemoveServerRPC(EloquentRaftProto.RemoveServerRequest removeServerRequest) {
     removeServersReceived.add(removeServerRequest);
     return CompletableFuture.completedFuture(EloquentRaftProto.RaftMessage.newBuilder()
         .setSender(this.serverName())
@@ -120,7 +120,7 @@ public class RecordingRaftimplementation implements RaftAlgorithm {
   }
 
   @Override
-  public void broadcastAppendEntries(long now) {
+  public void broadcastAppendEntries() {
     throw new IllegalStateException("Not implemented");
   }
 
@@ -130,18 +130,18 @@ public class RecordingRaftimplementation implements RaftAlgorithm {
   }
 
   @Override
-  public void receiveRequestVoteRPC(EloquentRaftProto.RequestVoteRequest voteRequest, Consumer<EloquentRaftProto.RaftMessage> replyLeader, long now) {
+  public void receiveRequestVoteRPC(EloquentRaftProto.RequestVoteRequest voteRequest, Consumer<EloquentRaftProto.RaftMessage> replyLeader) {
     requestVotesReceived.add(voteRequest);
 
   }
 
   @Override
-  public void triggerElection(long now) {
+  public void triggerElection() {
     throw new IllegalStateException("Not implemented");
   }
 
   @Override
-  public CompletableFuture<EloquentRaftProto.RaftMessage> receiveApplyTransitionRPC(EloquentRaftProto.ApplyTransitionRequest transition, long now) {
+  public CompletableFuture<EloquentRaftProto.RaftMessage> receiveApplyTransitionRPC(EloquentRaftProto.ApplyTransitionRequest transition) {
     throw new IllegalStateException("Not implemented");
   }
 
@@ -176,7 +176,7 @@ public class RecordingRaftimplementation implements RaftAlgorithm {
   }
 
   @Override
-  public void heartbeat(long now) {
+  public void heartbeat() {
     throw new IllegalStateException("Not implemented");
   }
 

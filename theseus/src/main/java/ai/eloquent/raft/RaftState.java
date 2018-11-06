@@ -471,8 +471,9 @@ public class RaftState {
    * Vote for a particular server as the leader.
    *
    * @param vote The server we voted for.
+   * @param now The current time.
    */
-  public void voteFor(String vote) {
+  public void voteFor(String vote, long now) {
     log.assertConsistency();
     try {
       assert !votedFor.isPresent() || votedFor.get().equals(vote);
@@ -487,6 +488,9 @@ public class RaftState {
           // We're sure as hell not keeping our old leader -- may as well guess this candidate is the new leader
           this.leader = Optional.of(vote);
         }
+        // Reset the election timer
+        // From p.129: "...it’s likely that all servers have reset their timers, _since servers do this when they grant a vote_"
+        this.electionTimeoutCheckpoint = now;
       }
     } finally {
       log.assertConsistency();
@@ -678,7 +682,7 @@ public class RaftState {
               latestResponse = entry.getValue();
               argmaxName = entry.getKey();
             } else if (hospice.contains(entry.getKey())) {
-              System.err.println("node is in the hospice: " + entry.getKey());
+              Theseus.log.debug("[RaftState] node is in the hospice: " + entry.getKey());
             }
           }
           // Make sure we wouldn't immediately want to remove the server

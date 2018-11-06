@@ -39,8 +39,8 @@ public class EloquentRaftBenchmark {
     A.start();
     B.start();
     L.bootstrap(false);
-    L.algorithm.triggerElection(0);
-    L.algorithm.heartbeat(100);
+    L.algorithm.triggerElection();
+    L.algorithm.heartbeat();
 
     long startTime = System.currentTimeMillis();
     long numIterations = 100000L;
@@ -48,7 +48,7 @@ public class EloquentRaftBenchmark {
       L.algorithm.receiveApplyTransitionRPC(EloquentRaftProto.ApplyTransitionRequest.newBuilder()
           .setTerm(0)
           .setTransition(ByteString.copyFrom(KeyValueStateMachine.createSetValueTransition("key_"+(i % 50), new byte[]{10})))
-          .build(), i * 1000);
+          .build());
     }
 
     System.out.println("************* DONE "+ TimerUtils.formatTimeSince(startTime)+" ("+((double)(System.currentTimeMillis() - startTime) / numIterations)+"ms / transition) **************");
@@ -70,7 +70,7 @@ public class EloquentRaftBenchmark {
       L.algorithm.receiveApplyTransitionRPC(EloquentRaftProto.ApplyTransitionRequest.newBuilder()
           .setTerm(0)
           .setTransition(ByteString.copyFrom(KeyValueStateMachine.createSetValueTransition("key_"+(i % 50), new byte[]{10})))
-          .build(), i * 1000);
+          .build());
     }
 
     System.out.println("************* DONE "+ TimerUtils.formatTimeSince(startTime)+" ("+((double)(System.currentTimeMillis() - startTime) / numIterations)+"ms / transition) **************");
@@ -93,8 +93,8 @@ public class EloquentRaftBenchmark {
       A.start();
       B.start();
       L.bootstrap(false);
-      L.algorithm.triggerElection(0);
-      L.algorithm.heartbeat(100);
+      L.algorithm.triggerElection();
+      L.algorithm.heartbeat();
 
       assertTrue("L should have become the leader", L.algorithm.state().isLeader());
       assertEquals("L should know about A and B", new HashSet<>(Arrays.asList("A", "B")), L.algorithm.state().lastMessageTimestamp.get().keySet());

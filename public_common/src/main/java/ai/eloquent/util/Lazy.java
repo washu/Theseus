@@ -1,12 +1,13 @@
 package ai.eloquent.util;
 
 import java.lang.ref.SoftReference;
+import java.util.function.Function;
 import java.util.function.Supplier;
 
 /**
  * An instantiation of a lazy object.
  *
- * @author Gabor Angeli &lt;gabor@eloquent.ai&gt;
+ * @author <a href="mailto:gabor@eloquent.ai">Gabor Angeli</a>
  */
 public abstract class Lazy<E> {
   /** If this lazy should cache, this is the cached value. */
@@ -65,12 +66,29 @@ public abstract class Lazy<E> {
     }
   }
 
+
   /**
-   * Check if this lazy has been garbage collected, if it is a cached value.
-   * Useful for, e.g., clearing keys in a map when the values are already gone.
+   * Keep this value a Lazy, but when it is gotten apply the given function
+   * to it.
+   * This makes this a proper monad.
+   *
+   * @param fn The mapper function.
+   * @param <F> The type of Lazy we're returning
+   *
+   * @return The mapped lazy.
    */
-  public boolean isGarbageCollected() {
-    return this.isCache() && (this.implOrNullCache == null || this.implOrNullCache.get() == null);
+  public <F> Lazy<F> map(Function<E, F> fn) {
+    return new Lazy<F>() {
+      @Override
+      protected F compute() {
+        return fn.apply(Lazy.this.compute());
+      }
+
+      @Override
+      public boolean isCache() {
+        return Lazy.this.isCache();
+      }
+    };
   }
 
 

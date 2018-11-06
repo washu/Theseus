@@ -774,8 +774,8 @@ public class SingleThreadedRaftAlgorithm implements RaftAlgorithm {
 
   /** {@inheritDoc} */
   @Override
-  public void broadcastAppendEntries(long now) {
-    execute("broadcastAppendEntries", TaskPriority.HIGH, (Consumer<RaftAlgorithm>) x -> x.broadcastAppendEntries(now));
+  public void broadcastAppendEntries() {
+    execute("broadcastAppendEntries", TaskPriority.HIGH, RaftAlgorithm::broadcastAppendEntries);
   }
 
 
@@ -788,72 +788,72 @@ public class SingleThreadedRaftAlgorithm implements RaftAlgorithm {
 
   /** {@inheritDoc} */
   @Override
-  public void receiveAppendEntriesRPC(EloquentRaftProto.AppendEntriesRequest heartbeat, Consumer<EloquentRaftProto.RaftMessage> replyLeader, long now) {
-    execute("receiveAppendEntriesRPC", TaskPriority.HIGH, (Consumer<RaftAlgorithm>) x -> x.receiveAppendEntriesRPC(heartbeat, replyLeader, now));
+  public void receiveAppendEntriesRPC(EloquentRaftProto.AppendEntriesRequest heartbeat, Consumer<EloquentRaftProto.RaftMessage> replyLeader) {
+    execute("receiveAppendEntriesRPC", TaskPriority.HIGH, (Consumer<RaftAlgorithm>) x -> x.receiveAppendEntriesRPC(heartbeat, replyLeader));
 
   }
 
 
   /** {@inheritDoc} */
   @Override
-  public void receiveAppendEntriesReply(EloquentRaftProto.AppendEntriesReply reply, long now) {
-    execute("receiveAppendEntriesReply", TaskPriority.HIGH, (Consumer<RaftAlgorithm>) x -> x.receiveAppendEntriesReply(reply, now));
+  public void receiveAppendEntriesReply(EloquentRaftProto.AppendEntriesReply reply) {
+    execute("receiveAppendEntriesReply", TaskPriority.HIGH, (Consumer<RaftAlgorithm>) x -> x.receiveAppendEntriesReply(reply));
   }
 
 
   /** {@inheritDoc} */
   @Override
-  public void receiveInstallSnapshotRPC(EloquentRaftProto.InstallSnapshotRequest snapshot, Consumer<EloquentRaftProto.RaftMessage> replyLeader, long now) {
-    execute("receiveInstallSnapshotRPC", TaskPriority.HIGH, (Consumer<RaftAlgorithm>) x -> x.receiveInstallSnapshotRPC(snapshot, replyLeader, now));
+  public void receiveInstallSnapshotRPC(EloquentRaftProto.InstallSnapshotRequest snapshot, Consumer<EloquentRaftProto.RaftMessage> replyLeader) {
+    execute("receiveInstallSnapshotRPC", TaskPriority.HIGH, (Consumer<RaftAlgorithm>) x -> x.receiveInstallSnapshotRPC(snapshot, replyLeader));
   }
 
 
   /** {@inheritDoc} */
   @Override
-  public void receiveInstallSnapshotReply(EloquentRaftProto.InstallSnapshotReply reply, long now) {
-    execute("receiveInstallSnapshotReply", TaskPriority.HIGH, (Consumer<RaftAlgorithm>) x -> x.receiveInstallSnapshotReply(reply, now));
+  public void receiveInstallSnapshotReply(EloquentRaftProto.InstallSnapshotReply reply) {
+    execute("receiveInstallSnapshotReply", TaskPriority.HIGH, (Consumer<RaftAlgorithm>) x -> x.receiveInstallSnapshotReply(reply));
   }
 
 
   /** {@inheritDoc} */
   @Override
-  public void triggerElection(long now) {
-    execute("triggerElection", TaskPriority.LOW, (Consumer<RaftAlgorithm>) x -> x.triggerElection(now));
+  public void triggerElection() {
+    execute("triggerElection", TaskPriority.LOW, RaftAlgorithm::triggerElection);
   }
 
 
   /** {@inheritDoc} */
   @Override
-  public void receiveRequestVoteRPC(EloquentRaftProto.RequestVoteRequest voteRequest, Consumer<EloquentRaftProto.RaftMessage> replyLeader, long now) {
-    execute("receiveRequestVoteRPC", TaskPriority.CRITICAL, (Consumer<RaftAlgorithm>) x -> x.receiveRequestVoteRPC(voteRequest, replyLeader, now));
+  public void receiveRequestVoteRPC(EloquentRaftProto.RequestVoteRequest voteRequest, Consumer<EloquentRaftProto.RaftMessage> replyLeader) {
+    execute("receiveRequestVoteRPC", TaskPriority.CRITICAL, (Consumer<RaftAlgorithm>) x -> x.receiveRequestVoteRPC(voteRequest, replyLeader));
   }
 
 
   /** {@inheritDoc} */
   @Override
-  public void receiveRequestVotesReply(EloquentRaftProto.RequestVoteReply reply, long now) {
-    execute("receiveRequestVotesReply", TaskPriority.CRITICAL, (Consumer<RaftAlgorithm>) x -> x.receiveRequestVotesReply(reply, now));
+  public void receiveRequestVotesReply(EloquentRaftProto.RequestVoteReply reply) {
+    execute("receiveRequestVotesReply", TaskPriority.CRITICAL, (Consumer<RaftAlgorithm>) x -> x.receiveRequestVotesReply(reply));
   }
 
 
   /** {@inheritDoc} */
   @Override
-  public CompletableFuture<EloquentRaftProto.RaftMessage> receiveAddServerRPC(EloquentRaftProto.AddServerRequest addServerRequest, long now) {
-    return executeFuture("receiveAddServerRPC", TaskPriority.LOW, x -> x.receiveAddServerRPC(addServerRequest, now));
+  public CompletableFuture<EloquentRaftProto.RaftMessage> receiveAddServerRPC(EloquentRaftProto.AddServerRequest addServerRequest) {
+    return executeFuture("receiveAddServerRPC", TaskPriority.LOW, x -> x.receiveAddServerRPC(addServerRequest));
   }
 
 
   /** {@inheritDoc} */
   @Override
-  public CompletableFuture<EloquentRaftProto.RaftMessage> receiveRemoveServerRPC(EloquentRaftProto.RemoveServerRequest removeServerRequest, long now) {
-    return executeFuture("receciveRemoveServerRPC", TaskPriority.HIGH, x -> x.receiveRemoveServerRPC(removeServerRequest, now));
+  public CompletableFuture<EloquentRaftProto.RaftMessage> receiveRemoveServerRPC(EloquentRaftProto.RemoveServerRequest removeServerRequest) {
+    return executeFuture("receciveRemoveServerRPC", TaskPriority.HIGH, x -> x.receiveRemoveServerRPC(removeServerRequest));
   }
 
 
   /** {@inheritDoc} */
   @Override
-  public CompletableFuture<EloquentRaftProto.RaftMessage> receiveApplyTransitionRPC(EloquentRaftProto.ApplyTransitionRequest transition, long now) {
-    return executeFuture("receiveApplyTransitionRPC", TaskPriority.LOW, x -> x.receiveApplyTransitionRPC(transition, now));
+  public CompletableFuture<EloquentRaftProto.RaftMessage> receiveApplyTransitionRPC(EloquentRaftProto.ApplyTransitionRequest transition) {
+    return executeFuture("receiveApplyTransitionRPC", TaskPriority.LOW, x -> x.receiveApplyTransitionRPC(transition));
   }
 
 
@@ -901,8 +901,8 @@ public class SingleThreadedRaftAlgorithm implements RaftAlgorithm {
 
   /** {@inheritDoc} */
   @Override
-  public void heartbeat(long now) {
-    execute("heartbeat", TaskPriority.HIGH, (Consumer<RaftAlgorithm>) x -> x.heartbeat(now));
+  public void heartbeat() {
+    execute("heartbeat", TaskPriority.HIGH, RaftAlgorithm::heartbeat);
   }
 
 

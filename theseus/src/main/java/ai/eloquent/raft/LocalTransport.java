@@ -989,7 +989,7 @@ public class LocalTransport implements RaftTransport {
             }
             if (request.getIsRPC()) {
               // 2.2.1. Case: this is a blocking RPC
-              CompletableFuture<EloquentRaftProto.RaftMessage> response = node.receiveRPC(request, now);
+              CompletableFuture<EloquentRaftProto.RaftMessage> response = node.receiveRPC(request);
               if (response == null) {
                 NullPointerException exception = new NullPointerException();
                 log.warn("Got null response from RPC: ", exception);
@@ -1006,7 +1006,7 @@ public class LocalTransport implements RaftTransport {
               });
             } else {
               // 2.2.2. Case: this is a non-blocking message
-              node.receiveMessage(request, (proto) -> sendTransport(message.target, message.sender, proto), now);
+              node.receiveMessage(request, (proto) -> sendTransport(message.target, message.sender, proto));
             }
           });
     } catch (Throwable t) {

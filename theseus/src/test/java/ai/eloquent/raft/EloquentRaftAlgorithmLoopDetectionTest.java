@@ -26,7 +26,7 @@ public class EloquentRaftAlgorithmLoopDetectionTest extends WithLocalTransport {
     }
 
     @Override
-    public synchronized void heartbeat(long now) {
+    public synchronized void heartbeat() {
       // Do nothing
     }
   }
@@ -52,7 +52,7 @@ public class EloquentRaftAlgorithmLoopDetectionTest extends WithLocalTransport {
 
     // Attempt to send the message out -- this should not result in an infinite loop
 
-    CompletableFuture<EloquentRaftProto.RaftMessage> messageCompletableFuture = raftAlgorithm1.receiveApplyTransitionRPC(EloquentRaftProto.ApplyTransitionRequest.newBuilder().setTerm(0).setTransition(ByteString.copyFrom(new byte[]{1})).build(), 0);
+    CompletableFuture<EloquentRaftProto.RaftMessage> messageCompletableFuture = raftAlgorithm1.receiveApplyTransitionRPC(EloquentRaftProto.ApplyTransitionRequest.newBuilder().setTerm(0).setTransition(ByteString.copyFrom(new byte[]{1})).build());
 
     transport.waitForSilence();
     transport.stop(); // waits for silence
@@ -81,7 +81,7 @@ public class EloquentRaftAlgorithmLoopDetectionTest extends WithLocalTransport {
 
     // Attempt to send the message out -- this should not result in an infinite loop
 
-    CompletableFuture<EloquentRaftProto.RaftMessage> messageCompletableFuture = raftAlgorithm1.receiveAddServerRPC(EloquentRaftProto.AddServerRequest.newBuilder().setNewServer("server3").build(), 0);
+    CompletableFuture<EloquentRaftProto.RaftMessage> messageCompletableFuture = raftAlgorithm1.receiveAddServerRPC(EloquentRaftProto.AddServerRequest.newBuilder().setNewServer("server3").build());
 
     transport.waitForSilence();
     transport.stop(); // waits for silence
@@ -110,7 +110,7 @@ public class EloquentRaftAlgorithmLoopDetectionTest extends WithLocalTransport {
 
     // Attempt to send the message out -- this should not result in an infinite loop
 
-    CompletableFuture<EloquentRaftProto.RaftMessage> messageCompletableFuture = raftAlgorithm1.receiveRemoveServerRPC(EloquentRaftProto.RemoveServerRequest.newBuilder().setOldServer("server3").build(), 0);
+    CompletableFuture<EloquentRaftProto.RaftMessage> messageCompletableFuture = raftAlgorithm1.receiveRemoveServerRPC(EloquentRaftProto.RemoveServerRequest.newBuilder().setOldServer("server3").build());
 
     transport.waitForSilence();
     transport.stop(); // waits for silence

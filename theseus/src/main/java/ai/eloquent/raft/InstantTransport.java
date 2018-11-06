@@ -39,7 +39,7 @@ public class InstantTransport implements RaftTransport {
   @Override
   public void rpcTransport(String sender, String destination, EloquentRaftProto.RaftMessage message, Consumer<EloquentRaftProto.RaftMessage> onResponseReceived, Runnable onTimeout, long timeout) {
     try {
-      EloquentRaftProto.RaftMessage reply = bound.get(destination).receiveRPC(message, System.currentTimeMillis()).get();
+      EloquentRaftProto.RaftMessage reply = bound.get(destination).receiveRPC(message).get();
       onResponseReceived.accept(reply);
     } catch (InterruptedException | ExecutionException e) {
       e.printStackTrace();
@@ -48,9 +48,7 @@ public class InstantTransport implements RaftTransport {
 
   @Override
   public void sendTransport(String sender, String destination, EloquentRaftProto.RaftMessage message) {
-    bound.get(destination).receiveMessage(message, (reply) -> {
-      sendTransport(destination, sender, reply);
-    }, System.currentTimeMillis());
+    bound.get(destination).receiveMessage(message, (reply) -> sendTransport(destination, sender, reply));
   }
 
   @Override
@@ -58,7 +56,7 @@ public class InstantTransport implements RaftTransport {
     for (RaftAlgorithm algorithm : bound.values()) {
       if (!algorithm.serverName().equals(sender)) {
         try {
-          EloquentRaftProto.RaftMessage reply = algorithm.receiveRPC(message, System.currentTimeMillis()).get();
+          EloquentRaftProto.RaftMessage reply = algorithm.receiveRPC(message).get();
           sendTransport(algorithm.serverName(), sender, reply);
         } catch (InterruptedException | ExecutionException e) {
           e.printStackTrace();
@@ -104,7 +102,7 @@ public class InstantTransport implements RaftTransport {
     for (int i = 0; i < numIterations; i++) {
       try {
         L.withElementAsync("key_"+(i % 50), new AddOne(), () -> ByteBuffer.allocate(4).putInt(0).array(), true).get(5, TimeUnit.SECONDS);
-        L.node.algorithm.heartbeat(i);
+        L.node.algorithm.heartbeat();
       } catch (InterruptedException | ExecutionException | TimeoutException e) {
         log.warn("Caught exception running JIT burn in:", e);
       }

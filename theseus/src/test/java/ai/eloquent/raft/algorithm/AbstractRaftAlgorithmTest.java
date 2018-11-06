@@ -495,8 +495,7 @@ public abstract class AbstractRaftAlgorithmTest {
     return node.receiveRPC(RaftTransport.mkRaftRPC(node.serverName(),
         EloquentRaftProto.ApplyTransitionRequest.newBuilder()
             .setTransition(ByteString.copyFrom(new byte[]{(byte) data}))
-            .build()),
-        now()
+            .build())
     ).thenApply(reply -> reply.getApplyTransitionReply().getSuccess());
   }
 
@@ -541,8 +540,7 @@ public abstract class AbstractRaftAlgorithmTest {
     return node.receiveRPC(RaftTransport.mkRaftRPC(node.serverName(),
         EloquentRaftProto.AddServerRequest.newBuilder()
             .setNewServer(serverName)
-            .build()),
-        now()
+            .build())
     ).thenApply(reply -> reply.getAddServerReply().getStatus());
   }
 
@@ -559,8 +557,7 @@ public abstract class AbstractRaftAlgorithmTest {
     return node.receiveRPC(RaftTransport.mkRaftRPC(node.serverName(),
         EloquentRaftProto.RemoveServerRequest.newBuilder()
             .setOldServer(serverName)
-            .build()),
-        now()
+            .build())
     ).thenApply(reply -> reply.getRemoveServerReply().getStatus());
   }
 
@@ -627,7 +624,7 @@ public abstract class AbstractRaftAlgorithmTest {
   @Test
   public void testHeartbeatReply() {
     Assume.assumeTrue(isStableTransport());  // requires a stable transport
-    RaftState[] closedNodes = bootstrap((nodes, states) -> nodes[0].heartbeat(now()));
+    RaftState[] closedNodes = bootstrap((nodes, states) -> nodes[0].heartbeat());
     basicSuccessTests(closedNodes);
   }
 
@@ -639,7 +636,7 @@ public abstract class AbstractRaftAlgorithmTest {
   @Test
   public void testHeartbeatNotLeader() {
     RaftState[] closedNodes = bootstrap((nodes, states) -> {
-      nodes[1].heartbeat(now());  // not the leader!
+      nodes[1].heartbeat();  // not the leader!
       for (RaftAlgorithm node : nodes) {
         waitForSilence(node);
       }
@@ -663,7 +660,7 @@ public abstract class AbstractRaftAlgorithmTest {
     Assume.assumeTrue(isStableTransport());  // requires a stable transport
     RaftState[] closedNodes = bootstrap((nodes, states) -> {
       states[0].transition(new byte[]{42});
-      nodes[0].heartbeat(now());
+      nodes[0].heartbeat();
     });
     basicSuccessTests(closedNodes, 0, Optional.of(new HashSet<>(Arrays.asList("L", "A", "B"))), false);
 
@@ -688,9 +685,9 @@ public abstract class AbstractRaftAlgorithmTest {
     Assume.assumeTrue(isStableTransport());  // requires a stable transport
     RaftState[] closedNodes = bootstrap((nodes, states) -> {
       states[0].transition(new byte[]{42});
-      nodes[0].heartbeat(now());
+      nodes[0].heartbeat();
       waitForSilence(nodes[0]);
-      nodes[0].heartbeat(now());
+      nodes[0].heartbeat();
     });
     basicSuccessTests(closedNodes);
 
@@ -716,14 +713,14 @@ public abstract class AbstractRaftAlgorithmTest {
       // Set some transitions. If the more basic commit tests fail, this step of this test will fail as well
       states[0].transition(new byte[]{42});
       states[0].transition(new byte[]{43});
-      nodes[0].heartbeat(now()); waitForSilence(nodes[0]);
-      nodes[0].heartbeat(now()); waitForSilence(nodes[0]);
+      nodes[0].heartbeat(); waitForSilence(nodes[0]);
+      nodes[0].heartbeat(); waitForSilence(nodes[0]);
 
       // Nuke someone's log -- oops!
       states[1].log.unsafeSetLog(Collections.emptyList());
 
       // Run some heartbeats to arrive at consensus again
-      nodes[0].heartbeat(now()); waitForSilence(nodes[0]);
+      nodes[0].heartbeat(); waitForSilence(nodes[0]);
     });
     basicSuccessTests(closedNodes);
 
@@ -756,9 +753,9 @@ public abstract class AbstractRaftAlgorithmTest {
       states[0].commitUpTo(1, 0);
       states[0].log.forceSnapshot();
       assertEquals("Raft should not have any entries after a snapshot", 0, states[0].log.getAllUncompressedEntries().size());
-      nodes[0].heartbeat(now());
+      nodes[0].heartbeat();
       waitForSilence(nodes[0]);
-      nodes[0].heartbeat(now());
+      nodes[0].heartbeat();
     });
     basicSuccessTests(closedNodes);
 
@@ -786,15 +783,15 @@ public abstract class AbstractRaftAlgorithmTest {
       // Set some transitions. If the more basic commit tests fail, this step of this test will fail as well
       states[0].transition(new byte[]{42});
       states[0].transition(new byte[]{43});
-      nodes[0].heartbeat(now()); waitForSilence(nodes[0]);
-      nodes[0].heartbeat(now()); waitForSilence(nodes[0]);
+      nodes[0].heartbeat(); waitForSilence(nodes[0]);
+      nodes[0].heartbeat(); waitForSilence(nodes[0]);
       states[0].log.forceSnapshot();  // IMPORTANT LINE IS THIS
 
       // Nuke someone's log -- oops!
       states[1].log.unsafeSetLog(Collections.emptyList());
 
       // Run some heartbeats to arrive at consensus again
-      nodes[0].heartbeat(now()); waitForSilence(nodes[0]);
+      nodes[0].heartbeat(); waitForSilence(nodes[0]);
     });
     basicSuccessTests(closedNodes);
 
@@ -830,10 +827,10 @@ public abstract class AbstractRaftAlgorithmTest {
   public void testElectionHappyPath() {
     Assume.assumeTrue(isStableTransport());  // requires a stable transport
     RaftState[] closedNodes = bootstrapLeaderless((nodes, states) -> {
-      nodes[0].triggerElection(now());
+      nodes[0].triggerElection();
       // Wait a while for the election to resolve
       for (RaftAlgorithm node : nodes) {
-        schedule(nodes[0].heartbeatMillis(), (int) (nodes[0].electionTimeoutMillisRange().end / nodes[0].heartbeatMillis()), (i, now) -> node.heartbeat(now));
+        schedule(nodes[0].heartbeatMillis(), (int) (nodes[0].electionTimeoutMillisRange().end / nodes[0].heartbeatMillis()), (i, now) -> node.heartbeat());
       }
     });
     basicSuccessTests(closedNodes);
@@ -850,10 +847,10 @@ public abstract class AbstractRaftAlgorithmTest {
   public void testSnagLeadership() {
     Assume.assumeTrue(isStableTransport());  // requires a stable transport
     RaftState[] closedNodes = bootstrap((nodes, states) -> {
-      nodes[1].triggerElection(now());
+      nodes[1].triggerElection();
       // Wait a while for the election to resolve
       for (RaftAlgorithm node : nodes) {
-        schedule(nodes[0].heartbeatMillis(), (int) (nodes[0].electionTimeoutMillisRange().end / nodes[0].heartbeatMillis()), (i, now) -> node.heartbeat(now));
+        schedule(nodes[0].heartbeatMillis(), (int) (nodes[0].electionTimeoutMillisRange().end / nodes[0].heartbeatMillis()), (i, now) -> node.heartbeat());
       }
     });
     basicSuccessTests(closedNodes, 1);
@@ -871,12 +868,12 @@ public abstract class AbstractRaftAlgorithmTest {
     Assume.assumeTrue(isStableTransport());  // requires a stable transport
     RaftState[] closedNodes = bootstrapLeaderless((nodes, states) -> {
       // Everyone triggers an election
-      nodes[0].triggerElection(now());
-      nodes[1].triggerElection(now());
-      nodes[2].triggerElection(now());
+      nodes[0].triggerElection();
+      nodes[1].triggerElection();
+      nodes[2].triggerElection();
       // Wait a while for the election to resolve
       for (RaftAlgorithm node : nodes) {
-        schedule(nodes[0].heartbeatMillis(), (int) (nodes[0].electionTimeoutMillisRange().end / nodes[0].heartbeatMillis()), (i, now) -> node.heartbeat(now));
+        schedule(nodes[0].heartbeatMillis(), (int) (nodes[0].electionTimeoutMillisRange().end / nodes[0].heartbeatMillis()), (i, now) -> node.heartbeat());
       }
     });
     basicSuccessTests(closedNodes, -1);
@@ -892,7 +889,7 @@ public abstract class AbstractRaftAlgorithmTest {
     RaftState[] closedNodes = bootstrapLeaderless((nodes, states) -> {
       // Wait until an election happens
       for (RaftAlgorithm node : nodes) {
-        schedule(nodes[0].heartbeatMillis(), (int) (nodes[0].electionTimeoutMillisRange().end / nodes[0].heartbeatMillis()), (i, now) -> node.heartbeat(now));
+        schedule(nodes[0].heartbeatMillis(), (int) (nodes[0].electionTimeoutMillisRange().end / nodes[0].heartbeatMillis()), (i, now) -> node.heartbeat());
       }
     });
     basicSuccessTests(closedNodes, -1);
@@ -907,8 +904,8 @@ public abstract class AbstractRaftAlgorithmTest {
     Assume.assumeTrue(isStableTransport());  // requires a stable transport
     RaftState[] closedNodes = bootstrap((nodes, states) -> {
       // Everyone triggers an election
-      nodes[1].triggerElection(now());
-      nodes[2].triggerElection(now());
+      nodes[1].triggerElection();
+      nodes[2].triggerElection();
       waitMillis(nodes[0].electionTimeoutMillisRange().end);
     });
     basicSuccessTests(closedNodes, -1);
@@ -926,7 +923,7 @@ public abstract class AbstractRaftAlgorithmTest {
     // 2. Run the cluster for an election timeout (+ buffer)
     RaftState[] closedNodes = bootstrap((nodes, states) -> {
       for (RaftAlgorithm node : nodes) {
-        schedule(nodes[0].heartbeatMillis(), (int) (nodes[0].electionTimeoutMillisRange().end / nodes[0].heartbeatMillis()) + 1, (i, now) -> node.heartbeat(now));
+        schedule(nodes[0].heartbeatMillis(), (int) (nodes[0].electionTimeoutMillisRange().end / nodes[0].heartbeatMillis()) + 1, (i, now) -> node.heartbeat());
       }
     });
     // 3. Make sure we got a new leader
@@ -950,7 +947,7 @@ public abstract class AbstractRaftAlgorithmTest {
     RaftState[] closedNodes = bootstrap((nodes, states) -> {
       int numHeartbeats = (int) (RaftAlgorithm.DEFAULT_ELECTION_RANGE.end / nodes[0].heartbeatMillis()) + 8;
       for (RaftAlgorithm node : nodes) {
-        schedule(nodes[0].heartbeatMillis(), numHeartbeats, (i, now) -> node.heartbeat(now));
+        schedule(nodes[0].heartbeatMillis(), numHeartbeats, (i, now) -> node.heartbeat());
       }
     });
     // 3. The old leader should have resigned
@@ -972,10 +969,10 @@ public abstract class AbstractRaftAlgorithmTest {
         RaftAlgorithm node = nodes[i];
         if (i == 0) {
           // kill the leader after 10 heartbeats
-          schedule(node.heartbeatMillis(), 10, (k, now) -> node.heartbeat(now));
+          schedule(node.heartbeatMillis(), 10, (k, now) -> node.heartbeat());
         } else {
           // kill everyone else after (10 + election_timeout + epsilon) heartbeats
-          schedule(node.heartbeatMillis(), (int) (node.electionTimeoutMillisRange().end / node.heartbeatMillis() + 15), (k, now) -> node.heartbeat(now));
+          schedule(node.heartbeatMillis(), (int) (node.electionTimeoutMillisRange().end / node.heartbeatMillis() + 15), (k, now) -> node.heartbeat());
         }
       }
     });
@@ -994,7 +991,7 @@ public abstract class AbstractRaftAlgorithmTest {
   @Test
   public void testElectSingleServer() {
     Assume.assumeTrue(isStableTransport());  // requires a stable transport
-    RaftState[] closedNodes = bootstrap(this::create, 1, 0, false, (nodes, states) -> nodes[0].triggerElection(now()));
+    RaftState[] closedNodes = bootstrap(this::create, 1, 0, false, (nodes, states) -> nodes[0].triggerElection());
     assertTrue("Solitary node should have elected itself.", closedNodes[0].isLeader());
   }
 
@@ -1322,8 +1319,8 @@ public abstract class AbstractRaftAlgorithmTest {
     RaftState[] closedNodes = bootstrap(this::create, 2, 0, true, (nodes, states) -> {
       // Run some heartbeats on follower, but not leader
       schedule(nodes[0].heartbeatMillis(), (int) (nodes[0].electionTimeoutMillisRange().end / nodes[0].heartbeatMillis() + 5), (k, now) -> {
-        nodes[0].heartbeat(now);
-        nodes[1].heartbeat(now);
+        nodes[0].heartbeat();
+        nodes[1].heartbeat();
       });
       // Important: we have to stop the node that we're removing
       RaftAlgorithm.shutdown(nodes[0], transport(), false);
@@ -1351,7 +1348,7 @@ public abstract class AbstractRaftAlgorithmTest {
       rpcResults.add(removeServer(nodes[0], "L"));
       // Run some heartbeats (including on server!)
       schedule(nodes[0].heartbeatMillis(), (int) (nodes[0].electionTimeoutMillisRange().end / nodes[0].heartbeatMillis() + 5), (k, now) -> {
-        for (RaftAlgorithm node : nodes) { node.heartbeat(now); }
+        for (RaftAlgorithm node : nodes) { node.heartbeat(); }
       });
       // Unlike testRemoveSelf, we don't stop the node here!
 //      nodes[0].stop();  // commented for documentation
@@ -1402,9 +1399,9 @@ public abstract class AbstractRaftAlgorithmTest {
 
     // 3. Run the system for a few cycles
     schedule(A.heartbeatMillis(), (int) (L.electionTimeoutMillisRange().end / L.heartbeatMillis() + 5), (k, now) -> {
-      A.heartbeat(now);
-      B.heartbeat(now);
-      L.heartbeat(now);
+      A.heartbeat();
+      B.heartbeat();
+      L.heartbeat();
     });
     stop(A, B, L);
 
@@ -1430,7 +1427,7 @@ public abstract class AbstractRaftAlgorithmTest {
         LogEntry.newBuilder().setIndex(3).setTerm(4).setTransition(ByteString.copyFrom(new byte[]{3})).build()
     ));
     sL.setCurrentTerm(4);
-    sL.voteFor(sL.serverName);
+    sL.voteFor(sL.serverName, now());
     assertEquals("leader log should have some entries", 3, sL.log.getLastEntryIndex());
     assertEquals("leader term should be 4", 4, sL.currentTerm);
     assertEquals("Leader should be a candidate", RaftState.LeadershipStatus.CANDIDATE, sL.leadership);
@@ -1451,8 +1448,8 @@ public abstract class AbstractRaftAlgorithmTest {
 
     // 3. Run the system for a few cycles
     schedule(A.heartbeatMillis(), (int) ((L.electionTimeoutMillisRange().end / L.heartbeatMillis()) + 5), (k, now) -> {
-      L.heartbeat(now);
-      A.heartbeat(now);
+      L.heartbeat();
+      A.heartbeat();
     });
     stop(L, A);
 
@@ -1521,7 +1518,7 @@ public abstract class AbstractRaftAlgorithmTest {
     Assume.assumeTrue(isStableTransport());  // requires a stable transport
     RaftState[] closedNodes = bootstrap((nodes, states) ->
         assertEquals("Commit should have been successful", Optional.of(42), transitionAndWait(nodes[1], states[1], 42, () -> {
-      nodes[0].heartbeat(now());
+      nodes[0].heartbeat();
       waitForSilence(nodes[0]);
     })));
     basicSuccessTests(closedNodes);
@@ -1536,7 +1533,7 @@ public abstract class AbstractRaftAlgorithmTest {
   public void testSubmitTransitionFromFollowerCommittedToOtherFollower() {
     Assume.assumeTrue(isStableTransport());  // requires a stable transport
     RaftState[] closedNodes = bootstrap((nodes, states) -> assertEquals("Commit should have been successful", Optional.of(42), transitionAndWait(nodes[1], states[2], 42, () -> {
-      nodes[0].heartbeat(now());
+      nodes[0].heartbeat();
       waitForSilence(nodes[0]);
     })));
     basicSuccessTests(closedNodes);
@@ -1577,7 +1574,7 @@ public abstract class AbstractRaftAlgorithmTest {
     Assume.assumeTrue(isStableTransport());  // requires a stable transport
     RaftState[] closedNodes = bootstrapWithShadows((nodes, states) ->
         assertEquals("Commit should have been successful", Optional.of(42), transitionAndWait(nodes[0], states[4], 42, () -> {
-          nodes[0].heartbeat(now());
+          nodes[0].heartbeat();
           waitForSilence(nodes[0]);
         })));
     basicSuccessTests(closedNodes, -1, Optional.of(new HashSet<>(Arrays.asList("L", "A", "B"))), true);
@@ -1661,7 +1658,7 @@ public abstract class AbstractRaftAlgorithmTest {
 
     // Run heartbeats to ensure that no one triggers an election
     schedule(leaderNode.heartbeatMillis(), (int) (leaderNode.electionTimeoutMillisRange().end / leaderNode.heartbeatMillis()) + 10, (k, now) -> {
-      for (RaftAlgorithm node : nodes) { node.heartbeat(now); }
+      for (RaftAlgorithm node : nodes) { node.heartbeat(); }
     });
     for (RaftAlgorithm node : nodes) { waitForSilence(node); }
     // (everything should be silent)
@@ -1674,7 +1671,7 @@ public abstract class AbstractRaftAlgorithmTest {
     // Bootstrap one of the machines
     assertTrue("Should be able to bootstrap", leaderNode.bootstrap(false));
     schedule(leaderNode.heartbeatMillis(), (int) (leaderNode.electionTimeoutMillisRange().end / leaderNode.heartbeatMillis()) + 20, (k, now) -> {
-      for (RaftAlgorithm node : nodes) { node.heartbeat(now); }
+      for (RaftAlgorithm node : nodes) { node.heartbeat(); }
     });
     stop(nodes);
 
@@ -1706,7 +1703,7 @@ public abstract class AbstractRaftAlgorithmTest {
 
     // Run heartbeats until an election timeout
     schedule(leaderNode.heartbeatMillis(), (int) (leaderNode.electionTimeoutMillisRange().end / leaderNode.heartbeatMillis()) + 10, (k, now) -> {
-      for (RaftAlgorithm node : nodes) { node.heartbeat(now); }
+      for (RaftAlgorithm node : nodes) { node.heartbeat(); }
     });
     assertFalse("Should not be able to bootstrap a node anyways", leaderNode.bootstrap(false));
     stop(nodes);
@@ -1759,7 +1756,7 @@ public abstract class AbstractRaftAlgorithmTest {
       // 1.1. Start things off with a heartbeat
       if (electionBeforeAdd) {
         for (RaftAlgorithm node : nodes) {
-          node.heartbeat(0L);
+          node.heartbeat();
         }
       }
       CompletableFuture[] futures = new CompletableFuture[numToCommit];
@@ -1774,12 +1771,12 @@ public abstract class AbstractRaftAlgorithmTest {
           log.info("Forcing an election @ t={}", now());
           for (RaftAlgorithm node : nodes) {
             if (!node.mutableState().isLeader()) {
-              node.heartbeat(now());
+              node.heartbeat();
             }
           }
           waitForSilence(nodes);
           for (RaftAlgorithm node : nodes) {
-            node.heartbeat(0L);
+            node.heartbeat();
           }
           waitForSilence(nodes);
         }
@@ -1787,14 +1784,14 @@ public abstract class AbstractRaftAlgorithmTest {
         if (electionBeforeAdd && (i+1) % 10 == 0) {
           waitForSilence(nodes);
           for (RaftAlgorithm node : nodes) {
-            node.heartbeat(0L);
+            node.heartbeat();
           }
           waitForSilence(nodes);
         }
       }
       // 1.5. Run a final heartbeat
       for (RaftAlgorithm node : nodes) {
-        node.heartbeat(0L);
+        node.heartbeat();
       }
       // 1.5. Wait for silence
       if (silenceBeforeAdd) {
@@ -1813,7 +1810,7 @@ public abstract class AbstractRaftAlgorithmTest {
       shadowNodePointer.set(shadow);
       // 2.2. Run a heartbeat to flush the commit state
       for (RaftAlgorithm node : nodes) {
-        node.heartbeat(0L);
+        node.heartbeat();
       }
       waitForSilence(nodes);
 
@@ -1822,9 +1819,9 @@ public abstract class AbstractRaftAlgorithmTest {
       log.info("Running "+numHeartbeats+" Heartbeats");
       schedule(nodes[0].heartbeatMillis(), numHeartbeats, (k, now) -> {  // run for 100 heartbeats
         for (RaftAlgorithm node : nodes) {
-          node.heartbeat(now);
+          node.heartbeat();
         }
-        shadow.heartbeat(now);
+        shadow.heartbeat();
       });
     });
     waitForSilence(shadowNodePointer.dereference().get());
@@ -1919,7 +1916,7 @@ public abstract class AbstractRaftAlgorithmTest {
             if (isStableTransport()) {
               assertTrue("If we're on a stable transport, we should never lose our leader", states[0].isLeader());
             }
-            node.heartbeat(now);
+            node.heartbeat();
           }
         });
       });
@@ -1943,7 +1940,7 @@ public abstract class AbstractRaftAlgorithmTest {
           RaftState state = states[i];
           schedule(node.heartbeatMillis(), (int) (100 + node.electionTimeoutMillisRange().end / node.heartbeatMillis() + 5), (k, now) -> {  // run for 1000 heartbeats
             if (k >= 1000 || rand.nextDouble() < 0.1) {  // only issue 10% of heartbeats
-              node.heartbeat(now);
+              node.heartbeat();
             }
             if (k < 1000 && rand.nextDouble() < 0.1) {  // 10% of heartbeat pings, introduce a network partition
               partitionOff(now, now + node.electionTimeoutMillisRange().end + 1000, state.serverName, states[rand.nextInt(states.length)].serverName);
@@ -1983,7 +1980,7 @@ public abstract class AbstractRaftAlgorithmTest {
       waitMillis(500);
       for (int i = 0; i < 10; ++i) {
         waitMillis(nodes[0].heartbeatMillis());
-        nodes[0].heartbeat(now());  // heartbeat a bit, to mitigate throttling
+        nodes[0].heartbeat();  // heartbeat a bit, to mitigate throttling
       }
       waitMillis(nodes[0].electionTimeoutMillisRange().end);     // just for good measure
       for (RaftAlgorithm node : nodes) {
@@ -2008,16 +2005,16 @@ public abstract class AbstractRaftAlgorithmTest {
         Random rand = new Random(42L);
         schedule(100, count, (k, now) -> rpcResults.add(transition(nodes[rand.nextInt(nodes.length)], k % 127)));
         waitForSilence(nodes);
-        nodes[0].heartbeat(now());  // make sure everyone is caught up
+        nodes[0].heartbeat();  // make sure everyone is caught up
         if (!isStableTransport()) {
           for (int i = 0; i < 1000 && Arrays.stream(nodes).map(x -> ((SingleByteStateMachine) x.mutableState().log.stateMachine).value).collect(Collectors.toSet()).size() != 1; ++i) {
             for (RaftAlgorithm node : nodes) {
               waitForSilence(node);           // wait for heartbeat to complete
             }
-            nodes[0].heartbeat(now());  // make sure everyone is caught up
+            nodes[0].heartbeat();  // make sure everyone is caught up
           }
         }
-        nodes[0].heartbeat(now());  // make sure everyone is caught up
+        nodes[0].heartbeat();  // make sure everyone is caught up
       });
       basicSuccessTests(closedNodes, -1);
       transitionSuccessTests(closedNodes, -1, rpcResults, count);

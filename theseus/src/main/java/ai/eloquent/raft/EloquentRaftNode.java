@@ -169,7 +169,7 @@ public class EloquentRaftNode implements AutoCloseable {
           // Run the heartbeat
           if (alive) {
             lastHeartbeat = transport.now();
-            algorithm.heartbeat(transport.now());
+            algorithm.heartbeat();
           } else {
             log.info("{} - Stopping heartbeat timer by user request", algorithm.serverName());
             this.cancel();
@@ -249,8 +249,7 @@ public class EloquentRaftNode implements AutoCloseable {
         EloquentRaftProto.ApplyTransitionRequest.newBuilder()
             .setTransition(ByteString.copyFrom(transition))
             .setTerm(algorithm.term())
-            .build()),
-        transport.now()
+            .build())
     ).thenApply(reply -> reply.getApplyTransitionReply().getSuccess());
   }
 

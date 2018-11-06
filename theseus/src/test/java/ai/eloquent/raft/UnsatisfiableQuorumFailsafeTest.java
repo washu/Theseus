@@ -52,7 +52,7 @@ public class UnsatisfiableQuorumFailsafeTest {
       }
     }
     RaftAlgorithm algorithm = new SingleThreadedRaftAlgorithm(new EloquentRaftAlgorithm(state, transport, Optional.empty()), Executors.newSingleThreadExecutor());
-    algorithm.heartbeat(0);
+    algorithm.heartbeat();
     return algorithm;
   }
 

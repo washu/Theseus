@@ -163,7 +163,7 @@ public class EloquentRaftAlgorithmTest {
       for (long i = 0; i < 100000; i++) {
         transport.advanceTimeOneMs();
         state.observeLifeFrom("new_server", i);
-        algorithm.heartbeat(i);
+        algorithm.heartbeat();
 
         // Reply to any RPCs
 
@@ -194,7 +194,7 @@ public class EloquentRaftAlgorithmTest {
                 .setNextIndex(nextIndex)
                 .setFollowerName("new_server")
                 .setSuccess(true)
-                .build(), transport.transportMockTimer.now());
+                .build());
           });
           transport.broadcastCalls.removeAll(calls);
         }
@@ -261,7 +261,7 @@ public class EloquentRaftAlgorithmTest {
       raftState.nextIndex.get().put("server3", 1L);
 
       transport.broadcastCalls.clear();
-      algorithm.broadcastAppendEntries(0);
+      algorithm.broadcastAppendEntries();
       assertEquals(1, transport.broadcastCalls.size());
 
       List<EloquentRaftProto.LogEntry> expectedBroadcastEntries = new ArrayList<>();
@@ -276,7 +276,7 @@ public class EloquentRaftAlgorithmTest {
       raftState.nextIndex.get().put("server3", 3L);
 
       transport.broadcastCalls.clear();
-      algorithm.broadcastAppendEntries(0);
+      algorithm.broadcastAppendEntries();
       assertEquals(1, transport.broadcastCalls.size());
 
       expectedBroadcastEntries = Arrays.asList(
@@ -295,7 +295,7 @@ public class EloquentRaftAlgorithmTest {
       raftState.nextIndex.get().put("server3", 5L);
 
       transport.broadcastCalls.clear();
-      algorithm.broadcastAppendEntries(0);
+      algorithm.broadcastAppendEntries();
       assertEquals(1, transport.broadcastCalls.size());
 
       expectedBroadcastEntries = Arrays.asList(
@@ -314,7 +314,7 @@ public class EloquentRaftAlgorithmTest {
       raftState.nextIndex.get().put("server3", 6L);
 
       transport.broadcastCalls.clear();
-      algorithm.broadcastAppendEntries(0);
+      algorithm.broadcastAppendEntries();
       assertEquals(1, transport.broadcastCalls.size());
 
       expectedBroadcastEntries = Collections.singletonList(
@@ -331,7 +331,7 @@ public class EloquentRaftAlgorithmTest {
       raftState.nextIndex.get().put("server3", 6L);
 
       transport.broadcastCalls.clear();
-      algorithm.broadcastAppendEntries(0);
+      algorithm.broadcastAppendEntries();
       assertEquals(1, transport.broadcastCalls.size());
 
       expectedBroadcastEntries = new ArrayList<>();
@@ -370,7 +370,7 @@ public class EloquentRaftAlgorithmTest {
           .build();
 
       final Pointer<EloquentRaftProto.RaftMessage> replyPointer = new Pointer<>();
-      algorithm.receiveAppendEntriesRPC(request, replyPointer::set, 0);
+      algorithm.receiveAppendEntriesRPC(request, replyPointer::set);
 
       assertEquals(2, algorithm.term());
       EloquentRaftProto.AppendEntriesReply reply = replyPointer.dereference().get().getAppendEntriesReply();
@@ -437,7 +437,7 @@ public class EloquentRaftAlgorithmTest {
           .build();
 
       transport.sendCalls.clear();
-      algorithm.receiveAppendEntriesReply(reply, 0);
+      algorithm.receiveAppendEntriesReply(reply);
       assertEquals(1, transport.sendCalls.size());
 
       assertEquals("server1", transport.sendCalls.get(0).destination);
@@ -457,7 +457,7 @@ public class EloquentRaftAlgorithmTest {
           .build();
 
       transport.sendCalls.clear();
-      algorithm.receiveAppendEntriesReply(reply, 0);
+      algorithm.receiveAppendEntriesReply(reply);
       assertEquals(1, transport.sendCalls.size());
 
       assertEquals("server1", transport.sendCalls.get(0).destination);
@@ -477,7 +477,7 @@ public class EloquentRaftAlgorithmTest {
           .build();
 
       transport.sendCalls.clear();
-      algorithm.receiveAppendEntriesReply(reply, 0);
+      algorithm.receiveAppendEntriesReply(reply);
       assertEquals(1, transport.sendCalls.size());
 
       assertEquals("server1", transport.sendCalls.get(0).destination);
@@ -501,7 +501,7 @@ public class EloquentRaftAlgorithmTest {
           .build();
 
       transport.sendCalls.clear();
-      algorithm.receiveAppendEntriesReply(reply, 0);
+      algorithm.receiveAppendEntriesReply(reply);
       assertEquals(1, transport.sendCalls.size());
 
       assertEquals("server1", transport.sendCalls.get(0).destination);
@@ -523,7 +523,7 @@ public class EloquentRaftAlgorithmTest {
           .build();
 
       transport.sendCalls.clear();
-      algorithm.receiveAppendEntriesReply(reply, 0);
+      algorithm.receiveAppendEntriesReply(reply);
       assertEquals(0, transport.sendCalls.size());
     } finally {
       algorithm.stop(true);
@@ -585,7 +585,7 @@ public class EloquentRaftAlgorithmTest {
           .build();
 
       transport.sendCalls.clear();
-      algorithm.receiveInstallSnapshotReply(reply, 0);
+      algorithm.receiveInstallSnapshotReply(reply);
       assertEquals(1, transport.sendCalls.size());
 
       assertEquals("server1", transport.sendCalls.get(0).destination);
@@ -604,7 +604,7 @@ public class EloquentRaftAlgorithmTest {
           .build();
 
       transport.sendCalls.clear();
-      algorithm.receiveInstallSnapshotReply(reply, 0);
+      algorithm.receiveInstallSnapshotReply(reply);
       assertEquals(1, transport.sendCalls.size());
 
       assertEquals("server1", transport.sendCalls.get(0).destination);
@@ -627,7 +627,7 @@ public class EloquentRaftAlgorithmTest {
           .build();
 
       transport.sendCalls.clear();
-      algorithm.receiveInstallSnapshotReply(reply, 0);
+      algorithm.receiveInstallSnapshotReply(reply);
       assertEquals(1, transport.sendCalls.size());
 
       assertEquals("server1", transport.sendCalls.get(0).destination);
@@ -648,7 +648,7 @@ public class EloquentRaftAlgorithmTest {
           .build();
 
       transport.sendCalls.clear();
-      algorithm.receiveInstallSnapshotReply(reply, 0);
+      algorithm.receiveInstallSnapshotReply(reply);
       assertEquals(0, transport.sendCalls.size());
     } finally {
       algorithm.stop(true);
@@ -664,13 +664,12 @@ public class EloquentRaftAlgorithmTest {
    * @return The future for whether the transition was successful.
    */
   private CompletableFuture<Boolean> transition(RaftAlgorithm node,
-                                                String key, byte[] value, long now) {
+                                                String key, byte[] value) {
     byte[] transition = KeyValueStateMachine.createSetValueTransition(key, value);
     return node.receiveRPC(RaftTransport.mkRaftRPC(node.serverName(),
         EloquentRaftProto.ApplyTransitionRequest.newBuilder()
             .setTransition(ByteString.copyFrom(transition))
-            .build()),
-        now
+            .build())
     ).thenApply(reply -> reply.getApplyTransitionReply().getSuccess());
   }
 
@@ -688,17 +687,17 @@ public class EloquentRaftAlgorithmTest {
     RaftAlgorithm algorithm = new SingleThreadedRaftAlgorithm(new EloquentRaftAlgorithm(state, new NetRaftTransport("server"), Optional.empty()), Executors.newSingleThreadExecutor());
     try {
       algorithm.bootstrap(false);
-      algorithm.heartbeat(System.currentTimeMillis());
+      algorithm.heartbeat();
       for (int i = 0; i < 50; ++i) {
         Uninterruptably.sleep(100);
-        algorithm.heartbeat(System.currentTimeMillis());
+        algorithm.heartbeat();
       }
 
       // 2. Set some values
       for (int i = 0; i < 10000; ++i) {
-        transition(algorithm, "key_" + i, new byte[]{(byte) i}, System.currentTimeMillis()).get();
+        transition(algorithm, "key_" + i, new byte[]{(byte) i}).get();
         if (i % 125 == 0) {
-          algorithm.heartbeat(System.currentTimeMillis());
+          algorithm.heartbeat();
         }
       }
 
@@ -706,7 +705,7 @@ public class EloquentRaftAlgorithmTest {
       long start = System.currentTimeMillis();
       long now = start;
       for (int i = 0; i < 20 * 60 * 60 * 24; ++i) {
-        algorithm.heartbeat(now);
+        algorithm.heartbeat();
         now += 50;
       }
       System.out.println("Took " + TimerUtils.formatTimeSince(start) + " to run heartbeats over a simulated time of " +
@@ -740,7 +739,6 @@ public class EloquentRaftAlgorithmTest {
 
       // 2. Heartbeat a bunch
       long start = System.currentTimeMillis();
-      long now = start;
       long count = 10000000;
       for (int i = 0; i < count; ++i) {
         CompletableFuture<Boolean> success = new CompletableFuture<>();
@@ -751,8 +749,7 @@ public class EloquentRaftAlgorithmTest {
                     .setIndex(i + 1)
                     .setTerm(0))
                 .build(),
-            (reply) -> success.complete(true), now);
-        now += 50;
+            (reply) -> success.complete(true));
         success.get();
       }
       System.out.println("Took " + TimerUtils.formatTimeSince(start) + " to run " + count + " transitions - " + ((double) (System.currentTimeMillis() - start) / count) + " per transition");

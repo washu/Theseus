@@ -36,12 +36,10 @@ public interface RaftAlgorithm {
    *
    * @param messageProto The {@link ai.eloquent.raft.EloquentRaftProto.RaftMessage} we have received.
    * @param replySender A callback for sending a message to the sender on the underlying transport.
-   * @param now The timestamp of the current time. In non-mock cases, this is always {@link System#currentTimeMillis()}.
    */
   @SuppressWarnings("Duplicates")
   default void receiveMessage(EloquentRaftProto.RaftMessage messageProto,
-                              Consumer<EloquentRaftProto.RaftMessage> replySender,
-                              long now) {
+                              Consumer<EloquentRaftProto.RaftMessage> replySender) {
 
     if (!messageProto.getAppendEntries().equals(AppendEntriesRequest.getDefaultInstance())) {
       // Append Entries
@@ -49,26 +47,26 @@ public interface RaftAlgorithm {
       receiveAppendEntriesRPC(messageProto.getAppendEntries(), msg -> {
         Prometheus.observeDuration(timerStart);
         replySender.accept(msg);
-      }, now);
+      });
     } else if (!messageProto.getRequestVotes().equals(RequestVoteRequest.getDefaultInstance())) {
       // Request Votes
       Object timerStart = Prometheus.startTimer(summaryTiming,"request_votes");
       receiveRequestVoteRPC(messageProto.getRequestVotes(), msg -> {
         Prometheus.observeDuration(timerStart);
         replySender.accept(msg);
-      }, now);
+      });
     } else if (!messageProto.getInstallSnapshot().equals(InstallSnapshotRequest.getDefaultInstance())) {
       // Install Snapshot
       Object timerStart = Prometheus.startTimer(summaryTiming,"install_snapshot");
       receiveInstallSnapshotRPC(messageProto.getInstallSnapshot(), msg -> {
         Prometheus.observeDuration(timerStart);
         replySender.accept(msg);
-      }, now);
+      });
     } else if (!messageProto.getAppendEntriesReply().equals(AppendEntriesReply.getDefaultInstance())) {
       // REPLY Append Entries
       Object timerStart = Prometheus.startTimer(summaryTiming,"append_entries_reply");
       try {
-        receiveAppendEntriesReply(messageProto.getAppendEntriesReply(), now);
+        receiveAppendEntriesReply(messageProto.getAppendEntriesReply());
       } finally {
         Prometheus.observeDuration(timerStart);
       }
@@ -76,7 +74,7 @@ public interface RaftAlgorithm {
       // REPLY Request Votes
       Object timerStart = Prometheus.startTimer(summaryTiming,"request_votes_reply");
       try {
-        receiveRequestVotesReply(messageProto.getRequestVotesReply(), now);
+        receiveRequestVotesReply(messageProto.getRequestVotesReply());
       } finally {
         Prometheus.observeDuration(timerStart);
       }
@@ -84,14 +82,14 @@ public interface RaftAlgorithm {
       // REPLY Install Snapshot
       Object timerStart = Prometheus.startTimer(summaryTiming,"installl_snapshot_reply");
       try {
-        receiveInstallSnapshotReply(messageProto.getInstallSnapshotReply(), now);
+        receiveInstallSnapshotReply(messageProto.getInstallSnapshotReply());
       } finally {
         Prometheus.observeDuration(timerStart);
       }
     } else if (!messageProto.getAddServer().equals(AddServerRequest.getDefaultInstance())) {
       // Add Server
       Object timerStart = Prometheus.startTimer(summaryTiming,"add_server");
-      CompletableFuture<RaftMessage> future = receiveAddServerRPC(messageProto.getAddServer(), now);
+      CompletableFuture<RaftMessage> future = receiveAddServerRPC(messageProto.getAddServer());
       future.whenComplete( (reply, exception) -> {
         Prometheus.observeDuration(timerStart);
         if (exception != null && reply != null) {
@@ -103,7 +101,7 @@ public interface RaftAlgorithm {
     } else if (!messageProto.getRemoveServer().equals(RemoveServerRequest.getDefaultInstance())) {
       // Remove Server
       Object timerStart = Prometheus.startTimer(summaryTiming,"remove_server");
-      CompletableFuture<RaftMessage> future = receiveRemoveServerRPC(messageProto.getRemoveServer(), now);
+      CompletableFuture<RaftMessage> future = receiveRemoveServerRPC(messageProto.getRemoveServer());
       future.whenComplete( (reply, exception) -> {
         Prometheus.observeDuration(timerStart);
         if (exception != null && reply != null) {
@@ -115,7 +113,7 @@ public interface RaftAlgorithm {
     } else if (!messageProto.getApplyTransition().equals(ApplyTransitionRequest.getDefaultInstance())) {
       // Apply Transition
       Object timerStart = Prometheus.startTimer(summaryTiming,"apply_transition");
-      CompletableFuture<RaftMessage> future = receiveApplyTransitionRPC(messageProto.getApplyTransition(), now);
+      CompletableFuture<RaftMessage> future = receiveApplyTransitionRPC(messageProto.getApplyTransition());
       future.whenComplete( (reply, exception) -> {
         Prometheus.observeDuration(timerStart);
         if (exception != null && reply != null) {
@@ -135,39 +133,37 @@ public interface RaftAlgorithm {
    * This function will return a {@link CompletableFuture} that is completed when the RPC completes.
    *
    * @param messageProto The {@link ai.eloquent.raft.EloquentRaftProto.RaftMessage} we have received.
-   * @param now The timestamp of the current time. In non-mock cases, this is always {@link System#currentTimeMillis()}.
    *
    * @return A {@link CompletableFuture} that completes when the RPC completes.
    */
-  default CompletableFuture<EloquentRaftProto.RaftMessage> receiveRPC(EloquentRaftProto.RaftMessage messageProto,
-                                                                      long now) {
+  default CompletableFuture<EloquentRaftProto.RaftMessage> receiveRPC(EloquentRaftProto.RaftMessage messageProto) {
     Object timerStart = null;
     CompletableFuture<EloquentRaftProto.RaftMessage> future = new CompletableFuture<>();
     try {
       if (messageProto.getAppendEntries() != AppendEntriesRequest.getDefaultInstance()) {
         // Append Entries
         timerStart = Prometheus.startTimer(summaryTiming, "append_entries_rpc");
-        receiveAppendEntriesRPC(messageProto.getAppendEntries(), future::complete, now);
+        receiveAppendEntriesRPC(messageProto.getAppendEntries(), future::complete);
       } else if (messageProto.getRequestVotes() != RequestVoteRequest.getDefaultInstance()) {
         // Request Votes
         timerStart = Prometheus.startTimer(summaryTiming, "request_votes_rpc");
-        receiveRequestVoteRPC(messageProto.getRequestVotes(), future::complete, now);
+        receiveRequestVoteRPC(messageProto.getRequestVotes(), future::complete);
       } else if (messageProto.getInstallSnapshot() != InstallSnapshotRequest.getDefaultInstance()) {
         // Install Snapshot
         timerStart = Prometheus.startTimer(summaryTiming, "install_snapshop_rpc");
-        receiveInstallSnapshotRPC(messageProto.getInstallSnapshot(), future::complete, now);
+        receiveInstallSnapshotRPC(messageProto.getInstallSnapshot(), future::complete);
       } else if (messageProto.getAddServer() != AddServerRequest.getDefaultInstance()) {
         // Add Server
         timerStart = Prometheus.startTimer(summaryTiming, "add_server_rpc");
-        future = receiveAddServerRPC(messageProto.getAddServer(), now);
+        future = receiveAddServerRPC(messageProto.getAddServer());
       } else if (messageProto.getRemoveServer() != RemoveServerRequest.getDefaultInstance()) {
         // Remove Server
         timerStart = Prometheus.startTimer(summaryTiming, "remove_server_rpc");
-        future = receiveRemoveServerRPC(messageProto.getRemoveServer(), now);
+        future = receiveRemoveServerRPC(messageProto.getRemoveServer());
       } else if (messageProto.getApplyTransition() != ApplyTransitionRequest.getDefaultInstance()) {
         // Apply Transition
         timerStart = Prometheus.startTimer(summaryTiming, "transition_rpc");
-        future = receiveApplyTransitionRPC(messageProto.getApplyTransition(), now);
+        future = receiveApplyTransitionRPC(messageProto.getApplyTransition());
       } else {
         timerStart = Prometheus.startTimer(summaryTiming, "unknown_rpc");
         future.completeExceptionally(new IllegalStateException("Message type not implemented: " + messageProto));
@@ -226,11 +222,8 @@ public interface RaftAlgorithm {
 
   /**
    * Send out an append entries RPC (i.e., a heartbeat) to all listeners on the transport.
-   *
-   * @param now The current time. This is usually {@link System#currentTimeMillis()}, but can
-   *            be mocked by unit tests.
    */
-  void broadcastAppendEntries(long now);
+  void broadcastAppendEntries();
 
 
   /**
@@ -258,11 +251,9 @@ public interface RaftAlgorithm {
    * @param heartbeat The request body, doubling both as a heartbeat and a request to mutate the
    *                  state machine.
    * @param replyLeader The method for replying to the leader with an ACK of the request.
-   * @param now The timestamp of the current time. In non-mock cases, this is always {@link System#currentTimeMillis()}.
    */
   void receiveAppendEntriesRPC(EloquentRaftProto.AppendEntriesRequest heartbeat,
-                               Consumer<EloquentRaftProto.RaftMessage> replyLeader,
-                               long now);
+                               Consumer<EloquentRaftProto.RaftMessage> replyLeader);
 
 
   /**
@@ -270,9 +261,8 @@ public interface RaftAlgorithm {
    * This function is called to handle that heartbeat reply.
    *
    * @param  reply The heartbeat ACK from the follower node.
-   * @param now The timestamp of the current time. In non-mock cases, this is always {@link System#currentTimeMillis()}.
    */
-  void receiveAppendEntriesReply(EloquentRaftProto.AppendEntriesReply reply, long now);
+  void receiveAppendEntriesReply(EloquentRaftProto.AppendEntriesReply reply);
 
 
   //
@@ -288,20 +278,17 @@ public interface RaftAlgorithm {
    *
    * @param snapshot The snapshot to install.
    * @param replyLeader The method for replying to the leader with an ACK of the request.
-   * @param now The timestamp of the current time. In non-mock cases, this is always {@link System#currentTimeMillis()}.
    */
   void receiveInstallSnapshotRPC(InstallSnapshotRequest snapshot,
-                                 Consumer<RaftMessage> replyLeader,
-                                 long now);
+                                 Consumer<RaftMessage> replyLeader);
 
 
   /**
    * We received an asynchronous snapshot reply from a server.
    *
    * @param reply The snapshot reply from the follower node.
-   * @param now The timestamp of the current time. In non-mock cases, this is always {@link System#currentTimeMillis()}.
    */
-  void receiveInstallSnapshotReply(EloquentRaftProto.InstallSnapshotReply reply, long now);
+  void receiveInstallSnapshotReply(EloquentRaftProto.InstallSnapshotReply reply);
 
 
   //
@@ -314,7 +301,7 @@ public interface RaftAlgorithm {
   /**
    * Signal to the cluster that we are a candidate for an election, and we are soliciting votes
    */
-  void triggerElection(long now);
+  void triggerElection();
 
 
   /**
@@ -323,9 +310,8 @@ public interface RaftAlgorithm {
    *
    * @param voteRequest The request for votes for a particular server.
    * @param replyLeader The method for replying to the leader with an ACK of the request.
-   * @param now The timestamp of the current time. In non-mock cases, this is always {@link System#currentTimeMillis()}.
    */
-  void receiveRequestVoteRPC(EloquentRaftProto.RequestVoteRequest voteRequest, Consumer<EloquentRaftProto.RaftMessage> replyLeader, long now);
+  void receiveRequestVoteRPC(EloquentRaftProto.RequestVoteRequest voteRequest, Consumer<EloquentRaftProto.RaftMessage> replyLeader);
 
 
   /**
@@ -333,9 +319,8 @@ public interface RaftAlgorithm {
    *
    * @param reply The vote from the server, which we should count to see if we have a
    *              majority.
-   * @param now The timestamp of the current time. In non-mock cases, this is always {@link System#currentTimeMillis()}.
    */
-  void receiveRequestVotesReply(EloquentRaftProto.RequestVoteReply reply, long now);
+  void receiveRequestVotesReply(EloquentRaftProto.RequestVoteReply reply);
 
 
   //
@@ -367,11 +352,10 @@ public interface RaftAlgorithm {
    * </ol>
    *
    * @param addServerRequest The request to add the server.
-   * @param now The timestamp of the current time. In non-mock cases, this is always {@link System#currentTimeMillis()}.
    *
    * @return the RPC response, as a future.
    */
-  CompletableFuture<RaftMessage> receiveAddServerRPC(AddServerRequest addServerRequest, long now);
+  CompletableFuture<RaftMessage> receiveAddServerRPC(AddServerRequest addServerRequest);
 
 
   /**
@@ -380,11 +364,10 @@ public interface RaftAlgorithm {
    * then it should forward to the leader.
    *
    * @param removeServerRequest The snapshot to install.
-   * @param now The timestamp of the current time. In non-mock cases, this is always {@link System#currentTimeMillis()}.
    *
    * @return the RPC response, as a future.
    */
-  CompletableFuture<RaftMessage> receiveRemoveServerRPC(RemoveServerRequest removeServerRequest, long now);
+  CompletableFuture<RaftMessage> receiveRemoveServerRPC(RemoveServerRequest removeServerRequest);
 
 
   //
@@ -398,9 +381,8 @@ public interface RaftAlgorithm {
    * Apply a transition to Raft.
    *
    * @param transition The transition to apply
-   * @param now The timestamp of the current time. In non-mock cases, this is always {@link System#currentTimeMillis()}.
    */
-  CompletableFuture<RaftMessage> receiveApplyTransitionRPC(EloquentRaftProto.ApplyTransitionRequest transition, long now);
+  CompletableFuture<RaftMessage> receiveApplyTransitionRPC(EloquentRaftProto.ApplyTransitionRequest transition);
 
 
   /**
@@ -456,7 +438,7 @@ public interface RaftAlgorithm {
    * If we're the leader, this sends out heartbeats.
    * If we're a follower, this ensures that we can trigger the appropriate timeout events.
    */
-  void heartbeat(long now);
+  void heartbeat();
 
 
   /**
@@ -503,8 +485,7 @@ public interface RaftAlgorithm {
         // 1.1. Try to add ourselves to the hospice
         RaftMessage response = raft.receiveApplyTransitionRPC(ApplyTransitionRequest.newBuilder()
                 .setNewHospiceMember(raft.serverName())
-                .build(),
-            transport.now()).get(raft.electionTimeoutMillisRange().end + 100, TimeUnit.MILLISECONDS);
+                .build()).get(raft.electionTimeoutMillisRange().end + 100, TimeUnit.MILLISECONDS);
         inHospice = response.getApplyTransitionReply().getSuccess();
       } catch (InterruptedException | ExecutionException | TimeoutException e) {
         log.info("{} - [{}] Could not apply hospice transition: ", raft.mutableState().serverName, transport.now(), e);
@@ -541,7 +522,7 @@ public interface RaftAlgorithm {
         // 3.1. Try to remove ourselves from the cluster
         RaftMessage response = raft.receiveRemoveServerRPC(RemoveServerRequest.newBuilder()
             .setOldServer(raft.serverName())
-            .build(), transport.now()).get(raft.electionTimeoutMillisRange().end + 100, TimeUnit.MILLISECONDS);
+            .build()).get(raft.electionTimeoutMillisRange().end + 100, TimeUnit.MILLISECONDS);
         if (response.getRemoveServerReply().getStatus() == MembershipChangeStatus.OK) {
           inCluster = false;
         }

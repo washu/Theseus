@@ -38,7 +38,7 @@ public class Theseus {
   /**
    * An SLF4J Logger for this class.
    */
-  private static final Logger log = LoggerFactory.getLogger(Theseus.class);
+  static final Logger log = LoggerFactory.getLogger(Theseus.class);
 
 
   /**

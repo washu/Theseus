@@ -114,42 +114,57 @@ public class RaftStateTest {
 
 
   /**
-   * Test {@link RaftState#voteFor(String)}
+   * Test {@link RaftState#voteFor(String, long)}
    */
   @Test
   public void voteFor() {
     RaftState state = new RaftState("name", new KeyValueStateMachine("name"), MoreExecutors.newDirectExecutorService());
-    state.voteFor("candidate");
+    state.voteFor("candidate", 0L);
     assertEquals("candidate", state.votedFor.orElse(null));
   }
 
 
   /**
-   * Test that {@link RaftState#voteFor(String)} can't vote for multiple people on the same term
+   * Test that {@link RaftState#voteFor(String, long)} can't vote for multiple people on the same term
    */
   @Test
   public void voteForCantDoubleVote() {
     RaftState state = new RaftState("name", new KeyValueStateMachine("name"), MoreExecutors.newDirectExecutorService());
-    state.voteFor("candidate");
+    state.voteFor("candidate", 0L);
     assertEquals("candidate", state.votedFor.orElse(null));
-    state.voteFor("candidate");
-    assertException(() -> state.voteFor("name"), AssertionError.class);
+    state.electionTimeoutCheckpoint = 0L;
+    state.voteFor("candidate", 1000L);
+    assertEquals("Voting should reset the election timeout", 1000L, state.electionTimeoutCheckpoint);  // note[gabor]: From p.129: "...it’s likely that all servers have reset their timers, _since servers do this when they grant a vote_"
+    assertException(() -> state.voteFor("name", 1000L), AssertionError.class);
   }
 
 
   /**
-   * Test {@link RaftState#voteFor(String)}
+   * Test that {@link RaftState#voteFor(String, long)} can't vote for multiple people on the same term
+   */
+  @Test
+  public void voteForResetsElectionTimer() {
+    RaftState state = new RaftState("name", new KeyValueStateMachine("name"), MoreExecutors.newDirectExecutorService());
+    state.electionTimeoutCheckpoint = 1000L;
+    state.voteFor("candidate", 2000L);
+    assertEquals("Voting should reset the election timeout", 2000L, state.electionTimeoutCheckpoint);  // note[gabor]: From p.129: "...it’s likely that all servers have reset their timers, _since servers do this when they grant a vote_"
+
+  }
+
+
+  /**
+   * Test {@link RaftState#voteFor(String, long)}
    */
   @Test
   public void voteClearedOnTermChange() {
     RaftState state = new RaftState("name", new KeyValueStateMachine("name"), MoreExecutors.newDirectExecutorService());
-    state.voteFor("candidate");
+    state.voteFor("candidate", 0L);
     assertEquals("Our vote should have been registered", "candidate", state.votedFor.orElse(null));
     // Changing the term should clear our vote
     state.setCurrentTerm(10);
     assertFalse("Changing the term should clear our vote", state.votedFor.isPresent());
     // Keeping the term should keep our vote
-    state.voteFor("candidate");
+    state.voteFor("candidate", 0L);
     assertEquals("candidate", state.votedFor.orElse(null));
     state.setCurrentTerm(10);
     assertEquals("Keeping the term should keep our vote","candidate", state.votedFor.orElse(null));
