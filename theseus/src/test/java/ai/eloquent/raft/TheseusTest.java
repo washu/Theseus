@@ -599,7 +599,7 @@ public class TheseusTest extends WithLocalTransport {
     Theseus follower = new Theseus("A", transport, new HashSet<>(Arrays.asList("L", "A")), RaftLifecycle.newBuilder().mockTime().build());
     AtomicInteger changesSeen = new AtomicInteger(0);
     withNodes(transport, nodes -> {
-      KeyValueStateMachine.ChangeListener changeListener = (changedKey, newValue, state) -> changesSeen.incrementAndGet();
+      KeyValueStateMachine.ChangeListener changeListener = (changedKey, newValue, state, pool) -> changesSeen.incrementAndGet();
       nodes[0].addChangeListener(changeListener);
       // Set an element
       nodes[1].setElementAsync("element", new byte[]{42}, true, Duration.ofMinutes(1)).get();

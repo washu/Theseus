@@ -42,7 +42,7 @@ public class KeyValueStateMachineTest {
     Pointer<Integer> numChanges = new Pointer<>(0);
     Pointer<Map<String,byte[]>> lastChange = new Pointer<>(new HashMap<>());
 
-    KeyValueStateMachine.ChangeListener changeListener = (key, value, map) -> {
+    KeyValueStateMachine.ChangeListener changeListener = (key, value, map, pool) -> {
       numChanges.set(numChanges.dereference().get() + 1);
       lastChange.set(map);
     };

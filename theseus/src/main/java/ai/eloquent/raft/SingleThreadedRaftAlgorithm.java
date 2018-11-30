@@ -415,7 +415,7 @@ public class SingleThreadedRaftAlgorithm implements RaftAlgorithm {
 
   /**
    * The pool that'll be used to run any Future that can see into the outside world.
-   * This is often the same as {@link RaftLog#pool}.
+   * This is often the same as the pool in {@link RaftLog}.
    */
   private final ExecutorService boundaryPool;
 

@@ -1,8 +1,6 @@
 package ai.eloquent.raft;
 
-import ai.eloquent.util.Pointer;
-import ai.eloquent.util.SafeTimerTask;
-import ai.eloquent.util.TimerUtils;
+import ai.eloquent.util.*;
 import com.google.protobuf.InvalidProtocolBufferException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -11,7 +9,6 @@ import javax.annotation.Nonnull;
 import javax.annotation.Nullable;
 import java.io.ByteArrayInputStream;
 import java.lang.ref.WeakReference;
-import java.nio.ByteBuffer;
 import java.time.Duration;
 import java.util.*;
 import java.util.concurrent.*;
@@ -49,13 +46,13 @@ public abstract class RaftBackedCache<V> implements Iterable<Map.Entry<String,V>
   /**
    * This is where we keep all of the listeners that fire whenever the current state changes
    */
-  Map<ChangeListener, KeyValueStateMachine.ChangeListener> changeListeners = new IdentityHashMap<>();
+  private final Set<ChangeListener<V>> changeListeners = new IdentityHashSet<>();
 
 
   /**
    * Track the owner of a change listener, so we can make sure we close it if needed.
    */
-  private final Map<ChangeListener, WeakReference<Object>> changeListenerOwner = new ConcurrentHashMap<>();
+  private final Map<ChangeListener<V>, WeakReference<Object>> changeListenerOwner = new ConcurrentHashMap<>();
 
 
   /**
@@ -138,8 +135,9 @@ public abstract class RaftBackedCache<V> implements Iterable<Map.Entry<String,V>
      *
      * @param changedKey The key that changed.
      * @param newValue The new value of the changed key, or {@link Optional#empty()} if we are removing a key.
+     * @param rawValue The raw bytes of the value.
      */
-    void onChange(String changedKey, Optional<V> newValue);
+    void onChange(String changedKey, Lazy<Optional<V>> newValue, Optional<byte[]> rawValue);
   }
 
 
@@ -256,6 +254,36 @@ public abstract class RaftBackedCache<V> implements Iterable<Map.Entry<String,V>
       }
     };
     this.raft.node.transport.scheduleAtFixedRate(evictionTask, 1000);
+
+    // Create a single Raft listener for this cache, so we only parse the proto for our listeners once. Parsing proto
+    // is slow (a few ms each) so doing it hundreds of times per raft change is not acceptable.
+    // See #1129
+    KeyValueStateMachine.ChangeListener keyValueListener = (key, value, state, pool) -> {
+      if (key.startsWith(prefix()) && !changeListeners.isEmpty()) {  // note[gabor]: should be a threadsafe usage of changeListeners; not locking
+        key = key.replace(prefix(), "");
+
+        final String finalKey = key;
+        Lazy<Optional<V>> lazyValue = Lazy.of(() -> {
+          Optional<V> parsedValue = Optional.empty();
+          if (value.isPresent()) {
+            try {
+              parsedValue = Optional.of(Entry.deserialize(finalKey, value.get(), this::deserialize).value);
+            } catch (Throwable t) {
+              log.warn("Could not parse entry in change listener", t);
+            }
+          }
+          return parsedValue;
+        });
+        List<ChangeListener<V>> localChangeListeners;  // make a local copy to prevent concurrent modification exceptions
+        synchronized (changeListeners) {  // See #1152
+          localChangeListeners = new ArrayList<>(changeListeners);
+        }
+        for (ChangeListener<V> changeListener : localChangeListeners) {
+          pool.submit(() -> changeListener.onChange(finalKey, lazyValue, value));
+        }
+      }
+    };
+    raft.addChangeListener(keyValueListener);
   }
 
 
@@ -372,26 +400,10 @@ public abstract class RaftBackedCache<V> implements Iterable<Map.Entry<String,V>
    *              sure we remove the listener when the owner dies, but is not required.
    */
   public void addChangeListener(ChangeListener<V> changeListener, @Nullable Object owner) {
-    // 1. Create the Raft listener
-    KeyValueStateMachine.ChangeListener keyValueListener = (key, value, state) -> {
-      if (key.startsWith(prefix())) {
-        key = key.replace(prefix(), "");
-
-        Optional<V> parsedValue = Optional.empty();
-        if (value.isPresent()) {
-          try {
-            parsedValue = Optional.of(Entry.deserialize(key, value.get(), this::deserialize).value);
-          } catch (Throwable t) {
-            log.warn("Could not parse entry in change listener", t);
-          }
-        }
-        changeListener.onChange(key, parsedValue);
-      }
-    };
-
     // 2. Register the listener
-    changeListeners.put(changeListener, keyValueListener);
-    raft.addChangeListener(keyValueListener);
+    synchronized (changeListeners) {  // See #1152
+      changeListeners.add(changeListener);
+    }
 
     // 3. Register the owner
     if (owner != null) {
@@ -399,7 +411,7 @@ public abstract class RaftBackedCache<V> implements Iterable<Map.Entry<String,V>
 
       // 4. Clean up GC'd listeners (this is a failsafe)
       Set<ChangeListener> toRemove = new HashSet<>();
-      for (Map.Entry<ChangeListener, WeakReference<Object>> entry : changeListenerOwner.entrySet()) {
+      for (Map.Entry<ChangeListener<V>, WeakReference<Object>> entry : changeListenerOwner.entrySet()) {
         if (entry.getValue().get() == null) {
           toRemove.add(entry.getKey());
         }
@@ -424,11 +436,8 @@ public abstract class RaftBackedCache<V> implements Iterable<Map.Entry<String,V>
    * @param changeListener the listener to register
    */
   public void removeChangeListener(ChangeListener changeListener) {
-    KeyValueStateMachine.ChangeListener keyValueListener = changeListeners.get(changeListener);
-    if (keyValueListener != null) {
-      raft.removeChangeListener(keyValueListener);
-    } else {
-      log.warn("No corresponding listener to remove from the KeyValueStateMachine. This is troubling.");
+    synchronized (changeListeners) {  // See #1152
+      changeListeners.remove(changeListener);
     }
     changeListenerOwner.remove(changeListener);
   }
@@ -586,8 +595,15 @@ public abstract class RaftBackedCache<V> implements Iterable<Map.Entry<String,V>
 
 
   /**
-   * Get an element from the cache, if it's present in the cache itself.
-   * This will not try to get the element from the persistent store.
+   * <p>
+   *   Get an element from the cache, if it's present in the cache itself.
+   *   This will not try to get the element from the persistent store.
+   * </p>
+   *
+   * <p>
+   *   If you do not need the actual value you're getting from
+   *   the cache, consider using {@link #keyIsCached(String)} instead.
+   * </p>
    *
    * @param key The key of the element to get
    *
@@ -601,6 +617,38 @@ public abstract class RaftBackedCache<V> implements Iterable<Map.Entry<String,V>
         return Optional.empty();
       }
     });
+  }
+
+
+  /**
+   * Get the raw bytes in Raft, if they are present.
+   * This saves the serialization cost of {@link #getIfPresent(String)},
+   * but is otherwise identical.
+   *
+   * @param key The key we are reading from Raft.
+   *
+   * @return The raw byte array of the entry in the Raft cache, if any.
+   */
+  public Optional<byte[]> getBytesIfPresent(String key) {
+    return raft.stateMachine.get(prefix() + key, TimerUtils.mockableNow().toEpochMilli()).flatMap(v -> {
+      byte[] value = new byte[v.length - 1];
+      System.arraycopy(v, 1, value, 0, value.length);
+      return Optional.of(value);
+    });
+  }
+
+
+  /**
+   * Returns whether the given key is present in Raft.
+   * Note that this is not necessarily checking whether the given key
+   * exists in the map in general, only whether it's cached in Raft.
+   *
+   * @param key The key we are looking up in Raft.
+   *
+   * @return True if the key is in the Raft state.
+   */
+  public boolean keyIsCached(String key) {
+    return raft.stateMachine.get(prefix() + key, TimerUtils.mockableNow().toEpochMilli()).isPresent();
   }
 
 
@@ -647,7 +695,7 @@ public abstract class RaftBackedCache<V> implements Iterable<Map.Entry<String,V>
   }
 
   /**
-   * Returns an iterator over the keys in the RaftBackedCache.
+   * Returns an iterable over the keys in the RaftBackedCache.
    */
   public Set<String> keySet() {
     String prefix = prefix();

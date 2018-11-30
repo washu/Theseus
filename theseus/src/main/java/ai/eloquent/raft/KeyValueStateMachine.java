@@ -89,8 +89,9 @@ public class KeyValueStateMachine extends RaftStateMachine {
      * @param changedKey The key that changed.
      * @param newValue The new value of the changed key, or {@link Optional#empty()} if we are removing a key.
      * @param state The new complete state of the state machine.
+     * @param pool A pool we can use to run sub-jobs. It's the same pool that called this cahgne listener.
      */
-    void onChange(String changedKey, Optional<byte[]> newValue, Map<String, byte[]> state);
+    void onChange(String changedKey, Optional<byte[]> newValue, Map<String, byte[]> state, ExecutorService pool);
   }
 
   /**
@@ -638,10 +639,16 @@ public class KeyValueStateMachine extends RaftStateMachine {
         for (ChangeListener listener : changeListenersCopy) {
           if (serializedTransition.getType() == KeyValueStateMachineProto.TransitionType.SET_VALUE) {
             // Set a value
-            pool.execute(() -> listener.onChange(serializedTransition.getSetValue().getKey(), Optional.of(serializedTransition.getSetValue().getValue().toByteArray()), asMap));
+            pool.execute(() -> {
+              log.trace("Calling onChange listener (set) {}", listener);
+              listener.onChange(serializedTransition.getSetValue().getKey(), Optional.of(serializedTransition.getSetValue().getValue().toByteArray()), asMap, pool);
+            });
           } else if (serializedTransition.getType() == KeyValueStateMachineProto.TransitionType.REMOVE_VALUE) {
             // Clear a value
-            pool.execute(() -> listener.onChange(serializedTransition.getRemoveValue().getKey(), Optional.empty(), asMap));
+            pool.execute(() -> {
+              log.trace("Calling onChange listener (clear) {}", listener);
+              listener.onChange(serializedTransition.getRemoveValue().getKey(), Optional.empty(), asMap, pool);
+            });
           } else {
             log.warn("We should be calling a change listener, but the transition doesn't seem to warrant an update");
           }

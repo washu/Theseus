@@ -249,7 +249,7 @@ public class Theseus {
 
   /**
    * The name of our node.
-   * This can also be gotten from {@link #node}.{@link EloquentRaftNode#algorithm}.{@link EloquentRaftAlgorithm#state}.{@link RaftState#serverName}.
+   * This can also be gotten from {@link #node}.{@link EloquentRaftNode#algorithm}.{@link EloquentRaftAlgorithm#state()}.{@link RaftState#serverName}.
    * But, from reading that path, you can tell why there's a helper here.
    */
   public final String serverName;

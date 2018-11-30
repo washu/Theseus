@@ -47,6 +47,15 @@ public class StackTrace {
     this(Arrays.asList(trace));
   }
 
+  /**
+   * Create a stack trace from an exception
+   *
+   * @param t The exception to create the stack trace from.
+   */
+  public StackTrace(Throwable t) {
+    this(t.getStackTrace());
+  }
+
 
   /**
    * Create a stack trace from a given trace array.
