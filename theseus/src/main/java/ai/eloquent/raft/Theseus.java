@@ -16,6 +16,7 @@ import java.net.UnknownHostException;
 import java.time.Duration;
 import java.util.*;
 import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Function;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
@@ -35,10 +36,19 @@ import java.util.stream.Collectors;
  *
  */
 public class Theseus {
+
   /**
    * An SLF4J Logger for this class.
    */
   static final Logger log = LoggerFactory.getLogger(Theseus.class);
+
+  /**
+   * A counter for the next unique hash for a lock
+   *
+   * <b>REMEMBER TO ALWAYS CALL {@link AtomicLong#incrementAndGet()}</b>,
+   * as opposed to, e.g., {@link AtomicLong#getAndIncrement()}.
+   */
+  private static AtomicLong NEXT_UNIQUE_HASH = new AtomicLong(0);
 
 
   /**
@@ -146,16 +156,16 @@ public class Theseus {
         // This is the case where we may hold the lock, but don't want to.
         // Let's check the state machine for our lock, though this is a bit slow
         KeyValueStateMachine.QueueLock lock = stateMachine.locks.get(this.lockName);
-        if (lock == null || !lock.holder.isPresent()) {
+        Optional<KeyValueStateMachine.LockRequest> holder = (lock == null ? Optional.empty() : lock.holder());
+        if (lock == null || !holder.isPresent()) {
           // Case: there is no lock anymore
           synchronized (this) {
             this.held = false;
           }
         } else {
           // Case: someone else holds the lock
-          KeyValueStateMachine.LockRequest holder = lock.holder.get();
           synchronized (this) {
-            this.held = holder.server.equals(serverName) && holder.uniqueHash.equals(this.uniqueHash);
+            this.held = holder.get().server.equals(serverName) && holder.get().uniqueHash.equals(this.uniqueHash);
           }
         }
         return this.held;
@@ -585,7 +595,7 @@ public class Theseus {
    */
   public CompletableFuture<Boolean> withDistributedLockAsync(String lockName, Supplier<CompletableFuture<Boolean>> runnable) {
     // 1. Create and submit the lock request
-    final String randomHash = UUID.randomUUID().toString();
+    final String randomHash = Long.toHexString(NEXT_UNIQUE_HASH.incrementAndGet());
     byte[] releaseLockTransition = KeyValueStateMachine.createReleaseLockTransition(lockName, serverName, randomHash);
 
     return retryTransitionAsync(KeyValueStateMachine.createRequestLockTransition(lockName, serverName, randomHash), defaultTimeout).thenCompose((success) -> {
@@ -663,14 +673,15 @@ public class Theseus {
    *         release it. If we were unable to acquire the lock, returns empty.
    */
   public CompletableFuture<Optional<LongLivedLock>> tryLockAsync(String lockName, Duration safetyReleaseWindow) {
-    String randomHash = Long.toHexString(new Random().nextLong());
+    String randomHash = Long.toHexString(NEXT_UNIQUE_HASH.incrementAndGet());
     CompletableFuture<Optional<LongLivedLock>> future = new CompletableFuture<>();
 
     // 1. Create and submit the lock request
     retryTransitionAsync(KeyValueStateMachine.createTryLockTransition(lockName, serverName, randomHash), defaultTimeout).thenAccept((success) -> {
       try {
         // 2. If we got the lock, then return an object representing that
-        if (stateMachine.locks.containsKey(lockName) && stateMachine.locks.get(lockName).holder.map(h -> h.server.equals(serverName) && h.uniqueHash.equals(randomHash)).orElse(false)) {
+        KeyValueStateMachine.QueueLock lock = stateMachine.locks.get(lockName);
+        if (lock != null && lock.heldBy(serverName, randomHash)) {
           future.complete(Optional.of(new LongLivedLockImpl(lockName, randomHash, safetyReleaseWindow)));
         } else {
           future.complete(Optional.empty());
@@ -699,8 +710,8 @@ public class Theseus {
    */
   public CompletableFuture<Boolean> releaseLock(String lockName) {
     KeyValueStateMachine.QueueLock lock = stateMachine.locks.get(lockName);
-    if (lock != null && lock.holder.isPresent()) {
-      KeyValueStateMachine.LockRequest holder = lock.holder.get();
+    KeyValueStateMachine.LockRequest holder;
+    if (lock != null && ((holder = lock.holder().orElse(null)) != null)) {
       return retryTransitionAsync(KeyValueStateMachine.createReleaseLockTransition(lockName, holder.server, holder.uniqueHash), defaultTimeout);
     } else {
       return CompletableFuture.completedFuture(false);
@@ -782,7 +793,7 @@ public class Theseus {
   public CompletableFuture<Boolean> withElementAsync(String elementName, Function<byte[], byte[]> mutator, @Nullable Supplier<byte[]> createNew, boolean permanent) {
     // 1. Create the lock request
     // 1.1. The lock request
-    final String randomHash = UUID.randomUUID().toString();
+    final String randomHash = Long.toHexString(NEXT_UNIQUE_HASH.incrementAndGet());
     byte[] requestLockTransition = KeyValueStateMachine.createRequestLockTransition(elementName, serverName, randomHash);
     byte[] releaseLockTransition = KeyValueStateMachine.createReleaseLockTransition(elementName, serverName, randomHash);
     // 1.2. The lock release thunk
@@ -1058,7 +1069,7 @@ public class Theseus {
   public Map<String, String> getLocks() {
     Map<String, String> locks = new HashMap<>();
     for (Map.Entry<String, KeyValueStateMachine.QueueLock> entry : stateMachine.locks.entrySet()) {
-      locks.put(entry.getKey(), entry.getValue().holder.map(x -> x.server).orElse("<none>"));
+      locks.put(entry.getKey(), entry.getValue().holder().map(x -> x.server).orElse("<none>"));
     }
     return locks;
   }
@@ -1161,7 +1172,7 @@ public class Theseus {
    * @return a CompletableFuture for the transition wrapped in retries
    */
   private CompletableFuture<Boolean> retryTransitionAsync(byte[] transition, Duration timeout) {
-    int uniqueID = new Random().nextInt();
+    long uniqueID = NEXT_UNIQUE_HASH.incrementAndGet();
     long startTime = System.currentTimeMillis();
     log.trace("\n-------------\nSTARTING TRANSITION {}\n-------------\n", uniqueID);
     return retryAsync(() -> node.submitTransition(transition), timeout).thenApply((success) -> {
