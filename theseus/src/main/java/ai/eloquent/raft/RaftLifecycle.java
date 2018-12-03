@@ -392,7 +392,6 @@ public class RaftLifecycle {
       log.info(logServerNamePrefix() + "Raft shut down");
     });
 
-
     // 8. Cancel the timers
     log.info(logServerNamePrefix()+"Cancelling timers");
     Optional.ofNullable(timer.getIfDefined()).ifPresent(SafeTimer::cancel);
