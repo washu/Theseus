@@ -16,6 +16,7 @@ import java.net.UnknownHostException;
 import java.time.Duration;
 import java.util.*;
 import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Function;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
@@ -39,6 +40,35 @@ public class Theseus {
    * An SLF4J Logger for this class.
    */
   static final Logger log = LoggerFactory.getLogger(Theseus.class);
+
+  /**
+   * A unique counter for, e.g., creating unique hashes.
+   */
+  private static final AtomicLong UNIQUE_COUNTER = new AtomicLong();
+
+
+  /**
+   * The default name for this server, assuming only one Raft is running
+   * per box (i.e., IP address)
+   */
+  private static Lazy<String> DEFAULT_SERVER_NAME = Lazy.of( () -> {
+    // 1. Get the server name
+    // 1.1. Get the host name, so that we're human readable
+    String serverNameBuilder;
+    try {
+      serverNameBuilder = InetAddress.getLocalHost().toString();
+    } catch (UnknownHostException e) {
+      log.warn("Could not get InetAddress.getLocalHost() in order to determine Theseus' hostname", e);
+      Optional<String> hostname = Optional.ofNullable(System.getenv("HOST"));
+      serverNameBuilder = hostname.orElseGet(() -> UUID.randomUUID().toString());
+    }
+    if (serverNameBuilder.contains("/")) {
+      serverNameBuilder = serverNameBuilder.substring(serverNameBuilder.indexOf('/') + 1);
+    }
+    // 1.1. Append a random ID to avoid conflicts
+    serverNameBuilder += "_" + System.currentTimeMillis();
+    return serverNameBuilder;
+  } );
 
 
   /**
@@ -146,14 +176,14 @@ public class Theseus {
         // This is the case where we may hold the lock, but don't want to.
         // Let's check the state machine for our lock, though this is a bit slow
         KeyValueStateMachine.QueueLock lock = stateMachine.locks.get(this.lockName);
-        if (lock == null || !lock.holder.isPresent()) {
+        if (lock == null || lock.holder == null) {
           // Case: there is no lock anymore
           synchronized (this) {
             this.held = false;
           }
         } else {
           // Case: someone else holds the lock
-          KeyValueStateMachine.LockRequest holder = lock.holder.get();
+          KeyValueStateMachine.LockRequest holder = lock.holder;
           synchronized (this) {
             this.held = holder.server.equals(serverName) && holder.uniqueHash.equals(this.uniqueHash);
           }
@@ -452,35 +482,20 @@ public class Theseus {
    */
   public Theseus(int targetQuorumSize) throws IOException {
     this(
-        defaultServerName.get(),
-        RaftTransport.create(defaultServerName.get(), RaftTransport.Type.NET),
+        DEFAULT_SERVER_NAME.get(),
+        RaftTransport.create(DEFAULT_SERVER_NAME.get(), RaftTransport.Type.NET),
         targetQuorumSize,
         RaftLifecycle.global);
   }
 
 
   /**
-   * The default name for this server, assuming only one Raft is running
-   * per box (i.e., IP address)
+   * Create a unique id, keyed on the server name and a unique counter
+   * for this server ({@link #UNIQUE_COUNTER}) to ensure near certain global uniqueness.
    */
-  private static Lazy<String> defaultServerName = Lazy.of( () -> {
-    // 1. Get the server name
-    // 1.1. Get the host name, so that we're human readable
-    String serverNameBuilder;
-    try {
-      serverNameBuilder = InetAddress.getLocalHost().toString();
-    } catch (UnknownHostException e) {
-      log.warn("Could not get InetAddress.getLocalHost() in order to determine Theseus' hostname", e);
-      Optional<String> hostname = Optional.ofNullable(System.getenv("HOST"));
-      serverNameBuilder = hostname.orElseGet(() -> UUID.randomUUID().toString());
-    }
-    if (serverNameBuilder.contains("/")) {
-      serverNameBuilder = serverNameBuilder.substring(serverNameBuilder.indexOf('/') + 1);
-    }
-    // 1.1. Append a random ID to avoid conflicts
-    serverNameBuilder += "_" + System.currentTimeMillis();
-    return serverNameBuilder;
-  } );
+  private String generateUniqueHash() {
+    return this.serverName + "_" + UNIQUE_COUNTER.incrementAndGet();
+  }
 
 
   /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -585,7 +600,7 @@ public class Theseus {
    */
   public CompletableFuture<Boolean> withDistributedLockAsync(String lockName, Supplier<CompletableFuture<Boolean>> runnable) {
     // 1. Create and submit the lock request
-    final String randomHash = UUID.randomUUID().toString();
+    final String randomHash = generateUniqueHash();
     byte[] releaseLockTransition = KeyValueStateMachine.createReleaseLockTransition(lockName, serverName, randomHash);
 
     return retryTransitionAsync(KeyValueStateMachine.createRequestLockTransition(lockName, serverName, randomHash), defaultTimeout).thenCompose((success) -> {
@@ -599,7 +614,7 @@ public class Theseus {
             });
       } else {
         // 2.b. Otherwise, wait on the lock
-        return stateMachine.createLockAcquiredFuture(lockName, serverName, randomHash).thenCompose((gotLock) -> {
+        return stateMachine.createLockAcquiredFuture(lockName, serverName, randomHash, pool).thenCompose((gotLock) -> {
           if (gotLock) {
             // 3. Run our runnable, which returns a CompletableFuture
             try {
@@ -663,14 +678,15 @@ public class Theseus {
    *         release it. If we were unable to acquire the lock, returns empty.
    */
   public CompletableFuture<Optional<LongLivedLock>> tryLockAsync(String lockName, Duration safetyReleaseWindow) {
-    String randomHash = Long.toHexString(new Random().nextLong());
+    String randomHash = generateUniqueHash();
     CompletableFuture<Optional<LongLivedLock>> future = new CompletableFuture<>();
 
     // 1. Create and submit the lock request
     retryTransitionAsync(KeyValueStateMachine.createTryLockTransition(lockName, serverName, randomHash), defaultTimeout).thenAccept((success) -> {
       try {
         // 2. If we got the lock, then return an object representing that
-        if (stateMachine.locks.containsKey(lockName) && stateMachine.locks.get(lockName).holder.map(h -> h.server.equals(serverName) && h.uniqueHash.equals(randomHash)).orElse(false)) {
+        KeyValueStateMachine.QueueLock lock = stateMachine.locks.get(lockName);
+        if (lock != null && lock.holder != null && Objects.equals(lock.holder.server, serverName) && Objects.equals(lock.holder.uniqueHash, randomHash)) {
           future.complete(Optional.of(new LongLivedLockImpl(lockName, randomHash, safetyReleaseWindow)));
         } else {
           future.complete(Optional.empty());
@@ -699,8 +715,8 @@ public class Theseus {
    */
   public CompletableFuture<Boolean> releaseLock(String lockName) {
     KeyValueStateMachine.QueueLock lock = stateMachine.locks.get(lockName);
-    if (lock != null && lock.holder.isPresent()) {
-      KeyValueStateMachine.LockRequest holder = lock.holder.get();
+    if (lock != null && lock.holder != null) {
+      KeyValueStateMachine.LockRequest holder = lock.holder;
       return retryTransitionAsync(KeyValueStateMachine.createReleaseLockTransition(lockName, holder.server, holder.uniqueHash), defaultTimeout);
     } else {
       return CompletableFuture.completedFuture(false);
@@ -782,7 +798,7 @@ public class Theseus {
   public CompletableFuture<Boolean> withElementAsync(String elementName, Function<byte[], byte[]> mutator, @Nullable Supplier<byte[]> createNew, boolean permanent) {
     // 1. Create the lock request
     // 1.1. The lock request
-    final String randomHash = UUID.randomUUID().toString();
+    final String randomHash = generateUniqueHash();
     byte[] requestLockTransition = KeyValueStateMachine.createRequestLockTransition(elementName, serverName, randomHash);
     byte[] releaseLockTransition = KeyValueStateMachine.createReleaseLockTransition(elementName, serverName, randomHash);
     // 1.2. The lock release thunk
@@ -804,7 +820,7 @@ public class Theseus {
       } else {
 
         // 3.b. Otherwise, wait on the lock
-        return stateMachine.createLockAcquiredFuture(elementName, serverName, randomHash).thenCompose((gotLock) -> {
+        return stateMachine.createLockAcquiredFuture(elementName, serverName, randomHash, pool).thenCompose((gotLock) -> {
           if (gotLock) {
             // Run our runnable, which returns a CompletableFuture
             try {
@@ -1058,7 +1074,7 @@ public class Theseus {
   public Map<String, String> getLocks() {
     Map<String, String> locks = new HashMap<>();
     for (Map.Entry<String, KeyValueStateMachine.QueueLock> entry : stateMachine.locks.entrySet()) {
-      locks.put(entry.getKey(), entry.getValue().holder.map(x -> x.server).orElse("<none>"));
+      locks.put(entry.getKey(), entry.getValue().holder == null ? "<none>" : entry.getValue().holder.server);
     }
     return locks;
   }

@@ -64,26 +64,26 @@ public class KeyValueStateMachineTest {
 
   @Test
   public void testSerializeQueueLock() {
-    KeyValueStateMachine.QueueLock emptyLock = new KeyValueStateMachine.QueueLock(Optional.empty(), new ArrayList<>());
+    KeyValueStateMachine.QueueLock emptyLock = new KeyValueStateMachine.QueueLock(null, new ArrayList<>());
     KeyValueStateMachine.QueueLock recoveredEmptyLock = KeyValueStateMachine.QueueLock.deserialize(emptyLock.serialize());
-    assertFalse(recoveredEmptyLock.holder.isPresent());
+    assertNull(recoveredEmptyLock.holder);
     assertEquals(0, recoveredEmptyLock.waiting.size());
 
-    KeyValueStateMachine.QueueLock heldNoWaiting = new KeyValueStateMachine.QueueLock(Optional.of(new KeyValueStateMachine.LockRequest("holder", "hash1")), new ArrayList<>());
+    KeyValueStateMachine.QueueLock heldNoWaiting = new KeyValueStateMachine.QueueLock(Optional.of(new LockRequest("holder", "hash1")).orElse(null), new ArrayList<>());
     KeyValueStateMachine.QueueLock recoveredHeldNoWaiting = KeyValueStateMachine.QueueLock.deserialize(heldNoWaiting.serialize());
-    assertTrue(recoveredHeldNoWaiting.holder.isPresent());
-    assertEquals(new KeyValueStateMachine.LockRequest("holder", "hash1"), recoveredHeldNoWaiting.holder.get());
+    assertNotNull(recoveredHeldNoWaiting.holder);
+    assertEquals(new KeyValueStateMachine.LockRequest("holder", "hash1"), recoveredHeldNoWaiting.holder);
     assertEquals(0, recoveredHeldNoWaiting.waiting.size());
 
     List<KeyValueStateMachine.LockRequest> waiting = new ArrayList<>();
     waiting.add(new KeyValueStateMachine.LockRequest("a", "hash2"));
     waiting.add(new KeyValueStateMachine.LockRequest("b", "hash3"));
-    KeyValueStateMachine.QueueLock heldWaiting = new KeyValueStateMachine.QueueLock(Optional.of(new KeyValueStateMachine.LockRequest("holder", "hash1")), waiting);
+    KeyValueStateMachine.QueueLock heldWaiting = new KeyValueStateMachine.QueueLock(Optional.of(new LockRequest("holder", "hash1")).orElse(null), waiting);
     KeyValueStateMachine.QueueLock recoveredHeldWaiting = KeyValueStateMachine.QueueLock.deserialize(heldWaiting.serialize());
-    assertTrue(recoveredHeldWaiting.holder.isPresent());
-    assertEquals(new KeyValueStateMachine.LockRequest("holder", "hash1"), recoveredHeldWaiting.holder.get());
+    assertNotNull(recoveredHeldWaiting.holder);
+    assertEquals(new KeyValueStateMachine.LockRequest("holder", "hash1"), recoveredHeldWaiting.holder);
     assertEquals(2, recoveredHeldWaiting.waiting.size());
-    assertEquals(waiting, recoveredHeldWaiting.waiting);
+    assertEquals(waiting, new ArrayList<>(recoveredHeldWaiting.waiting));
   }
 
   @Test
@@ -115,7 +115,7 @@ public class KeyValueStateMachineTest {
     List<KeyValueStateMachine.LockRequest> waiting = new ArrayList<>();
     waiting.add(new KeyValueStateMachine.LockRequest("a", "hash2"));
     waiting.add(new KeyValueStateMachine.LockRequest("b", "hash3"));
-    KeyValueStateMachine.QueueLock heldWaiting = new KeyValueStateMachine.QueueLock(Optional.of(new KeyValueStateMachine.LockRequest("holder", "hash1")), waiting);
+    KeyValueStateMachine.QueueLock heldWaiting = new KeyValueStateMachine.QueueLock(Optional.of(new LockRequest("holder", "hash1")).orElse(null), waiting);
     stateMachine.locks.put("test1", heldWaiting);
 
     KeyValueStateMachine recoveredStateMachine = new KeyValueStateMachine("name");
@@ -130,10 +130,10 @@ public class KeyValueStateMachineTest {
     assertEquals(1, recoveredStateMachine.locks.size());
     assertTrue(recoveredStateMachine.locks.containsKey("test1"));
     KeyValueStateMachine.QueueLock recoveredHeldWaiting = recoveredStateMachine.locks.get("test1");
-    assertTrue(recoveredHeldWaiting.holder.isPresent());
-    assertEquals(new KeyValueStateMachine.LockRequest("holder", "hash1"), recoveredHeldWaiting.holder.get());
+    assertNotNull(recoveredHeldWaiting.holder);
+    assertEquals(new KeyValueStateMachine.LockRequest("holder", "hash1"), recoveredHeldWaiting.holder);
     assertEquals(2, recoveredHeldWaiting.waiting.size());
-    assertEquals(waiting, recoveredHeldWaiting.waiting);
+    assertEquals(waiting, new ArrayList<>(recoveredHeldWaiting.waiting));
   }
 
 
@@ -146,19 +146,19 @@ public class KeyValueStateMachineTest {
 
     assertEquals(1, stateMachine.locks.size());
     KeyValueStateMachine.QueueLock lock = stateMachine.locks.get("test");
-    assertEquals("host1", lock.holder.get().server);
+    assertEquals("host1", lock.holder.server);
     assertEquals(0, lock.waiting.size());
 
-    CompletableFuture<Boolean> host1Acquired = stateMachine.createLockAcquiredFuture("test", "host1", "hash1");
+    CompletableFuture<Boolean> host1Acquired = stateMachine.createLockAcquiredFuture("test", "host1", "hash1", MoreExecutors.newDirectExecutorService());
     assertTrue(host1Acquired.isDone());
-    assertTrue(host1Acquired.get());
+    assertTrue(host1Acquired.getNow(false));
 
     stateMachine.applyTransition(KeyValueStateMachine.createRequestLockTransition("test", "host2", "hash2"), TimerUtils.mockableNow().toEpochMilli(), MoreExecutors.newDirectExecutorService());
 
     stateMachine.applyTransition(KeyValueStateMachine.createRequestLockTransition("test", "host3", "hash3"), TimerUtils.mockableNow().toEpochMilli(), MoreExecutors.newDirectExecutorService());
 
-    CompletableFuture<Boolean> host2Acquired = stateMachine.createLockAcquiredFuture("test", "host2", "hash2");
-    CompletableFuture<Boolean> host3Acquired = stateMachine.createLockAcquiredFuture("test", "host3", "hash3");
+    CompletableFuture<Boolean> host2Acquired = stateMachine.createLockAcquiredFuture("test", "host2", "hash2", MoreExecutors.newDirectExecutorService());
+    CompletableFuture<Boolean> host3Acquired = stateMachine.createLockAcquiredFuture("test", "host3", "hash3", MoreExecutors.newDirectExecutorService());
 
     assertTrue(host1Acquired.isDone());
     assertFalse(host2Acquired.isDone());
@@ -166,10 +166,10 @@ public class KeyValueStateMachineTest {
 
     assertEquals(1, stateMachine.locks.size());
     lock = stateMachine.locks.get("test");
-    assertEquals("host1", lock.holder.get().server);
+    assertEquals("host1", lock.holder.server);
     assertEquals(2, lock.waiting.size());
-    assertEquals("host2", lock.waiting.get(0).server);
-    assertEquals("host3", lock.waiting.get(1).server);
+    assertEquals("host2", lock.waiting.peek().server);
+    assertEquals("host3", new ArrayList<>(lock.waiting).get(1).server);
 
     assertTrue(host1Acquired.isDone());
     assertFalse(host2Acquired.isDone());
@@ -179,14 +179,14 @@ public class KeyValueStateMachineTest {
 
     assertEquals(2, stateMachine.locks.size());
     KeyValueStateMachine.QueueLock lock2 = stateMachine.locks.get("test2");
-    assertEquals("host4", lock2.holder.get().server);
+    assertEquals("host4", lock2.holder.server);
     assertEquals(0, lock2.waiting.size());
   }
 
 
 
   @Test
-  public void testTryLockTransition() throws ExecutionException, InterruptedException {
+  public void testTryLockTransition() {
     KeyValueStateMachine stateMachine = new KeyValueStateMachine("name");
     assertEquals(0, stateMachine.locks.size());
 
@@ -194,18 +194,20 @@ public class KeyValueStateMachineTest {
     stateMachine.applyTransition(KeyValueStateMachine.createTryLockTransition("test", "host1", "hash1"), TimerUtils.mockableNow().toEpochMilli(), MoreExecutors.newDirectExecutorService());
     assertEquals(1, stateMachine.locks.size());
     KeyValueStateMachine.QueueLock lock = stateMachine.locks.get("test");
-    assertEquals("host1", lock.holder.get().server);
+    assertEquals("host1", lock.holder.server);
     assertEquals(0, lock.waiting.size());
-    CompletableFuture<Boolean> hash1Future = stateMachine.createLockAcquiredFuture("test", "host1", "hash1");
+    CompletableFuture<Boolean> hash1Future = stateMachine.createLockAcquiredFuture("test", "host1", "hash1", MoreExecutors.newDirectExecutorService());
     assertTrue("hash1 should be taken", hash1Future.getNow(false));
 
     // Try+fail taking hash2
     stateMachine.applyTransition(KeyValueStateMachine.createTryLockTransition("test", "host2", "hash2"), TimerUtils.mockableNow().toEpochMilli(), MoreExecutors.newDirectExecutorService());
     assertEquals(1, stateMachine.locks.size());
     lock = stateMachine.locks.get("test");
-    assertEquals("host1 should still hold the lock", "host1", lock.holder.get().server);
+    assertEquals("host1 should still hold the lock", "host1", lock.holder.server);
     assertEquals("No one should be waiting on hash2", 0, lock.waiting.size());
-    CompletableFuture<Boolean> hash2Future = stateMachine.createLockAcquiredFuture("test", "host1", "hash2");
+
+
+    CompletableFuture<Boolean> hash2Future = stateMachine.createLockAcquiredFuture("test", "host1", "hash2", MoreExecutors.newDirectExecutorService());
     assertNull("hash2 should NOT be taken", hash2Future.getNow(null));
   }
 
@@ -217,13 +219,14 @@ public class KeyValueStateMachineTest {
 
     stateMachine.applyTransition(KeyValueStateMachine.createRequestLockTransition("test", "host1", "hash1"), TimerUtils.mockableNow().toEpochMilli(), MoreExecutors.newDirectExecutorService());
 
-    CompletableFuture<Boolean> host1Acquired = stateMachine.createLockAcquiredFuture("test", "host1", "hash1");
+
+    CompletableFuture<Boolean> host1Acquired = stateMachine.createLockAcquiredFuture("test", "host1", "hash1", MoreExecutors.newDirectExecutorService());
     assertTrue(host1Acquired.isDone());
     assertTrue(host1Acquired.get());
 
     assertEquals(1, stateMachine.locks.size());
     KeyValueStateMachine.QueueLock lock = stateMachine.locks.get("test");
-    assertEquals("host1", lock.holder.get().server);
+    assertEquals("host1", lock.holder.server);
     assertEquals(0, lock.waiting.size());
 
     // This should be a no-op since we're the wrong host
@@ -231,7 +234,7 @@ public class KeyValueStateMachineTest {
 
     assertEquals(1, stateMachine.locks.size());
     lock = stateMachine.locks.get("test");
-    assertEquals("host1", lock.holder.get().server);
+    assertEquals("host1", lock.holder.server);
     assertEquals(0, lock.waiting.size());
 
     // This should clear out the last lock
@@ -246,8 +249,11 @@ public class KeyValueStateMachineTest {
 
     stateMachine.applyTransition(KeyValueStateMachine.createRequestLockTransition("test", "host3", "hash3"), TimerUtils.mockableNow().toEpochMilli(), MoreExecutors.newDirectExecutorService());
 
-    CompletableFuture<Boolean> host2Acquired = stateMachine.createLockAcquiredFuture("test", "host2", "hash2");
-    CompletableFuture<Boolean> host3Acquired = stateMachine.createLockAcquiredFuture("test", "host3", "hash3");
+
+    CompletableFuture<Boolean> host2Acquired = stateMachine.createLockAcquiredFuture("test", "host2", "hash2", MoreExecutors.newDirectExecutorService());
+
+
+    CompletableFuture<Boolean> host3Acquired = stateMachine.createLockAcquiredFuture("test", "host3", "hash3", MoreExecutors.newDirectExecutorService());
 
     assertTrue(host1Acquired.isDone());
     assertFalse(host2Acquired.isDone());
@@ -255,10 +261,10 @@ public class KeyValueStateMachineTest {
 
     assertEquals(1, stateMachine.locks.size());
     lock = stateMachine.locks.get("test");
-    assertEquals("host1", lock.holder.get().server);
+    assertEquals("host1", lock.holder.server);
     assertEquals(2, lock.waiting.size());
-    assertEquals("host2", lock.waiting.get(0).server);
-    assertEquals("host3", lock.waiting.get(1).server);
+    assertEquals("host2", lock.waiting.peek().server);
+    assertEquals("host3", new ArrayList<>(lock.waiting).get(1).server);
 
     assertTrue(host1Acquired.isDone());
     assertFalse(host2Acquired.isDone());
@@ -271,9 +277,9 @@ public class KeyValueStateMachineTest {
 
     assertEquals(1, stateMachine.locks.size());
     lock = stateMachine.locks.get("test");
-    assertEquals("host2", lock.holder.get().server);
+    assertEquals("host2", lock.holder.server);
     assertEquals(1, lock.waiting.size());
-    assertEquals("host3", lock.waiting.get(0).server);
+    assertEquals("host3", lock.waiting.peek().server);
 
     stateMachine.applyTransition(KeyValueStateMachine.createReleaseLockTransition("test", "host2", "hash2"), TimerUtils.mockableNow().toEpochMilli(), MoreExecutors.newDirectExecutorService());
 
@@ -281,7 +287,7 @@ public class KeyValueStateMachineTest {
 
     assertEquals(1, stateMachine.locks.size());
     lock = stateMachine.locks.get("test");
-    assertEquals("host3", lock.holder.get().server);
+    assertEquals("host3", lock.holder.server);
     assertEquals(0, lock.waiting.size());
 
     stateMachine.applyTransition(KeyValueStateMachine.createReleaseLockTransition("test", "host3", "hash3"), TimerUtils.mockableNow().toEpochMilli(), MoreExecutors.newDirectExecutorService());
@@ -303,10 +309,10 @@ public class KeyValueStateMachineTest {
 
     assertEquals(1, stateMachine.locks.size());
     KeyValueStateMachine.QueueLock lock = stateMachine.locks.get("test");
-    assertEquals("host1", lock.holder.get().server);
+    assertEquals("host1", lock.holder.server);
     assertEquals(2, lock.waiting.size());
-    assertEquals("host2", lock.waiting.get(0).server);
-    assertEquals("host3", lock.waiting.get(1).server);
+    assertEquals("host2", lock.waiting.peek().server);
+    assertEquals("host3", new ArrayList<>(lock.waiting).get(1).server);
 
     // Test that we can release a lock that's queued
 
@@ -314,9 +320,9 @@ public class KeyValueStateMachineTest {
 
     assertEquals(1, stateMachine.locks.size());
     lock = stateMachine.locks.get("test");
-    assertEquals("host1", lock.holder.get().server);
+    assertEquals("host1", lock.holder.server);
     assertEquals(1, lock.waiting.size());
-    assertEquals("host3", lock.waiting.get(0).server);
+    assertEquals("host3", lock.waiting.peek().server);
 
     // This should be a no-op, since the hash is wrong
 
@@ -324,9 +330,9 @@ public class KeyValueStateMachineTest {
 
     assertEquals(1, stateMachine.locks.size());
     lock = stateMachine.locks.get("test");
-    assertEquals("host1", lock.holder.get().server);
+    assertEquals("host1", lock.holder.server);
     assertEquals(1, lock.waiting.size());
-    assertEquals("host3", lock.waiting.get(0).server);
+    assertEquals("host3", lock.waiting.peek().server);
 
     // Do that again
 
@@ -334,7 +340,7 @@ public class KeyValueStateMachineTest {
 
     assertEquals(1, stateMachine.locks.size());
     lock = stateMachine.locks.get("test");
-    assertEquals("host1", lock.holder.get().server);
+    assertEquals("host1", lock.holder.server);
     assertEquals(0, lock.waiting.size());
 
     // Clean up the lock
@@ -351,11 +357,14 @@ public class KeyValueStateMachineTest {
     assertEquals(0, stateMachine.locks.size());
     stateMachine.applyTransition(KeyValueStateMachine.createRequestLockTransition("lockName", "host", "hash1"), TimerUtils.mockableNow().toEpochMilli(), MoreExecutors.newDirectExecutorService());
 
-    CompletableFuture<Boolean> hash1Future = stateMachine.createLockAcquiredFuture("lockName", "host", "hash1");
+
+    CompletableFuture<Boolean> hash1Future = stateMachine.createLockAcquiredFuture("lockName", "host", "hash1", MoreExecutors.newDirectExecutorService());
     assertTrue("We should have taken our lock", hash1Future.getNow(false));
 
     stateMachine.applyTransition(KeyValueStateMachine.createRequestLockTransition("lockName", "host", "hash2"), TimerUtils.mockableNow().toEpochMilli(), MoreExecutors.newDirectExecutorService());
-    CompletableFuture<Boolean> hash2Future = stateMachine.createLockAcquiredFuture("lockName", "host", "hash2");
+
+
+    CompletableFuture<Boolean> hash2Future = stateMachine.createLockAcquiredFuture("lockName", "host", "hash2", MoreExecutors.newDirectExecutorService());
     assertNull("We should not have a lock of the same name but different hash", hash2Future.getNow(null));
 
     stateMachine.applyTransition(KeyValueStateMachine.createReleaseLockTransition("lockName", "host", "hash1"), TimerUtils.mockableNow().toEpochMilli(), MoreExecutors.newDirectExecutorService());
@@ -370,17 +379,23 @@ public class KeyValueStateMachineTest {
     stateMachine.applyTransition(KeyValueStateMachine.createRequestLockTransition("lockName", "host", "hash1"), TimerUtils.mockableNow().toEpochMilli(), MoreExecutors.newDirectExecutorService());
 
     // Take a lock on hash1
-    CompletableFuture<Boolean> hash1Future = stateMachine.createLockAcquiredFuture("lockName", "host", "hash1");
+
+
+    CompletableFuture<Boolean> hash1Future = stateMachine.createLockAcquiredFuture("lockName", "host", "hash1", MoreExecutors.newDirectExecutorService());
     assertTrue("We should have taken our lock", hash1Future.getNow(false));
 
     // Take a lock on hash2
     stateMachine.applyTransition(KeyValueStateMachine.createRequestLockTransition("lockName", "host", "hash2"), TimerUtils.mockableNow().toEpochMilli(), MoreExecutors.newDirectExecutorService());
-    CompletableFuture<Boolean> hash2Future = stateMachine.createLockAcquiredFuture("lockName", "host", "hash2");
+
+
+    CompletableFuture<Boolean> hash2Future = stateMachine.createLockAcquiredFuture("lockName", "host", "hash2", MoreExecutors.newDirectExecutorService());
     assertNull("We should not have a lock of the same name but different hash", hash2Future.getNow(null));
 
     // Release a lock on hash2
     stateMachine.applyTransition(KeyValueStateMachine.createReleaseLockTransition("lockName", "host", "hash2"), TimerUtils.mockableNow().toEpochMilli(), MoreExecutors.newDirectExecutorService());
-    CompletableFuture<Boolean> hash1FutureAgain = stateMachine.createLockAcquiredFuture("lockName", "host", "hash1");
+
+
+    CompletableFuture<Boolean> hash1FutureAgain = stateMachine.createLockAcquiredFuture("lockName", "host", "hash1", MoreExecutors.newDirectExecutorService());
     assertTrue("We should still have our lock", hash1FutureAgain.getNow(false));
   }
 
@@ -394,7 +409,7 @@ public class KeyValueStateMachineTest {
 
     assertEquals(1, stateMachine.locks.size());
     KeyValueStateMachine.QueueLock lock = stateMachine.locks.get("test");
-    assertEquals("host", lock.holder.get().server);
+    assertEquals("host", lock.holder.server);
     assertEquals(0, lock.waiting.size());
 
     stateMachine.applyTransition(KeyValueStateMachine.createRequestLockTransition("test", "host", "hash2"), TimerUtils.mockableNow().toEpochMilli(), MoreExecutors.newDirectExecutorService());
@@ -403,52 +418,52 @@ public class KeyValueStateMachineTest {
 
     assertEquals(1, stateMachine.locks.size());
     lock = stateMachine.locks.get("test");
-    assertEquals("host", lock.holder.get().server);
-    assertEquals("hash1", lock.holder.get().uniqueHash);
+    assertEquals("host", lock.holder.server);
+    assertEquals("hash1", lock.holder.uniqueHash);
     assertEquals(2, lock.waiting.size());
-    assertEquals("host", lock.waiting.get(0).server);
-    assertEquals("hash2", lock.waiting.get(0).uniqueHash);
-    assertEquals("host", lock.waiting.get(1).server);
-    assertEquals("hash3", lock.waiting.get(1).uniqueHash);
+    assertEquals("host", lock.waiting.peek().server);
+    assertEquals("hash2", lock.waiting.peek().uniqueHash);
+    assertEquals("host", new ArrayList<>(lock.waiting).get(1).server);
+    assertEquals("hash3", new ArrayList<>(lock.waiting).get(1).uniqueHash);
 
     // This should be ignored
     stateMachine.applyTransition(KeyValueStateMachine.createRequestLockTransition("test", "host", "hash1"), TimerUtils.mockableNow().toEpochMilli(), MoreExecutors.newDirectExecutorService());
 
     assertEquals(1, stateMachine.locks.size());
     lock = stateMachine.locks.get("test");
-    assertEquals("host", lock.holder.get().server);
-    assertEquals("hash1", lock.holder.get().uniqueHash);
+    assertEquals("host", lock.holder.server);
+    assertEquals("hash1", lock.holder.uniqueHash);
     assertEquals(2, lock.waiting.size());
-    assertEquals("host", lock.waiting.get(0).server);
-    assertEquals("hash2", lock.waiting.get(0).uniqueHash);
-    assertEquals("host", lock.waiting.get(1).server);
-    assertEquals("hash3", lock.waiting.get(1).uniqueHash);
+    assertEquals("host", lock.waiting.peek().server);
+    assertEquals("hash2", lock.waiting.peek().uniqueHash);
+    assertEquals("host", new ArrayList<>(lock.waiting).get(1).server);
+    assertEquals("hash3", new ArrayList<>(lock.waiting).get(1).uniqueHash);
 
     // This should be ignored
     stateMachine.applyTransition(KeyValueStateMachine.createRequestLockTransition("test", "host", "hash2"), TimerUtils.mockableNow().toEpochMilli(), MoreExecutors.newDirectExecutorService());
 
     assertEquals(1, stateMachine.locks.size());
     lock = stateMachine.locks.get("test");
-    assertEquals("host", lock.holder.get().server);
-    assertEquals("hash1", lock.holder.get().uniqueHash);
+    assertEquals("host", lock.holder.server);
+    assertEquals("hash1", lock.holder.uniqueHash);
     assertEquals(2, lock.waiting.size());
-    assertEquals("host", lock.waiting.get(0).server);
-    assertEquals("hash2", lock.waiting.get(0).uniqueHash);
-    assertEquals("host", lock.waiting.get(1).server);
-    assertEquals("hash3", lock.waiting.get(1).uniqueHash);
+    assertEquals("host", lock.waiting.peek().server);
+    assertEquals("hash2", lock.waiting.peek().uniqueHash);
+    assertEquals("host", new ArrayList<>(lock.waiting).get(1).server);
+    assertEquals("hash3", new ArrayList<>(lock.waiting).get(1).uniqueHash);
 
     // This should be ignored
     stateMachine.applyTransition(KeyValueStateMachine.createRequestLockTransition("test", "host", "hash3"), TimerUtils.mockableNow().toEpochMilli(), MoreExecutors.newDirectExecutorService());
 
     assertEquals(1, stateMachine.locks.size());
     lock = stateMachine.locks.get("test");
-    assertEquals("host", lock.holder.get().server);
-    assertEquals("hash1", lock.holder.get().uniqueHash);
+    assertEquals("host", lock.holder.server);
+    assertEquals("hash1", lock.holder.uniqueHash);
     assertEquals(2, lock.waiting.size());
-    assertEquals("host", lock.waiting.get(0).server);
-    assertEquals("hash2", lock.waiting.get(0).uniqueHash);
-    assertEquals("host", lock.waiting.get(1).server);
-    assertEquals("hash3", lock.waiting.get(1).uniqueHash);
+    assertEquals("host", lock.waiting.peek().server);
+    assertEquals("hash2", lock.waiting.peek().uniqueHash);
+    assertEquals("host", new ArrayList<>(lock.waiting).get(1).server);
+    assertEquals("hash3", new ArrayList<>(lock.waiting).get(1).uniqueHash);
   }
 
 
@@ -507,14 +522,20 @@ public class KeyValueStateMachineTest {
     // 1. Take the lock
     machine.applyTransition(createRequestLockTransition("lock", "me", "hash1"), now, MoreExecutors.newDirectExecutorService());
     assertEquals("The state machine should know I'm an owner of something", Collections.singleton("me"), machine.owners());
-    assertTrue("Should be able to get the lock", machine.createLockAcquiredFuture("lock", "me", "hash1").getNow(false));
+
+
+    assertTrue("Should be able to get the lock", machine.createLockAcquiredFuture("lock", "me", "hash1", MoreExecutors.newDirectExecutorService()).getNow(false));
     // 2. Someone else should not be able to take the lock
     machine.applyTransition(createRequestLockTransition("lock", "other", "hash2"), now, MoreExecutors.newDirectExecutorService());
-    assertFalse(machine.createLockAcquiredFuture("lock", "other", "hash2").getNow(false));
+
+
+    assertFalse(machine.createLockAcquiredFuture("lock", "other", "hash2", MoreExecutors.newDirectExecutorService()).getNow(false));
     // 3. Take us offline
     machine.applyTransition(createClearTransition("me"), now, MoreExecutors.newDirectExecutorService());
     // 4. Other person should be able to take the lock
-    assertTrue(machine.createLockAcquiredFuture("lock", "other", "hash2").getNow(false));
+
+
+    assertTrue(machine.createLockAcquiredFuture("lock", "other", "hash2", MoreExecutors.newDirectExecutorService()).getNow(false));
   }
 
 
@@ -526,19 +547,27 @@ public class KeyValueStateMachineTest {
     KeyValueStateMachine machine = new KeyValueStateMachine("name");
     // 1. Someone takes a lock
     machine.applyTransition(createRequestLockTransition("lock", "holder", "hash1"), now, MoreExecutors.newDirectExecutorService());
-    assertTrue("Should be able to get the lock", machine.createLockAcquiredFuture("lock", "holder", "hash1").getNow(false));
+
+
+    assertTrue("Should be able to get the lock", machine.createLockAcquiredFuture("lock", "holder", "hash1", MoreExecutors.newDirectExecutorService()).getNow(false));
     // 2. I try to take a lock
     machine.applyTransition(createRequestLockTransition("lock", "me", "hash2"), now, MoreExecutors.newDirectExecutorService());
-    assertFalse(machine.createLockAcquiredFuture("lock", "me", "hash2").getNow(false));
+
+
+    assertFalse(machine.createLockAcquiredFuture("lock", "me", "hash2", MoreExecutors.newDirectExecutorService()).getNow(false));
     // 3. Someone else tries to take the lock
     machine.applyTransition(createRequestLockTransition("lock", "other", "hash3"), now, MoreExecutors.newDirectExecutorService());
-    assertFalse(machine.createLockAcquiredFuture("lock", "other", "hash3").getNow(false));
+
+
+    assertFalse(machine.createLockAcquiredFuture("lock", "other", "hash3", MoreExecutors.newDirectExecutorService()).getNow(false));
     // 4. Take us offline
     machine.applyTransition(createClearTransition("me"), now, MoreExecutors.newDirectExecutorService());
     // 5. Original holder releases the lock
     machine.applyTransition(createReleaseLockTransition("lock", "holder", "hash1"), now, MoreExecutors.newDirectExecutorService());
     // 6. Other person should be able to skip ahead of us to take the lock
-    assertTrue(machine.createLockAcquiredFuture("lock", "other", "hash3").getNow(false));
+
+
+    assertTrue(machine.createLockAcquiredFuture("lock", "other", "hash3", MoreExecutors.newDirectExecutorService()).getNow(false));
   }
 
 
@@ -584,16 +613,17 @@ public class KeyValueStateMachineTest {
 
     assertEquals(1, stateMachine1.locks.size());
     KeyValueStateMachine.QueueLock lock = stateMachine1.locks.get("test");
-    assertEquals("hash1", lock.holder.get().uniqueHash);
+    assertEquals("hash1", lock.holder.uniqueHash);
     assertEquals(1, lock.waiting.size());
     assertEquals(1, stateMachine2.locks.size());
     lock = stateMachine2.locks.get("test");
-    assertEquals("hash1", lock.holder.get().uniqueHash);
+    assertEquals("hash1", lock.holder.uniqueHash);
     assertEquals(1, lock.waiting.size());
 
     // Create a future in stateMachine2 for the hash2 request acquiring the lock
 
-    CompletableFuture<Boolean> future = stateMachine2.createLockAcquiredFuture("test", "host1", "hash2");
+
+    CompletableFuture<Boolean> future = stateMachine2.createLockAcquiredFuture("test", "host1", "hash2", MoreExecutors.newDirectExecutorService());
     assertFalse(future.isDone());
 
     // Release the lock in stateMachine1
@@ -605,7 +635,7 @@ public class KeyValueStateMachineTest {
     assertFalse(future.isDone());
     assertEquals(1, stateMachine1.locks.size());
     lock = stateMachine1.locks.get("test");
-    assertEquals("hash2", lock.holder.get().uniqueHash);
+    assertEquals("hash2", lock.holder.uniqueHash);
     assertEquals(0, lock.waiting.size());
 
     // Install the stateMachine1 snapshot on stateMachine2
@@ -616,7 +646,7 @@ public class KeyValueStateMachineTest {
 
     assertEquals(1, stateMachine2.locks.size());
     lock = stateMachine2.locks.get("test");
-    assertEquals("hash2", lock.holder.get().uniqueHash);
+    assertEquals("hash2", lock.holder.uniqueHash);
     assertEquals(0, lock.waiting.size());
 
     // Verify that the future has actually been completed correctly
@@ -795,38 +825,44 @@ public class KeyValueStateMachineTest {
 
 
   /**
-   * Test that {@link KeyValueStateMachine#createLockAcquiredFuture(String, String, String)}
+   * Test that {@link KeyValueStateMachine#createLockAcquiredFuture(String, String, String, ExecutorService)}
    * waits on the future if no lock is present in the machine
    */
   @Test
   public void testCreateLockAcquiredFutureWaitIfNoLock() {
     KeyValueStateMachine x = new KeyValueStateMachine("name");
-    CompletableFuture<Boolean> lockFuture = x.createLockAcquiredFuture("lockName", "me", "hash");
+
+
+    CompletableFuture<Boolean> lockFuture = x.createLockAcquiredFuture("lockName", "me", "hash", MoreExecutors.newDirectExecutorService());
     assertNull("The future should not be complete if no lock is held", lockFuture.getNow(null));
   }
 
 
   /**
-   * Test that {@link KeyValueStateMachine#createLockAcquiredFuture(String, String, String)}
+   * Test that {@link KeyValueStateMachine#createLockAcquiredFuture(String, String, String, ExecutorService)}
    * returns a lock immediately if the lock is held
    */
   @Test
   public void testCreateLockAcquiredFutureCompletesImmediatelyIfHeld() {
     KeyValueStateMachine x = new KeyValueStateMachine("name");
     x.applyTransition(KeyValueStateMachine.createRequestLockTransition("lockName", "me", "hash"), 0L, MoreExecutors.newDirectExecutorService());
-    CompletableFuture<Boolean> lockFuture = x.createLockAcquiredFuture("lockName", "me", "hash");
+
+
+    CompletableFuture<Boolean> lockFuture = x.createLockAcquiredFuture("lockName", "me", "hash", MoreExecutors.newDirectExecutorService());
     assertTrue("The future should complete immediately with our lock held", lockFuture.getNow(null));
   }
 
 
   /**
-   * Test that {@link KeyValueStateMachine#createLockAcquiredFuture(String, String, String)}
+   * Test that {@link KeyValueStateMachine#createLockAcquiredFuture(String, String, String, ExecutorService)}
    * waits for a lock.
    */
   @Test
   public void testCreateLockAcquiredFutureWaitsForLock() {
       KeyValueStateMachine x = new KeyValueStateMachine("name");
-      CompletableFuture<Boolean> lockFuture = x.createLockAcquiredFuture("lockName", "me", "hash");
+
+
+    CompletableFuture<Boolean> lockFuture = x.createLockAcquiredFuture("lockName", "me", "hash", MoreExecutors.newDirectExecutorService());
       assertNull("The future should not yet be complete", lockFuture.getNow(null));
       x.applyTransition(KeyValueStateMachine.createRequestLockTransition("lockName", "me", "hash"), 0L, MoreExecutors.newDirectExecutorService());
       assertTrue("The future should complete once the lock is held", lockFuture.getNow(null));
@@ -834,7 +870,7 @@ public class KeyValueStateMachineTest {
 
 
   /**
-   * Test {@link KeyValueStateMachine#createLockAcquiredFuture(String, String, String)}
+   * Test {@link KeyValueStateMachine#createLockAcquiredFuture(String, String, String, ExecutorService)}
    * where Server A takes a lock, Server B waits, Server A releases, and Server B should have the future fire
    *
    * Very similar to {@link #testCreateLockAcquiredFutureOtherReleased()}
@@ -842,7 +878,9 @@ public class KeyValueStateMachineTest {
   @Test
   public void testCreateLockAcquiredFutureContentionScript() {
     KeyValueStateMachine x = new KeyValueStateMachine("name");
-    CompletableFuture<Boolean> lockFuture = x.createLockAcquiredFuture("lockName", "me", "hash");
+
+
+    CompletableFuture<Boolean> lockFuture = x.createLockAcquiredFuture("lockName", "me", "hash", MoreExecutors.newDirectExecutorService());
     assertNull("The future should not yet be complete.", lockFuture.getNow(null));
     x.applyTransition(KeyValueStateMachine.createRequestLockTransition("lockName", "other", "hash"), 0L, MoreExecutors.newDirectExecutorService());
     assertNull("The future should not have completed, because the other requester made the request.", lockFuture.getNow(null));
@@ -854,7 +892,7 @@ public class KeyValueStateMachineTest {
 
 
   /**
-   * Test {@link KeyValueStateMachine#createLockAcquiredFuture(String, String, String)}
+   * Test {@link KeyValueStateMachine#createLockAcquiredFuture(String, String, String, ExecutorService)}
    * where Server A holds a lock, Server B waits, Server A releases, and Server B should have the future fire
    *
    * Very similar to {@link #testCreateLockAcquiredFutureContentionScript()}
@@ -863,7 +901,9 @@ public class KeyValueStateMachineTest {
   public void testCreateLockAcquiredFutureOtherReleased() {
     KeyValueStateMachine x = new KeyValueStateMachine("name");
     x.applyTransition(KeyValueStateMachine.createRequestLockTransition("lockName", "other", "hash"), 0L, MoreExecutors.newDirectExecutorService());
-    CompletableFuture<Boolean> lockFuture = x.createLockAcquiredFuture("lockName", "me", "hash");
+
+
+    CompletableFuture<Boolean> lockFuture = x.createLockAcquiredFuture("lockName", "me", "hash", MoreExecutors.newDirectExecutorService());
     assertNull("The future should not have completed, because the other requester made the request.", lockFuture.getNow(null));
     x.applyTransition(KeyValueStateMachine.createRequestLockTransition("lockName", "me", "hash"), 0L, MoreExecutors.newDirectExecutorService());
     assertNull("The future should not have completed, because the other requester still has the lock.", lockFuture.getNow(null));
@@ -917,7 +957,7 @@ public class KeyValueStateMachineTest {
       System.out.println("Applying "+size+" transitions: "+ TimerUtils.formatTimeDifference(entries));
       System.out.println("Avg per transition: "+((double)entries / size)+"ms");
       long startSerialization = System.currentTimeMillis();
-      byte[] serialized = x.serialize();
+      @SuppressWarnings("unused") byte[] serialized = x.serialize();
       long serialize = System.currentTimeMillis() - startSerialization;
       System.out.println("Serializing "+size+" keys: "+ TimerUtils.formatTimeDifference(serialize));
       System.out.println("Avg per key: "+((double)serialize / size)+"ms");

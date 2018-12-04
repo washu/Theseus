@@ -17,6 +17,7 @@ import java.time.Duration;
 import java.util.*;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.ExecutorService;
 import java.util.stream.Collectors;
 
@@ -30,6 +31,7 @@ import java.util.stream.Collectors;
  * The state machine implements locks as queues. All changes can be listened for with custom listeners on the state
  * machine.
  */
+@SuppressWarnings("Duplicates")
 public class KeyValueStateMachine extends RaftStateMachine {
   /**
    * An SLF4J Logger for this class.
@@ -192,33 +194,90 @@ public class KeyValueStateMachine extends RaftStateMachine {
    * This is the private implementation for a QueueLock.
    */
   static class QueueLock {
-    Optional<LockRequest> holder;
-    final List<LockRequest> waiting;
+    /** The holder of this lock */
+    @Nullable LockRequest holder;
+    /** The requesters waiting on this lock */
+    final ConcurrentLinkedQueue<LockRequest> waiting;
 
-    public QueueLock(Optional<LockRequest> holder, List<LockRequest> waiting) {
+    /** Create a new lock */
+    public QueueLock(@Nullable LockRequest holder, List<LockRequest> waiting) {
       this.holder = holder;
-      this.waiting = Collections.synchronizedList(waiting);
+      this.waiting = new ConcurrentLinkedQueue<>(waiting);
     }
 
-    public KeyValueStateMachineProto.QueueLock serialize() {
+
+    /**
+     * Acquire this lock if we don't already have it, or add ourselves to
+     * the wait list.
+     *
+     * @param requestLockRequest The holder trying to acquire the lock.
+     *
+     * @return The new holder of the lock, if it changed. This is the lock to use for
+     *         completing any futures waiting on this lock.
+     */
+    public synchronized @Nullable LockRequest acquire(LockRequest requestLockRequest) {
+      if (holder == null) {
+        // Case: no one holds the lock
+        holder = requestLockRequest;
+        return requestLockRequest;  // we straightforwardly have this lock
+      } else if (Objects.equals(holder, requestLockRequest)) {
+        // Case: we hold the lock.
+        //       In this case, we want to return ourselves, to fire any listeners
+        //       waiting on us to take the lock (these fire immediately)
+        return holder;
+      } else if(!waiting.contains(requestLockRequest)) {
+        // Case: let's wait on the lock
+        waiting.add(requestLockRequest);
+        return null;
+      } else {
+        // Case: we're already waiting on the lock
+        return null;
+      }
+    }
+
+
+    /**
+     * Release this lock.
+     *
+     * @param requestLockRequest The holder releasing the lock
+     *
+     * @return The new holder of the lock, if it changed. This is the lock to use for
+     *         completing any futures waiting on this lock.
+     */
+    public synchronized @Nullable LockRequest release(LockRequest requestLockRequest) {
+      if (Objects.equals(holder, requestLockRequest)) {
+        holder = waiting.poll();
+        return holder;
+      } else {
+        waiting.remove(requestLockRequest);
+        return null;
+      }
+    }
+
+
+    /** Serialize this lock to proto */
+    public synchronized KeyValueStateMachineProto.QueueLock serialize() {
       KeyValueStateMachineProto.QueueLock.Builder builder = KeyValueStateMachineProto.QueueLock.newBuilder();
-      holder.ifPresent(h -> builder.setHolder(h.serialize()));
+      if (holder != null) {
+        builder.setHolder(holder.serialize());
+      }
       builder.addAllWaiting(waiting.stream().map(LockRequest::serialize).collect(Collectors.toList()));
       return builder.build();
     }
 
+
+    /** Read this lock from a proto */
     public static QueueLock deserialize(KeyValueStateMachineProto.QueueLock queueLock) {
-      Optional<LockRequest> holder;
+      @Nullable LockRequest holder = null;
       if (queueLock.hasHolder()) {
-        holder = Optional.of(LockRequest.deserialize(queueLock.getHolder()));
-      }
-      else  {
-        holder = Optional.empty();
+        holder = LockRequest.deserialize(queueLock.getHolder());
       }
       List<LockRequest> waitingList = queueLock.getWaitingList().stream().map(LockRequest::deserialize).collect(Collectors.toList());
       return new QueueLock(holder, waitingList);
     }
 
+
+    /** {@inheritDoc} */
     @Override
     public boolean equals(Object o) {
       if (this == o) return true;
@@ -228,11 +287,15 @@ public class KeyValueStateMachine extends RaftStateMachine {
           Objects.equals(waiting, queueLock.waiting);
     }
 
+
+    /** {@inheritDoc} */
     @Override
     public int hashCode() {
       return Objects.hash(holder, waiting);
     }
   }
+
+
 
   /**
    * This is the private implementation for a LockRequest.
@@ -282,19 +345,39 @@ public class KeyValueStateMachine extends RaftStateMachine {
   /**
    * This is how we track CompletableFutures that are waiting on a lock being acquired by a given requester.
    */
-  private static class LockAcquiredFuture {
-    String lock;
+  private static class NamedLockRequest {
+    /** The name of the lock we're taking */
+    String lockName;
+    /** The requester of the lock */
     String requester;
+    /** The unique hash to identify this particular lock from the given server. */
     String uniqueHash;
-    CompletableFuture<Boolean> future;
 
-    public LockAcquiredFuture(String lock, String requester, String uniqueHash, CompletableFuture<Boolean> future) {
-      this.lock = lock;
+    /** The straightforward constructor */
+    public NamedLockRequest(String lockName, String requester, String uniqueHash) {
+      this.lockName = lockName;
       this.requester = requester;
       this.uniqueHash = uniqueHash;
-      this.future = future;
+    }
+
+    /** {@inheritDoc} */
+    @Override
+    public boolean equals(Object o) {
+      if (this == o) return true;
+      if (o == null || getClass() != o.getClass()) return false;
+      NamedLockRequest that = (NamedLockRequest) o;
+      return Objects.equals(lockName, that.lockName) &&
+          Objects.equals(requester, that.requester) &&
+          Objects.equals(uniqueHash, that.uniqueHash);
+    }
+
+    /** {@inheritDoc} */
+    @Override
+    public int hashCode() {
+      return Objects.hash(lockName, requester, uniqueHash);
     }
   }
+
 
   private static class ValueWithOptionalOwnerMapView implements Map<String, byte[]> {
     final Map<String, ValueWithOptionalOwner> backingMap;
@@ -410,7 +493,7 @@ public class KeyValueStateMachine extends RaftStateMachine {
   /**
    * This is where we keep all the lock acquired futures that we need to check for
    */
-  final List<LockAcquiredFuture> lockAcquiredFutures = new ArrayList<>();
+  final Map<NamedLockRequest, Queue<CompletableFuture<Boolean>>> lockAcquiredFutures = new ConcurrentHashMap<>();
 
   /**
    * This is where we keep all of the listeners that fire whenever the current state changes
@@ -430,6 +513,10 @@ public class KeyValueStateMachine extends RaftStateMachine {
   public final Optional<String> serverName;
 
 
+  /** For debugging -- the threads currently in a given function. This is a concurrent hash set.*/
+  private final ConcurrentHashMap<Long, String> threadsInFunctions = new ConcurrentHashMap<>();
+
+
   /** Create a new state machine, with knowledge of what node it's running on */
   public KeyValueStateMachine(String serverName) {
     this.serverName = Optional.ofNullable(serverName);
@@ -442,7 +529,11 @@ public class KeyValueStateMachine extends RaftStateMachine {
    * @return a proto of this state machine
    */
   @Override
-  public synchronized ByteString serializeImpl() {
+  public ByteString serializeImpl() {
+    if (!threadsInFunctions.isEmpty()) {
+      log.warn("Serializing from {} ('{}') while other thread ({}) is in a critical function ({})", Thread.currentThread().getId(), Thread.currentThread().getName(), threadsInFunctions.keySet().iterator().next(), threadsInFunctions.values().iterator().next());
+    }
+    threadsInFunctions.put(Thread.currentThread().getId(), "serializeImpl");
     long begin = System.currentTimeMillis();
     try {
       KeyValueStateMachineProto.KVStateMachine.Builder builder = KeyValueStateMachineProto.KVStateMachine.newBuilder();
@@ -463,6 +554,7 @@ public class KeyValueStateMachine extends RaftStateMachine {
       if (!this.values.isEmpty() && System.currentTimeMillis() - begin > 10) {
         log.warn("Serialization of state machine took {}; {} entries and {} locks", TimerUtils.formatTimeSince(begin), this.values.size(), this.locks.size());
       }
+      threadsInFunctions.remove(Thread.currentThread().getId());
     }
   }
 
@@ -474,7 +566,12 @@ public class KeyValueStateMachine extends RaftStateMachine {
    * @param now the current time, for mocking.
    */
   @Override
-  public synchronized void overwriteWithSerializedImpl(byte[] serialized, long now, ExecutorService pool) {
+  public void overwriteWithSerializedImpl(byte[] serialized, long now, ExecutorService pool) {
+    if (!threadsInFunctions.isEmpty()) {
+      log.warn("Overwriting from {} ('{}') while other thread ({}) is in a critical function ({})", Thread.currentThread().getId(), Thread.currentThread().getName(), threadsInFunctions.keySet().iterator().next(), threadsInFunctions.values().iterator().next());
+    }
+    threadsInFunctions.put(Thread.currentThread().getId(), "overwriteWithSerializedImpl");
+
     try {
       KeyValueStateMachineProto.KVStateMachine serializedStateMachine = KeyValueStateMachineProto.KVStateMachine.parseFrom(serialized);
 
@@ -486,12 +583,15 @@ public class KeyValueStateMachine extends RaftStateMachine {
 
       this.locks.clear();
       for (int i = 0; i < serializedStateMachine.getLocksKeysCount(); ++i) {
-        this.locks.put(serializedStateMachine.getLocksKeys(i), QueueLock.deserialize(serializedStateMachine.getLocksValues(i)));
+        String lockName = serializedStateMachine.getLocksKeys(i);
+        QueueLock lock = QueueLock.deserialize(serializedStateMachine.getLocksValues(i));
+        this.locks.put(lockName, lock);
+        executeFutures(lock.holder, lockName, pool);
       }
-
-      checkLocksAcquired(pool);
     } catch (InvalidProtocolBufferException e) {
       log.error("Attempting to deserialize an invalid snapshot! This is very bad. Leaving current state unchanged.", e);
+    } finally {
+      threadsInFunctions.remove(Thread.currentThread().getId());
     }
   }
 
@@ -507,153 +607,130 @@ public class KeyValueStateMachine extends RaftStateMachine {
   public void applyTransition(byte[] transition, long now, ExecutorService pool) {
     try {
       KeyValueStateMachineProto.Transition serializedTransition = KeyValueStateMachineProto.Transition.parseFrom(transition);
-      applyTransition(serializedTransition, now, pool);
+      applyTransition(serializedTransition, now, pool, false);
     } catch (InvalidProtocolBufferException e) {
       log.warn("Attempting to deserialize an invalid transition! This is very bad. Leaving current state unchanged.", e);
     }
   }
 
-  public void applyTransition(KeyValueStateMachineProto.Transition serializedTransition, long now, ExecutorService pool) {
-    boolean shouldCallChangeListeners = false;
-    switch (serializedTransition.getType()) {
 
-      case TRANSITION_GROUP:
-        for (KeyValueStateMachineProto.Transition transition : serializedTransition.getTransitionsList()) {
-          applyTransition(transition, now, pool);
-        }
-        break;
-
-      case REQUEST_LOCK:
-        KeyValueStateMachineProto.RequestLock serializedRequestLock = serializedTransition.getRequestLock();
-        LockRequest requestLockRequest = new LockRequest(serializedRequestLock.getRequester(), serializedRequestLock.getUniqueHash());
-        synchronized (this) {
-          @Nullable QueueLock lock = locks.get(serializedRequestLock.getLock());
-          if (lock == null) {
-            // 1. If the QueueLock is not currently in the locks map in StateMachine (means it is currently not held), then the
-            //    requester gets it immediately.
-            lock = new QueueLock(Optional.of(requestLockRequest), new ArrayList<>());
-            locks.put(serializedRequestLock.getLock(), lock);
-          } else {
-            // 2. Otherwise, add the requester to the waiting list of the QueueLock
-            if (!lock.waiting.contains(requestLockRequest) && (!lock.holder.isPresent() || !lock.holder.get().equals(requestLockRequest))) {
-              lock.waiting.add(requestLockRequest);
-            }
-          }
-          // 3. Check if there are any CompletableFutures outstanding waiting for this lock to be acquired
-          checkLocksAcquired(pool, serializedRequestLock.getLock());
-        }
-        break;
-
-      case RELEASE_LOCK:
-        KeyValueStateMachineProto.ReleaseLock serializedReleaseLock = serializedTransition.getReleaseLock();
-        synchronized (this) {
-          @Nullable QueueLock lock = locks.get(serializedReleaseLock.getLock());
-          if (lock != null) {
-            // 1. If the QueueLock is held by a different requester, this is a no-op
-            //noinspection OptionalGetWithoutIsPresent
-            if (lock.holder.isPresent() && lock.holder.get().server.equals(serializedReleaseLock.getRequester()) && lock.holder.get().uniqueHash.equals(serializedReleaseLock.getUniqueHash())) {
-              // 2. Release the lock
-              releaseLock(serializedReleaseLock.getLock(), pool);
-            } else {
-              // 3. Check if the list of waiters on the lock contains the releaser, if so stop waiting
-              Optional<LockRequest> requestToRemove = Optional.empty();
-              for (LockRequest request : lock.waiting) {
-                if (request.server.equals(serializedReleaseLock.getRequester()) && request.uniqueHash.equals(serializedReleaseLock.getUniqueHash())) {
-                  requestToRemove = Optional.of(request);
-                }
-              }
-              requestToRemove.ifPresent(lock.waiting::remove);
-
-              if (!requestToRemove.isPresent()) {
-                log.warn("Received a release lock command that will not result in any action - this is fine, but should be rare");
-              }
-            }
-          } else {
-            log.warn("Received a release lock command that will not result in any action - this is fine, but should be rare");
-          }
-        }
-        break;
-
-      case TRY_LOCK:
-        KeyValueStateMachineProto.TryLock serializedTryLock = serializedTransition.getTryLock();
-        LockRequest requestTryLock = new LockRequest(serializedTryLock.getRequester(), serializedTryLock.getUniqueHash());
-        synchronized (this) {
-          @Nullable QueueLock lock = locks.get(serializedTryLock.getLock());
-          // 1. If the QueueLock is not currently in the locks map in StateMachine (means it is currently not held), then the
-          //    requester gets it immediately.
-          if (lock == null) {
-            lock = new QueueLock(Optional.of(requestTryLock), new ArrayList<>());
-            locks.put(serializedTryLock.getLock(), lock);
-          }
-          // 2. Check if there are any CompletableFutures outstanding waiting for this lock to be acquired
-          checkLocksAcquired(pool, serializedTryLock.getLock());
-        }
-        break;
-
-      case SET_VALUE:
-        // Set a value
-        KeyValueStateMachineProto.SetValue serializedSetValue = serializedTransition.getSetValue();
-        ValueWithOptionalOwner valueWithOptionalOwner;
-        if (serializedSetValue.getOwner().equals("")) {
-          valueWithOptionalOwner = new ValueWithOptionalOwner(serializedSetValue.getValue().toByteArray(), now);
-        }
-        else {
-          valueWithOptionalOwner = new ValueWithOptionalOwner(serializedSetValue.getValue().toByteArray(), serializedSetValue.getOwner(), now);
-        }
-        if (!values.containsKey(serializedSetValue.getKey()) || !values.get(serializedSetValue.getKey()).equals(valueWithOptionalOwner)) {
-          shouldCallChangeListeners = true;
-        }
-        values.put(serializedSetValue.getKey(), valueWithOptionalOwner);
-        break;
-
-      case REMOVE_VALUE:
-        // Remove a value
-        KeyValueStateMachineProto.RemoveValue serializedRemoveValue = serializedTransition.getRemoveValue();
-        if (values.containsKey(serializedRemoveValue.getKey())) {
-          shouldCallChangeListeners = true;
-        }
-        values.remove(serializedRemoveValue.getKey());
-        break;
-
-      case CLEAR_TRANSIENTS:
-        // Clear transient entries for a user
-        synchronized (this) {
-          this.clearTransientsFor(serializedTransition.getClearTransients().getOwner(), pool);
-        }
-        break;
-
-      case UNRECOGNIZED:
-      case INVALID:
-        // Unknown transition
-        log.warn("Unrecognized transition type "+serializedTransition.getType()+"! This is very bad. Leaving current state unchanged.");
-        break;
+  /** @see #applyTransition(byte[], long, ExecutorService) */
+  private void applyTransition(KeyValueStateMachineProto.Transition serializedTransition, long now, ExecutorService pool, boolean bypassThreadSafety) {
+    if (!bypassThreadSafety) {
+      if (!threadsInFunctions.isEmpty()) {
+        log.warn("Transitioning from {} ('{}') while other thread ({}) is in a critical function ({})", Thread.currentThread().getId(), Thread.currentThread().getName(), threadsInFunctions.keySet().iterator().next(), threadsInFunctions.values().iterator().next());
+      }
+      threadsInFunctions.put(Thread.currentThread().getId(), "applyTransition");
     }
 
-    // If we're changing the map value, then call all the change listeners
-    if (shouldCallChangeListeners) {
-      Set<ChangeListener> changeListenersCopy;
-      synchronized (changeListeners) {
-        changeListenersCopy = new HashSet<>(changeListeners);
-      }
-      if (changeListenersCopy.size() > 0) {
-        Map<String, byte[]> asMap = new ValueWithOptionalOwnerMapView(this.values);
-        for (ChangeListener listener : changeListenersCopy) {
-          if (serializedTransition.getType() == KeyValueStateMachineProto.TransitionType.SET_VALUE) {
-            // Set a value
-            pool.execute(() -> {
-              log.trace("Calling onChange listener (set) {}", listener);
-              listener.onChange(serializedTransition.getSetValue().getKey(), Optional.of(serializedTransition.getSetValue().getValue().toByteArray()), asMap, pool);
-            });
-          } else if (serializedTransition.getType() == KeyValueStateMachineProto.TransitionType.REMOVE_VALUE) {
-            // Clear a value
-            pool.execute(() -> {
-              log.trace("Calling onChange listener (clear) {}", listener);
-              listener.onChange(serializedTransition.getRemoveValue().getKey(), Optional.empty(), asMap, pool);
-            });
+    try {
+      boolean shouldCallChangeListeners = false;
+      @Nullable QueueLock lock;
+      switch (serializedTransition.getType()) {
+
+        case TRANSITION_GROUP:
+          for (KeyValueStateMachineProto.Transition transition : serializedTransition.getTransitionsList()) {
+            applyTransition(transition, now, pool, true);
+          }
+          break;
+
+        case REQUEST_LOCK:
+          KeyValueStateMachineProto.RequestLock serializedRequestLock = serializedTransition.getRequestLock();
+          LockRequest requestLockRequest = new LockRequest(serializedRequestLock.getRequester(), serializedRequestLock.getUniqueHash());
+          lock = locks.computeIfAbsent(serializedRequestLock.getLock(), lockName -> new QueueLock(requestLockRequest, Collections.emptyList()));
+          executeFutures(lock.acquire(requestLockRequest), serializedRequestLock.getLock(), pool);
+          break;
+
+        case RELEASE_LOCK:
+          KeyValueStateMachineProto.ReleaseLock serializedReleaseLock = serializedTransition.getReleaseLock();
+          lock = locks.get(serializedReleaseLock.getLock());
+          if (lock != null) {
+            LockRequest releaseLockRequest = new LockRequest(serializedReleaseLock.getRequester(), serializedReleaseLock.getUniqueHash());
+            executeFutures(lock.release(releaseLockRequest), serializedReleaseLock.getLock(), pool);
+            if (lock.holder == null) {
+              locks.remove(serializedReleaseLock.getLock());
+            }
           } else {
-            log.warn("We should be calling a change listener, but the transition doesn't seem to warrant an update");
+            log.warn("Received a release lock command that will not result in any action (lock not registered) - this is fine, but should be rare");
+          }
+          break;
+
+        case TRY_LOCK:
+          KeyValueStateMachineProto.TryLock serializedTryLock = serializedTransition.getTryLock();
+          LockRequest requestTryLock = new LockRequest(serializedTryLock.getRequester(), serializedTryLock.getUniqueHash());
+          lock = locks.computeIfAbsent(serializedTryLock.getLock(), lockName -> new QueueLock(requestTryLock, new ArrayList<>()));
+          if (lock.holder != null) {
+            executeFutures(lock.holder, serializedTryLock.getLock(), pool);
+          }
+          break;
+
+        case SET_VALUE:
+          // Set a value
+          KeyValueStateMachineProto.SetValue serializedSetValue = serializedTransition.getSetValue();
+          ValueWithOptionalOwner valueWithOptionalOwner;
+          if (serializedSetValue.getOwner().equals("")) {
+            valueWithOptionalOwner = new ValueWithOptionalOwner(serializedSetValue.getValue().toByteArray(), now);
+          } else {
+            valueWithOptionalOwner = new ValueWithOptionalOwner(serializedSetValue.getValue().toByteArray(), serializedSetValue.getOwner(), now);
+          }
+          if (!values.containsKey(serializedSetValue.getKey()) || !values.get(serializedSetValue.getKey()).equals(valueWithOptionalOwner)) {
+            shouldCallChangeListeners = true;
+          }
+          values.put(serializedSetValue.getKey(), valueWithOptionalOwner);
+          break;
+
+        case REMOVE_VALUE:
+          // Remove a value
+          KeyValueStateMachineProto.RemoveValue serializedRemoveValue = serializedTransition.getRemoveValue();
+          if (values.containsKey(serializedRemoveValue.getKey())) {
+            shouldCallChangeListeners = true;
+          }
+          values.remove(serializedRemoveValue.getKey());
+          break;
+
+        case CLEAR_TRANSIENTS:
+          // Clear transient entries for a user
+          this.clearTransientsFor(serializedTransition.getClearTransients().getOwner(), pool);
+          break;
+
+        case UNRECOGNIZED:
+        case INVALID:
+          // Unknown transition
+          log.warn("Unrecognized transition type " + serializedTransition.getType() + "! This is very bad. Leaving current state unchanged.");
+          break;
+      }
+
+      // If we're changing the map value, then call all the change listeners
+      if (shouldCallChangeListeners) {
+        Set<ChangeListener> changeListenersCopy;
+        synchronized (changeListeners) {
+          changeListenersCopy = new HashSet<>(changeListeners);
+        }
+        if (changeListenersCopy.size() > 0) {
+          Map<String, byte[]> asMap = new ValueWithOptionalOwnerMapView(this.values);
+          for (ChangeListener listener : changeListenersCopy) {
+            if (serializedTransition.getType() == KeyValueStateMachineProto.TransitionType.SET_VALUE) {
+              // Set a value
+              pool.execute(() -> {
+                log.trace("Calling onChange listener (set) {}", listener);
+                listener.onChange(serializedTransition.getSetValue().getKey(), Optional.of(serializedTransition.getSetValue().getValue().toByteArray()), asMap, pool);
+              });
+            } else if (serializedTransition.getType() == KeyValueStateMachineProto.TransitionType.REMOVE_VALUE) {
+              // Clear a value
+              pool.execute(() -> {
+                log.trace("Calling onChange listener (clear) {}", listener);
+                listener.onChange(serializedTransition.getRemoveValue().getKey(), Optional.empty(), asMap, pool);
+              });
+            } else {
+              log.warn("We should be calling a change listener, but the transition doesn't seem to warrant an update");
+            }
           }
         }
+      }
+
+    } finally {
+      if (!bypassThreadSafety) {
+        threadsInFunctions.remove(Thread.currentThread().getId());
       }
     }
   }
@@ -689,7 +766,7 @@ public class KeyValueStateMachine extends RaftStateMachine {
    *
    * @param changeListener the listener to deregister
    */
-  public void removeChangeListener(ChangeListener changeListener) {synchronized (this.changeListeners) {
+  public void removeChangeListener(ChangeListener changeListener) {
     // Deregister the listener.
     int numListeners;
     synchronized (this.changeListeners) {
@@ -702,9 +779,8 @@ public class KeyValueStateMachine extends RaftStateMachine {
       numListeners = this.changeListeners.size();
     }
 
-      // Deregister the listener in Prometheus
-      Prometheus.gaugeSet(gaugeNumListeners, (double) numListeners);
-    }
+    // Deregister the listener in Prometheus
+    Prometheus.gaugeSet(gaugeNumListeners, (double) numListeners);
   }
 
 
@@ -784,35 +860,12 @@ public class KeyValueStateMachine extends RaftStateMachine {
 
 
   /**
-   * This releases a lock in the state machine.
-   */
-  private void releaseLock(String lockName, ExecutorService pool) {
-    @Nullable QueueLock lock = locks.get(lockName);
-    if (lock != null) {
-      if (lock.waiting.size() > 0) {
-        // 1. If the QueueLock waiting list is non-empty, then the next in the waiting list gets the lock immediately, and is
-        //    removed from the waiting list.
-        LockRequest nextUp = lock.waiting.get(0);
-        lock.waiting.remove(0);
-        lock.holder = Optional.of(nextUp);
-      } else {
-        // 2. Otherwise, remove the lock from the locks map in StateMachine
-        locks.remove(lockName);
-      }
-    }
-
-    // 3. Releasing the lock may trigger a Future
-    checkLocksAcquired(pool, lockName);
-  }
-
-
-  /**
    * This gets called when we detect that a machine has gone down, and we should remove all of the transient entries
    * and locks pertaining to that machine.
    *
    * @param owner The machine that has gone down that we should clear.
    */
-  private synchronized void clearTransientsFor(String owner, ExecutorService pool) {
+  private void clearTransientsFor(String owner, ExecutorService pool) {
     // 1. Error checks
     if (serverName.map(sn -> Objects.equals(sn, owner)).orElse(false)) {
       log.warn("Got a Raft transition telling us we're offline. We are, of course, not offline. All transient state owned by us is being cleared.");
@@ -830,12 +883,15 @@ public class KeyValueStateMachine extends RaftStateMachine {
     }
 
     // 3. Scrub any mention of people who are no longer in the committedClusterMembers from the locks
-    Map<String, QueueLock> locks = new HashMap<>(this.locks); // copy the locks map to avoid ConcurrentModificationException when releaseLock() modifies locks below
-    locks.values()
-        .forEach(lock -> lock.waiting.removeIf(req -> Objects.equals(req.server, owner)));
-    locks.entrySet().stream()
-        .filter(lock -> lock.getValue().holder.map(h -> Objects.equals(h.server, owner)).orElse(false))
-        .forEach(x -> releaseLock(x.getKey(), pool));
+    for (Map.Entry<String, QueueLock> entry : this.locks.entrySet()) {
+      QueueLock lock = entry.getValue();
+      // 3.1. Stop waiting on the lock
+      lock.waiting.removeIf(req -> Objects.equals(req.server, owner));
+      // 3.2. Release the lock if we hold it
+      if (lock.holder != null && Objects.equals(lock.holder.server, owner)) {
+        executeFutures(lock.release(lock.holder), entry.getKey(), pool);
+      }
+    }
   }
 
 
@@ -844,8 +900,8 @@ public class KeyValueStateMachine extends RaftStateMachine {
   public Set<String> owners() {
     Set<String> seen = new HashSet<>();
     locks.forEach((key, lock) -> {
-      if (lock.holder.isPresent()) {
-        String holder = lock.holder.get().server;
+      if (lock.holder != null) {
+        String holder = lock.holder.server;
         seen.add(holder);
       }
     });
@@ -883,82 +939,26 @@ public class KeyValueStateMachine extends RaftStateMachine {
 
 
   /**
-   * Release a single lock.
+   * Execute any outstanding futures on a newly acquired lock.
+   *
+   * @param holder The new lock holder.
+   * @param lockName The name of the lock we're considering.
+   * @param pool The pool to use to execute the futures on.
    */
-  private void completeLockFuture(@Nullable ExecutorService pool, QueueLock lock, LockAcquiredFuture future) {
-    if (lock.holder.isPresent() && lock.holder.get().server.equals(future.requester) && lock.holder.get().uniqueHash.equals(future.uniqueHash)) {
-      synchronized (lockAcquiredFutures) {
-        lockAcquiredFutures.remove(future);
-      }
-      if (pool == null) {
-        future.future.complete(true);
-      } else {
-        pool.execute(() -> future.future.complete(true));
-      }
-    } else if (!lock.holder.isPresent()) {
-      // Lock has no holder, so if we're waiting on it that implies we're hosed
-      synchronized (lockAcquiredFutures) {
-        lockAcquiredFutures.remove(future);
-      }
-      if (pool == null) {
-        future.future.complete(false);
-      } else {
-        pool.execute(() -> future.future.complete(false));
-      }
+  private void executeFutures(@Nullable LockRequest holder, String lockName, ExecutorService pool) {
+    if (holder == null) {
+      return;
     }
-    // Lock has a holder, and that holder isn't us. Continue waiting
-  }
-
-
-  private void checkLocksAcquired(ExecutorService pool, String lockName) {
-    List<LockAcquiredFuture> originalLockAcquiredFutures;
-    synchronized (lockAcquiredFutures) {
-      originalLockAcquiredFutures = new ArrayList<>(lockAcquiredFutures);
-    }
-    for (LockAcquiredFuture future : new ArrayList<>(originalLockAcquiredFutures)) {
-      if (lockName.equals(future.lock)) {
-        QueueLock lock = locks.get(lockName);
-        if (lock != null) {
-          // Case: try to complete this lock's future
-          completeLockFuture(pool, lock, future);
-        } else {
-          // Case: this lock no longer exists -- it must be released.
-          pool.execute(() -> future.future.complete(false));
-        }
-      }
-
-    }
-  }
-
-
-  /**
-   * This iterates over our list of LockAcquiredFutures and completes and removes any of them that are now satisfied.
-   */
-  private void checkLocksAcquired(ExecutorService pool) {
-    List<LockAcquiredFuture> originalLockAcquiredFutures;
-    synchronized (lockAcquiredFutures) {
-      originalLockAcquiredFutures = new ArrayList<>(lockAcquiredFutures);
-    }
-    List<LockAcquiredFuture> toRemove = new ArrayList<>();
-    for (LockAcquiredFuture future : new ArrayList<>(originalLockAcquiredFutures)) {
-      QueueLock lock = locks.get(future.lock);
-      if (lock != null) {
-        completeLockFuture(pool, lock, future);
-      } else {
-        // Lock was removed, so this is impossible to acquire
-        toRemove.add(future);
-        pool.execute(() -> future.future.complete(false));
-      }
-    }
-    synchronized (lockAcquiredFutures) {
-      lockAcquiredFutures.removeAll(toRemove);
+    Queue<CompletableFuture<Boolean>> futures = lockAcquiredFutures.remove(new NamedLockRequest(lockName, holder.server, holder.uniqueHash));
+    if (futures != null) {
+      futures.forEach(future -> pool.execute(() -> future.complete(true)));
     }
   }
 
 
   /** {@inheritDoc} */
   @Override
-  public synchronized boolean equals(Object o) {
+  public boolean equals(Object o) {
     if (this == o) return true;
     if (o == null || getClass() != o.getClass()) return false;
     KeyValueStateMachine that = (KeyValueStateMachine) o;
@@ -968,7 +968,7 @@ public class KeyValueStateMachine extends RaftStateMachine {
 
   /** {@inheritDoc} */
   @Override
-  public synchronized int hashCode() {
+  public int hashCode() {
     return Objects.hash(values, locks);
   }
 
@@ -989,26 +989,26 @@ public class KeyValueStateMachine extends RaftStateMachine {
    * @param lock the lock we're interested in
    * @param requester the requester who will acquire the lock
    * @param uniqueHash the unique hash to deduplicate requests on the same machine
+   * @param pool The pool to run futures on
    *
    * @return a Future that completes when the lock is acquired by requester.
    */
-  CompletableFuture<Boolean> createLockAcquiredFuture(String lock, String requester, String uniqueHash) {
+  CompletableFuture<Boolean> createLockAcquiredFuture(String lock, String requester, String uniqueHash, ExecutorService pool) {
     // 1. Register the future
     CompletableFuture<Boolean> lockAcquiredFuture = new CompletableFuture<>();
-    LockAcquiredFuture lockAcquiredFutureObj = new LockAcquiredFuture(lock, requester, uniqueHash, lockAcquiredFuture);
-    synchronized (lockAcquiredFutures) {
-      this.lockAcquiredFutures.add(lockAcquiredFutureObj);
-    }
+    NamedLockRequest request = new NamedLockRequest(lock, requester, uniqueHash);
+    this.lockAcquiredFutures.computeIfAbsent(request, k -> new ConcurrentLinkedQueue<>()).add(lockAcquiredFuture);
 
-    // 2. Check for immediate completiong
+    // 2. Check for immediate completion
     QueueLock lockObj = locks.get(lock);
     if (lockObj != null) {
-      completeLockFuture(null, lockObj, lockAcquiredFutureObj);
+      executeFutures(lockObj.holder, lock, pool);
     }
 
     // 3. Return
     return lockAcquiredFuture;
   }
+
 
   /**
    * This creates a serialized RequestLock transition.
