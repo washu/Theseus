@@ -942,6 +942,70 @@ public class KeyValueStateMachineTest {
         x.debugTransition(new byte[2]));
   }
 
+
+  // --------------------------------------------------------------------------
+  // Benchmarks
+  // --------------------------------------------------------------------------
+
+  /**
+   * Benchmark raw lock + edit + unlock performance
+   */
+  @Ignore
+  @Test
+  public void benchmarkLockedUpdate() {
+    // The number of iterations to run the system for to burn in the JIT
+    int burnin = 1000;
+    // The number of transitions to make
+    int size = 1000000;
+    // The size of the lock wait queue when we run the system
+    int lockQueueSize = 100;
+    // The number of change listeners on the state machine
+    int changeListenerCount = 1000;
+
+    KeyValueStateMachine x = new KeyValueStateMachine("name");
+    for (int i = 0; i < lockQueueSize; ++i) {
+      x.applyTransition(KeyValueStateMachineProto.Transition.newBuilder().setType(KeyValueStateMachineProto.TransitionType.REQUEST_LOCK)
+              .setRequestLock(KeyValueStateMachineProto.RequestLock.newBuilder().setLock("lock").setRequester("me").setUniqueHash("hash").build())
+              .build().toByteArray(),
+          TimerUtils.mockableNow().toEpochMilli(), MoreExecutors.newDirectExecutorService());
+
+    }
+
+    for (int i = 0; i < changeListenerCount; ++i) {
+      x.addChangeListener((changedKey, newValue, state, pool) -> {
+        // noop
+      });
+    }
+
+    long startNanos = 0L;
+    for (int i = -burnin; i < size; ++i) {
+      if (i == 0) {
+        startNanos = System.nanoTime();
+      }
+      // 1. Take the lock
+      x.applyTransition(KeyValueStateMachineProto.Transition.newBuilder().setType(KeyValueStateMachineProto.TransitionType.REQUEST_LOCK)
+          .setRequestLock(KeyValueStateMachineProto.RequestLock.newBuilder().setLock("lock").setRequester("me").setUniqueHash("hash").build())
+          .build().toByteArray(),
+          TimerUtils.mockableNow().toEpochMilli(), MoreExecutors.newDirectExecutorService());
+      // 2. Apply the transition
+      x.applyTransition(KeyValueStateMachineProto.Transition.newBuilder().setType(KeyValueStateMachineProto.TransitionType.SET_VALUE)
+          .setSetValue(KeyValueStateMachineProto.SetValue.newBuilder().setKey("" + i).setValue(ByteString.copyFromUtf8("hello world!")))
+          .build().toByteArray(),
+          TimerUtils.mockableNow().toEpochMilli(), MoreExecutors.newDirectExecutorService());
+      // 3. Release the lock
+      x.applyTransition(KeyValueStateMachineProto.Transition.newBuilder().setType(KeyValueStateMachineProto.TransitionType.RELEASE_LOCK)
+              .setReleaseLock(KeyValueStateMachineProto.ReleaseLock.newBuilder().setLock("lock").setRequester("me").setUniqueHash("hash").build())
+              .build().toByteArray(),
+          TimerUtils.mockableNow().toEpochMilli(), MoreExecutors.newDirectExecutorService());
+    }
+    long endNanos = System.nanoTime();
+
+    long aveNanos = (endNanos - startNanos) / size;
+    double aveMillis = ((double) aveNanos) / 1000000.0;
+    System.out.println("Ave. time / transition = " + aveNanos + " ns  (" + aveMillis + " ms)");
+  }
+
+
   @Ignore
   @Test
   public void benchmarkManyKeys() {

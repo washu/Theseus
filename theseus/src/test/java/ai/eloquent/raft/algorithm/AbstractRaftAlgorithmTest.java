@@ -33,7 +33,7 @@ import static org.junit.Assert.*;
  *
  * @author <a href="mailto:gabor@eloquent.ai">Gabor Angeli</a>
  */
-@SuppressWarnings({"ConstantConditions", "SameParameterValue"})
+@SuppressWarnings({"SameParameterValue", "OptionalGetWithoutIsPresent"})
 public abstract class AbstractRaftAlgorithmTest {
   /**
    * An SLF4J Logger for this class.
@@ -339,7 +339,6 @@ public abstract class AbstractRaftAlgorithmTest {
    * @param closedNodes The final node states.
    * @param leaderIndex The index of the leader. If -1, we allow any single leader
    */
-  @SuppressWarnings("ConstantConditions")
   private void basicSuccessTests(RaftState[] closedNodes, int leaderIndex, Optional<Set<String>> expectedMembership, boolean checkConsistentCommit) {
     // 1. Check that we have one and exactly one leader
     assertEquals("There should be exactly one leader", 1, Arrays.stream(closedNodes).filter(RaftState::isLeader).count());
@@ -624,7 +623,10 @@ public abstract class AbstractRaftAlgorithmTest {
   @Test
   public void testHeartbeatReply() {
     Assume.assumeTrue(isStableTransport());  // requires a stable transport
-    RaftState[] closedNodes = bootstrap((nodes, states) -> nodes[0].heartbeat());
+    RaftState[] closedNodes = bootstrap((nodes, states) -> {
+      nodes[0].heartbeat();
+      waitMillis(100);  // not strictly necessary, but helps with flakiness
+    });
     basicSuccessTests(closedNodes);
   }
 
@@ -1160,7 +1162,7 @@ public abstract class AbstractRaftAlgorithmTest {
    * Though, the leader should still behave as if it had the new configuration.
    */
   @Test
-  public void testAddServerFailsWhenNoConsensus() throws ExecutionException, InterruptedException {
+  public void testAddServerFailsWhenNoConsensus() {
     partitionOff(0, Long.MAX_VALUE, "L");
     List<CompletableFuture<MembershipChangeStatus>> rpcResults = new ArrayList<>();
     RaftState[] closedNodes = bootstrapWithShadows((nodes, states) -> {
@@ -1265,7 +1267,7 @@ public abstract class AbstractRaftAlgorithmTest {
    * We cannot commit a server removal if the leader cannot reach consensus with the rest of the cluster.
    */
   @Test
-  public void testRemoveServerFailsWhenNoConsensus() throws ExecutionException, InterruptedException {
+  public void testRemoveServerFailsWhenNoConsensus() {
     partitionOff(0, Long.MAX_VALUE, "L");
     List<CompletableFuture<MembershipChangeStatus>> rpcResults = new ArrayList<>();
     RaftState[] closedNodes = bootstrap((nodes, states) -> {
@@ -1966,9 +1968,7 @@ public abstract class AbstractRaftAlgorithmTest {
     // 1. Run the test
     List<CompletableFuture<Boolean>> rpcResults = new ArrayList<>();
     RaftState[] closedNodes = bootstrap((nodes, states) -> {
-      Random rand = new Random(42L);
       for (int i = 0; i < count; ++i) {
-//        rpcResults.add(transition(nodes[rand.nextInt(nodes.length)], i % 127));
         rpcResults.add(transition(nodes[1], i % 127));
       }
       for (RaftAlgorithm node : nodes) {
