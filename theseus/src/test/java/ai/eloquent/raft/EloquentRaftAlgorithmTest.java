@@ -4,14 +4,17 @@ import ai.eloquent.util.*;
 import com.google.protobuf.ByteString;
 import org.junit.Ignore;
 import org.junit.Test;
+import org.slf4j.Logger;
 
 import java.io.IOException;
 import java.text.DecimalFormat;
 import java.util.*;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.function.Consumer;
+import java.util.function.Supplier;
 
 import static ai.eloquent.raft.RaftLogTest.makeEntry;
 import static org.junit.Assert.*;
@@ -105,6 +108,26 @@ public class EloquentRaftAlgorithmTest {
     @Override
     public Span expectedNetworkDelay() {
       return null;
+    }
+
+    /**
+     * {@inheritDoc}
+     */
+    @Override
+    public void scheduleHeartbeat(Supplier<Boolean> alive, long period, Runnable heartbeatFn, Logger log) {
+      this.scheduleAtFixedRate(new SafeTimerTask() {
+        protected ExecutorService pool() {
+          return null;
+        }
+        @Override
+        public void runUnsafe() {
+          if (alive.get()) {
+            heartbeatFn.run();
+          } else {
+            this.cancel();
+          }
+        }
+      }, period);
     }
 
     /** Schedule an event on the transport's time. */

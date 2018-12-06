@@ -421,7 +421,7 @@ public interface RaftAlgorithm {
 
 
   /** The default timeout range for elections. */
-  Span DEFAULT_ELECTION_RANGE = new Span(1000, 2000);
+  Span DEFAULT_ELECTION_RANGE = new Span(150, 300);
 
 
   /**
@@ -485,14 +485,14 @@ public interface RaftAlgorithm {
         // 1.1. Try to add ourselves to the hospice
         RaftMessage response = raft.receiveApplyTransitionRPC(ApplyTransitionRequest.newBuilder()
                 .setNewHospiceMember(raft.serverName())
-                .build()).get(raft.electionTimeoutMillisRange().end + 100, TimeUnit.MILLISECONDS);
+                .build()).get(raft.electionTimeoutMillisRange().end + 1000, TimeUnit.MILLISECONDS);
         inHospice = response.getApplyTransitionReply().getSuccess();
       } catch (InterruptedException | ExecutionException | TimeoutException e) {
         log.info("{} - [{}] Could not apply hospice transition: ", raft.mutableState().serverName, transport.now(), e);
       } finally {
         if (!inHospice) {
           // 1.2. If we failed, wait for an election
-          transport.sleep(raft.electionTimeoutMillisRange().end + 100);
+          transport.sleep(raft.electionTimeoutMillisRange().end + 1000);
         }
       }
     }
@@ -522,18 +522,22 @@ public interface RaftAlgorithm {
         // 3.1. Try to remove ourselves from the cluster
         RaftMessage response = raft.receiveRemoveServerRPC(RemoveServerRequest.newBuilder()
             .setOldServer(raft.serverName())
-            .build()).get(raft.electionTimeoutMillisRange().end + 100, TimeUnit.MILLISECONDS);
+            .build()).get(raft.electionTimeoutMillisRange().end + 1000, TimeUnit.MILLISECONDS);
         if (response.getRemoveServerReply().getStatus() == MembershipChangeStatus.OK) {
           inCluster = false;
         }
       } catch (InterruptedException | ExecutionException | TimeoutException e) {
-        log.info("{} - [{}] Could not apply remove server transition: ", raft.mutableState().serverName, transport.now(), e);
+        if (e instanceof TimeoutException || (e.getCause() != null && e.getCause() instanceof TimeoutException)) {
+          log.info("{} - [{}] Could not apply remove server transition (timeout)", raft.mutableState().serverName, transport.now());
+        } else {
+          log.info("{} - [{}] Could not apply remove server transition: ", raft.mutableState().serverName, transport.now(), e);
+        }
       } finally {
         attempts += 1;
         if (inCluster) {
           // 3.2. If we failed, wait for an election
-          transport.sleep(raft.electionTimeoutMillisRange().end + 100);
-          transport.sleep(raft.electionTimeoutMillisRange().end + 100);
+          transport.sleep(raft.electionTimeoutMillisRange().end + 1000);
+          transport.sleep(raft.electionTimeoutMillisRange().end + 1000);
         }
       }
     }

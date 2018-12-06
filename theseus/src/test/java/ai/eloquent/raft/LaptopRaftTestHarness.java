@@ -185,7 +185,7 @@ public class LaptopRaftTestHarness {
 
     // 1. Create an algorithm
     String hostname = InetAddress.getLocalHost().getHostAddress();
-    RaftLifecycle lifecycle = new RaftLifecycle(Lazy.from(new SafeTimerReal()));
+    RaftLifecycle lifecycle = new RaftLifecycle(Lazy.from(new PreciseSafeTimer()));
 
     ExecutorService pool = Executors.newFixedThreadPool(4);
     RaftState state = new RaftState(hostname, new KeyValueStateMachine(hostname), pool);

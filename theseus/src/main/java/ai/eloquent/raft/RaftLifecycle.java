@@ -6,6 +6,7 @@ import com.google.common.util.concurrent.ThreadFactoryBuilder;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.io.Closeable;
 import java.time.Duration;
 import java.util.*;
 import java.util.concurrent.*;
@@ -25,7 +26,7 @@ public class RaftLifecycle {
   /**
    * A global timer that we can use.
    */
-  public Lazy<SafeTimer> timer;
+  public Lazy<SafeTimer> timer;  // TODO(gabor) make this final at some point
 
   /** The set of managed thread pools */
   protected final Map<String, ExecutorService> managedThreadPools = new HashMap<>();
@@ -34,7 +35,7 @@ public class RaftLifecycle {
   protected final Map<String, ExecutorService> coreThreadPools = new HashMap<>();
 
   /** This is the Theseus that's tied to this RaftLifecycle - if any. We use this knowledge on shutdown. */
-  protected Optional<EloquentRaftNode> registeredRaft = Optional.empty();
+  protected Optional<HasRaftLifecycle> registeredRaft = Optional.empty();
 
   public RaftLifecycle(Lazy<SafeTimer> timer) {
     this.timer = timer;
@@ -56,9 +57,8 @@ public class RaftLifecycle {
       Lazy<SafeTimer> timer;
       if (this.mockTimer) {
         timer = Lazy.of(SafeTimerMock::new);
-      }
-      else {
-        timer = Lazy.of(SafeTimerReal::new);
+      } else {
+        timer = Lazy.of(PreciseSafeTimer::new);
       }
       return new RaftLifecycle(timer);
     }
@@ -76,7 +76,15 @@ public class RaftLifecycle {
   /**
    * This registers Raft on this RaftLifecycle, so that the RaftLifecycle can shut it down when it's ready.
    */
-  public void registerRaft(EloquentRaftNode raft) {
+  public void registerRaft(Theseus raft) {
+    this.registeredRaft = Optional.of(raft);
+  }
+
+  /**
+   * For tests, we can also register a simple Raft node so we don't have to
+   * make a whole {@link Theseus} instance.
+   */
+  void registerRaft(EloquentRaftNode raft) {
     this.registeredRaft = Optional.of(raft);
   }
 
@@ -85,8 +93,8 @@ public class RaftLifecycle {
    * This creates a helpful prefix for watching the log messages of RaftLifecycle when we have multiple RaftLifecycle objects in
    * the same test.
    */
-  private String logServerNamePrefix() {
-    return registeredRaft.map(eloquentRaftNode -> eloquentRaftNode.algorithm.serverName() + " - ").orElse("");
+  protected String logServerNamePrefix() {
+    return registeredRaft.map(eloquentRaftNode -> eloquentRaftNode.serverName() + " - ").orElse("");
   }
 
 
@@ -386,11 +394,14 @@ public class RaftLifecycle {
     System.runFinalization();
 
     // 7. Shutdown our RAFT cluster, if we have one, and block until shutdown is complete
-    this.registeredRaft.ifPresent(raft -> {
+    if (this.registeredRaft.isPresent()) {
+      HasRaftLifecycle raft = this.registeredRaft.get();
       log.info(logServerNamePrefix() + "Shutting down raft (blocking={})...", !allowClusterDeath);
       raft.close(allowClusterDeath);  // wait for someone else to come online to carry on the state (if we have a raft at all)
       log.info(logServerNamePrefix() + "Raft shut down");
-    });
+    } else {
+      log.warn("No Raft registered -- not shutting down Raft.");
+    }
 
     // 8. Cancel the timers
     log.info(logServerNamePrefix()+"Cancelling timers");

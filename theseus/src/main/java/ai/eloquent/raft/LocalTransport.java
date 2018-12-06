@@ -18,6 +18,7 @@ import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReadWriteLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.function.Consumer;
+import java.util.function.Supplier;
 import java.util.stream.Collectors;
 
 
@@ -707,6 +708,7 @@ public class LocalTransport implements RaftTransport {
             Optional<EloquentRaftProto.LogEntry> log1Entry = log1.getEntryAtIndex(index);
             Optional<EloquentRaftProto.LogEntry> log2Entry = log2.getEntryAtIndex(index);
             if (log1Entry.isPresent() && log2Entry.isPresent()) {
+              //noinspection RedundantIfStatement
               if (log1Entry.get().getTerm() == log2Entry.get().getTerm()) {
                 assert(log1Entry.get().toByteString().equals(log2Entry.get().toByteString())) : "Two log entries at the same index with the same term should be identical";
               }
@@ -784,7 +786,7 @@ public class LocalTransport implements RaftTransport {
 
   /** Sleep for the given number of milliseconds. This is purely for mocking for tests. */
   @Override
-  public void sleep(long millis) {
+  public void sleep(long millis, int nanos) {
     AtomicBoolean slept = new AtomicBoolean(false);
     // Wait for the given time to arrive
     schedule(millis, 1, now -> {
@@ -803,9 +805,28 @@ public class LocalTransport implements RaftTransport {
     }
   }
 
+  /**
+   * {@inheritDoc}
+   */
+  @Override
+  public void scheduleHeartbeat(Supplier<Boolean> alive, long period, Runnable heartbeatFn, Logger log) {
+    this.scheduleAtFixedRate(new SafeTimerTask() {
+      protected ExecutorService pool() {
+        return null;
+      }
+      @Override
+      public void runUnsafe() {
+        if (alive.get()) {
+          heartbeatFn.run();
+        } else {
+          this.cancel();
+        }
+      }
+    }, period);
+  }
+
 
   /** Schedule an event on the transport's time. */
-  @SuppressWarnings("ConstantConditions")
   @Override
   public void scheduleAtFixedRate(SafeTimerTask task, long period) {
     task.run(Optional.empty());
@@ -814,7 +835,6 @@ public class LocalTransport implements RaftTransport {
 
 
   /** Schedule an event on the transport's time. */
-  @SuppressWarnings("ConstantConditions")
   @Override
   public void schedule(SafeTimerTask task, long delay) {
     schedule(delay, 1, now -> task.run(Optional.empty()));
@@ -822,6 +842,7 @@ public class LocalTransport implements RaftTransport {
 
 
   /** {@inheritDoc} */
+  @SuppressWarnings("unchecked")
   @Override
   public <E> E getFuture(CompletableFuture<E> future, Duration timeout) throws InterruptedException, ExecutionException, TimeoutException {
     long millisSlept = 0;

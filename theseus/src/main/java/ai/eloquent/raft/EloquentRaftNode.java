@@ -1,14 +1,13 @@
 package ai.eloquent.raft;
 
 import ai.eloquent.error.RaftErrorListener;
+import ai.eloquent.monitoring.Prometheus;
 import ai.eloquent.util.*;
 import com.google.protobuf.ByteString;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
-import java.io.PrintWriter;
-import java.io.StringWriter;
 import java.time.Duration;
 import java.util.*;
 import java.util.concurrent.*;
@@ -23,19 +22,30 @@ import java.util.concurrent.*;
  *
  * @author <a href="mailto:gabor@eloquent.ai">Gabor Angeli</a>
  */
-public class EloquentRaftNode implements AutoCloseable {
+public class EloquentRaftNode implements HasRaftLifecycle {
   /**
    * An SLF4J Logger for this class.
    */
   private static final Logger log = LoggerFactory.getLogger(EloquentRaftNode.class);
 
-
   /** Keeps track of existing {@link RaftErrorListener} **/
   private static ArrayList<RaftErrorListener> errorListeners = new ArrayList<>();
 
   /**
+   * A histogram for measuring the empirical interval between heartbeats.
+   */
+  private final Object histogramHeartbeatTiming = Prometheus.histogramBuild(
+      "raft_heartbeat_interval",
+      "The bucketed intervals between heartbeats, to ensure that they're run consistently every 50ms",
+      25, 40, 45, 48, 49, 50, 51, 52, 55, 60, 75, 100, 150, 500, 1000
+  );
+
+
+  /**
    * Keeps track of an additional {@link RaftErrorListener} in this class
-   * @param errorListener
+   *
+   * @param errorListener The error listener to add to the listener list.
+   *                      Errors will be sent to this and all other listeners.
    */
   protected void addErrorListener(RaftErrorListener errorListener) {
     errorListeners.add(errorListener);
@@ -43,6 +53,7 @@ public class EloquentRaftNode implements AutoCloseable {
 
   /**
    * Stop listening from a specific {@link RaftErrorListener}
+   *
    * @param errorListener The error listener to be removed
    */
   protected void removeErrorListener(RaftErrorListener errorListener) {
@@ -59,6 +70,7 @@ public class EloquentRaftNode implements AutoCloseable {
   /**
    * Alert each of the {@link RaftErrorListener}s attached to this class.
    */
+  @SuppressWarnings("unused")
   private void throwRaftError(String incidentKey, String debugMessage) {
     errorListeners.forEach(listener -> listener.accept(incidentKey, debugMessage, Thread.currentThread().getStackTrace()));
   }
@@ -107,11 +119,6 @@ public class EloquentRaftNode implements AutoCloseable {
   private final List<RaftFailsafe> failsafes = new ArrayList<>();
 
   /**
-   * This is a reference to the heartbeat timer task we have running, so we can clean it up on shutdown.
-   */
-  private Pointer<SafeTimerTask> heartbeatTimerTask = new Pointer<>();
-
-  /**
    * This is a reference to the failsafe timer task we have running, so we can clean it up on shutdown.
    */
   private Pointer<SafeTimerTask> failsafeTimerTask = new Pointer<>();
@@ -129,7 +136,6 @@ public class EloquentRaftNode implements AutoCloseable {
     } catch (IOException e) {
       throw new RuntimeIOException(e);
     }
-    lifecycle.registerRaft(this);
   }
 
 
@@ -148,44 +154,16 @@ public class EloquentRaftNode implements AutoCloseable {
    * This begins the process of discovering and joining the Raft cluster as a member.
    */
   public void start() {
-    // 1. Heartbeat timer
-    SafeTimerTask heartbeatTask = new SafeTimerTask() {
-      /** A thread pool for running Raft heartbeats */
-      private final ExecutorService pool = lifecycle.managedThreadPool(
-              "raft-heartbeat",
-              Math.max(Thread.MAX_PRIORITY - 1, Thread.MIN_PRIORITY)  // Raft heartbeats are high priority
-      );
-
-      /** {@inheritDoc} */
-      @Override
-      protected ExecutorService pool() {
-        return pool;  // note[gabor] must return a cached pool, or else we recreate the pool on every task
-      }
-
-      /** {@inheritDoc} */
-      @Override
-      public void runUnsafe() {
-        try {
-          // Run the heartbeat
-          if (alive) {
-            lastHeartbeat = transport.now();
-            algorithm.heartbeat();
-          } else {
-            log.info("{} - Stopping heartbeat timer by user request", algorithm.serverName());
-            this.cancel();
-          }
-        } catch (Throwable t) {
-          log.warn("Got exception on Raft heartbeat timer task: ", t);
-          StringWriter trace = new StringWriter();
-          PrintWriter writer = new PrintWriter(trace);
-          t.printStackTrace(writer);
-
-          throwRaftError("heartbeat_error@" + SystemUtils.HOST, "Exception on Raft heartbeat");
-        }
-      }
-    };
-    transport.scheduleAtFixedRate(heartbeatTask, algorithm.heartbeatMillis());
-    heartbeatTimerTask.set(heartbeatTask);
+    // 1. Heartbeat thread
+    // Note[gabor]: we use a thread here to avoid issues with scheduling timers. This is nearly busy-waiting,
+    // but with 0.1ms sleeps between loop iterations so we don't consume quite as much CPU.
+    this.transport.scheduleHeartbeat(() -> alive, algorithm.heartbeatMillis(), () -> {
+      long now = transport.now();
+      long lastHb = this.lastHeartbeat;
+      this.lastHeartbeat = now;
+      algorithm.heartbeat();
+      Prometheus.histogramObserve(histogramHeartbeatTiming, now - lastHb);
+    }, log);
 
     // 2. Failsafe timer
     SafeTimerTask failsafeTask = new SafeTimerTask() {
@@ -211,7 +189,6 @@ public class EloquentRaftNode implements AutoCloseable {
             for (RaftFailsafe failsafe : EloquentRaftNode.this.failsafes) {
               failsafe.heartbeat(EloquentRaftNode.this.algorithm, System.currentTimeMillis());
             }
-            lastHeartbeat = transport.now();
           } else {
             log.info("{} - Stopping failsafe timer by user request", algorithm.serverName());
             this.cancel();
@@ -284,6 +261,13 @@ public class EloquentRaftNode implements AutoCloseable {
   }
 
 
+  /** {@inheritDoc} */
+  @Override
+  public String serverName() {
+    return algorithm.serverName();
+  }
+
+
   /**
    * This does an orderly shutdown of this member of the Raft cluster, stopping its heartbeats and removing it
    * from the cluster.
@@ -299,6 +283,7 @@ public class EloquentRaftNode implements AutoCloseable {
    *                          Otherwise, we wait for another live node to show up before shutting
    *                          down (the default).
    */
+  @Override
   public void close(boolean allowClusterDeath) {
     if (this.alive) {
       log.info(algorithm.serverName() + " - " + "Stopping Raft node {}", this.algorithm.serverName());
@@ -311,13 +296,6 @@ public class EloquentRaftNode implements AutoCloseable {
     } else {
       log.warn("Detected double shutdown of {} -- ignoring", this.algorithm.serverName());
     }
-  }
-
-
-  /** @see #close(boolean) */
-  @Override
-  public void close() {
-    close(false);
   }
 
 

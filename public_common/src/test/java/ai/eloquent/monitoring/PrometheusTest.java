@@ -294,4 +294,25 @@ public class PrometheusTest {
     Prometheus.counterInc(counter);
     Prometheus.counterInc(null);
   }
+
+
+  /**
+   * Test that we can make a historgram
+   */
+  @Test
+  public void histogramCrashTest() {
+    Prometheus.histogramBuild("name", "help", 1);
+    Prometheus.histogramBuild("name", "help", 1, 2, 3);
+  }
+
+
+  /**
+   * Test that we can make an observation on a historgram
+   */
+  @Test
+  public void histogramObserve() {
+    Object histogram = Prometheus.histogramBuild("name", "help");
+    Prometheus.histogramObserve(histogram, 1.0);
+  }
+
 }

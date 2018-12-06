@@ -40,6 +40,9 @@ public class Prometheus {
   /** Mocked gauges, in case we don't have Prometheus in our classpath */
   private static final HashMap<String, Object> gauges = new HashMap<>();
 
+  /** Mocked histograms, in case we don't have Prometheus in our classpath */
+  private static final HashMap<String, Object> histograms = new HashMap<>();
+
   /** Mocked counters, in case we don't have Prometheus in our classpath */
   private static final HashMap<String, Object> counters = new HashMap<>();
 
@@ -115,6 +118,18 @@ public class Prometheus {
   @Nullable
   private static Method COUNTERBUILDER_METHOD_LABELNAMES;
 
+  @Nullable
+  private static Method HISTOGRAM_METHOD_BUILD;
+
+  @Nullable
+  private static Method HISTOGRAM_METHOD_OBSERVE;
+
+  @Nullable
+  private static Method HISTOGRAMBUILDER_METHOD_BUCKETS;
+
+  @Nullable
+  private static Method HISTOGRAMBUILDER_METHOD_REGISTER;
+
   static {
     try {
       Class<?> SummaryClass = Class.forName("io.prometheus.client.Summary");
@@ -127,6 +142,10 @@ public class Prometheus {
       Class<?> CounterClass = Class.forName("io.prometheus.client.Counter");
       Class<?> CounterChildClass = Class.forName("io.prometheus.client.Counter$Child");
       Class<?> CounterBuilderClass = Class.forName("io.prometheus.client.Counter$Builder");
+      Class<?> HistogramClass = Class.forName("io.prometheus.client.Histogram");
+      Class<?> HistogramChildClass = Class.forName("io.prometheus.client.Histogram$Child");
+      Class<?> HistogramBuilderClass = Class.forName("io.prometheus.client.Histogram$Builder");
+      Class<?> HistogramTimerClass = Class.forName("io.prometheus.client.Histogram$Timer");
       SUMMARY_METHOD_BUILD = SummaryClass.getMethod("build", String.class, String.class);
       SUMMARY_METHOD_LABELS = SummaryClass.getMethod("labels", String[].class);
       SUMMARY_METHOD_STARTTIMER = summaryChildClass.getMethod("startTimer");
@@ -151,6 +170,10 @@ public class Prometheus {
       COUNTER_METHOD_BUILD = CounterClass.getMethod("build", String.class, String.class);
       COUNTERBUILDER_METHOD_LABELNAMES = CounterBuilderClass.getMethod("labelNames", String[].class);
       COUNTERBUILDER_METHOD_REGISTER = CounterBuilderClass.getMethod("register");
+      HISTOGRAM_METHOD_BUILD = HistogramClass.getMethod("build", String.class, String.class);
+      HISTOGRAM_METHOD_OBSERVE = HistogramClass.getMethod("observe", double.class);
+      HISTOGRAMBUILDER_METHOD_REGISTER = HistogramBuilderClass.getMethod("register");
+      HISTOGRAMBUILDER_METHOD_BUCKETS = HistogramBuilderClass.getMethod("buckets", double[].class);
       havePrometheus = true;
     } catch (ClassNotFoundException e) {
       log.info("Could not find Prometheus in your classpath -- not logging statistics");
@@ -172,6 +195,10 @@ public class Prometheus {
       COUNTER_METHOD_INC = null;
       COUNTER_METHOD_BUILD = null;
       COUNTERBUILDER_METHOD_REGISTER = null;
+      HISTOGRAM_METHOD_BUILD = null;
+      HISTOGRAM_METHOD_OBSERVE = null;
+      HISTOGRAMBUILDER_METHOD_REGISTER = null;
+      HISTOGRAMBUILDER_METHOD_BUCKETS = null;
     }
   }
 
@@ -572,6 +599,82 @@ public class Prometheus {
 
 
   /**
+   * Builds a new Prometheus Histogram metric, if possible.
+   *
+   * @param name The name of the metric
+   * @param help The help string of the metric
+   * @param buckets The buckets for this histogram.
+   *
+   * @return The Histogram object, or a mock if necessary.
+   */
+  public static Object histogramBuild(String name, String help, double... buckets) {
+    Object result;
+    if (havePrometheus) {
+      try {
+        // 1a. Using Prometheus and we already have a Gauge with this name yet
+        if (histograms.containsKey(name)) {
+          result = histograms.get(name);
+          // 1b. Using Prometheus and don't have a Gauge with this name yet
+        } else {
+          Object builder = HISTOGRAM_METHOD_BUILD.invoke(null, name, help);
+          builder = HISTOGRAMBUILDER_METHOD_BUCKETS.invoke(builder, buckets);
+          result = HISTOGRAMBUILDER_METHOD_REGISTER.invoke(builder);
+        }
+      } catch (InvocationTargetException e) {
+        if (e.getCause() != null && e.getCause() instanceof RuntimeException) {
+          throw (RuntimeException) e.getCause();
+        } else {
+          log.warn("Invocation target exception", e);
+          result = new HistogramMock(name);
+        }
+      } catch (IllegalArgumentException | IllegalAccessException e) {
+        log.warn("Prometheus methods could not be invoked (version mismatch?) -- not logging statistics", e);
+        result = new HistogramMock(name);
+      }
+    } else {
+      // 2a. We are mocking Prometheus and we already have a Histogram with this name
+      if (histograms.containsKey(name)) {
+        result = histograms.get(name);
+        // 2b. We are mocking Prometheus and we don't have a Histogram with this name yet
+      } else {
+        result = new HistogramMock(name);
+      }
+    }
+    histograms.put(name, result);
+    return result;
+  }
+
+
+  /**
+   * Objserve a value on a Prometheus histogram
+   *
+   * @param histogram The instance of the histogram
+   *
+   * @return The value of the Gauge as a Double
+   */
+  public static void histogramObserve(Object histogram, double observation) {
+    if (havePrometheus && histogram != null) {
+      try {
+        HISTOGRAM_METHOD_OBSERVE.invoke(histogram, observation);
+      } catch (InvocationTargetException e) {
+        if (e.getCause() != null && e.getCause() instanceof RuntimeException) {
+          throw (RuntimeException) e.getCause();
+        } else {
+          log.warn("Invocation target exception", e);
+        }
+      } catch (IllegalArgumentException | IllegalAccessException e) {
+        log.warn("Prometheus methods could not be invoked (version mismatch?) -- not logging statistics", e);
+      }
+      // If we are mocking Prometheus
+    } else if (histogram instanceof HistogramMock) {
+      ((HistogramMock) histogram).observe(observation);
+    } else {
+      log.warn("Something probably went wrong in Prometheus#gaugeGet: Expected Gauge or GaugeMock but received {}", histogram == null ? "null" : histogram.getClass());
+    }
+  }
+
+
+  /**
    * Label a counter instance, returning the instance with labels attached.
    *
    * @param counter The counter to label
@@ -830,6 +933,25 @@ public class Prometheus {
     @Override
     public int hashCode() {
       return Objects.hash(name);
+    }
+  }
+
+
+  /**
+   * A dummy mock of a Prometheus Histogram object.
+   */
+  private static class HistogramMock {
+    /** The name of the histogram */
+    public final String name;
+
+    /** The straightforward constructor */
+    private HistogramMock(String name) {
+      this.name = name;
+    }
+
+    /** Make an observation on the histogram. */
+    public void observe(double observation) {
+      // This is a noop for now
     }
   }
 }

@@ -14,6 +14,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.function.Consumer;
 import java.util.function.Function;
+import java.util.function.Supplier;
 
 /**
  * This is used for benchmarking, and to do JIT burn-ins for latency sensitive code paths.
@@ -68,6 +69,11 @@ public class InstantTransport implements RaftTransport {
   @Override
   public Span expectedNetworkDelay() {
     return new Span(0,1);
+  }
+
+  @Override
+  public void scheduleHeartbeat(Supplier<Boolean> alive, long period, Runnable heartbeatFn, Logger log) {
+    // Ignore
   }
 
   /** Schedule an event every |period| seconds. This is an alias for {@link ai.eloquent.util.SafeTimer#scheduleAtFixedRate(SafeTimerTask, long, long)}, but mockable */

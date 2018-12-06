@@ -35,7 +35,7 @@ import java.util.stream.Collectors;
  * - Keep it simple
  *
  */
-public class Theseus {
+public class Theseus implements HasRaftLifecycle {
   /**
    * An SLF4J Logger for this class.
    */
@@ -334,6 +334,8 @@ public class Theseus {
    * @param lifecycle The governing RaftLifecycle for this Theseus, so that we can pass mock ones in inside tests
    */
   public Theseus(RaftAlgorithm algo, RaftTransport transport, RaftLifecycle lifecycle) {
+    lifecycle.registerRaft(this);
+
     //
     // I. Set variables
     //
@@ -362,7 +364,7 @@ public class Theseus {
           // 1. Wait on new unreleased locks
           byte[][] unreleasedLocksCopy;
           synchronized (unreleasedLocks) {
-            while (unreleasedLocks.isEmpty() && alive && (System.currentTimeMillis() - lastTry) < timeout) {  // We have locks, we're alive, and we haven't tried to release recently
+            while (alive && (unreleasedLocks.isEmpty() || (System.currentTimeMillis() - lastTry) < timeout)) {  // we're alive, and either we have no locks or we haven't tried to release recently
               try {
                 unreleasedLocks.wait(timeout);  // allow any outstanding election to finish
               } catch (InterruptedException ignored) {}
@@ -506,13 +508,24 @@ public class Theseus {
   /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 
+  /** {@inheritDoc} */
+  @Override
+  public String serverName() {
+    return serverName;
+  }
+
+
   /**
    * Stop this raft node.
    *
+   * @param allowClusterDeath If true, allow stopping even if we lose
+   *                          quorum and lose state.
+   *
+   * @see EloquentRaftNode#close(boolean)
    */
-  public void close() {
-      // Close the cluster
-      node.close();
+  @Override
+  public void close(boolean allowClusterDeath) {
+    node.close(allowClusterDeath);
   }
 
 

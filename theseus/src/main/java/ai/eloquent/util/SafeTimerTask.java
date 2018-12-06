@@ -54,7 +54,7 @@ public abstract class SafeTimerTask extends TimerTask {
   /** {@inheritDoc} */
   @Override
   public void run() {
-    run(Optional.of(pool()));
+    run(Optional.ofNullable(pool()));
   }
 
   /**

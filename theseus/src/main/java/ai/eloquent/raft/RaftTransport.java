@@ -12,9 +12,11 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.function.BiFunction;
 import java.util.function.Consumer;
+import java.util.function.Supplier;
 
 import ai.eloquent.raft.EloquentRaftProto.*;
 import ai.eloquent.util.Uninterruptably;
+import org.slf4j.Logger;
 
 /**
  * This encapsulates all the non-functional components in EloquentRaftMember so that the remaining code can be easily
@@ -123,7 +125,62 @@ public interface RaftTransport {
 
   /** Sleep for the given number of milliseconds. This is purely for mocking for tests. */
   default void sleep(long millis) {
-    Uninterruptably.sleep(millis);
+    sleep(millis, 0);
+  }
+
+
+  /** Sleep for the given number of milliseconds + nanoseconds. This is purely for mocking for tests. */
+  default void sleep(long millis, int nanos) {
+    try {
+      Thread.sleep(millis, nanos);
+    } catch (InterruptedException ignored) {}
+  }
+
+
+  /**
+   * A special method for scheduling heartbeats. This is so that
+   * test transports can mock this method while ensuring that the live raft
+   * gets is busy-waiting high-priority thread.
+   *
+   * @param alive A check for whether this scheduler is still alive.
+   * @param period The period on which to schedule heartbeats. The heartbeat interval.
+   * @param heartbeatFn The function to call for a heartbeat.
+   * @param log A log for printing messages.
+   */
+  default void scheduleHeartbeat(Supplier<Boolean> alive, long period, Runnable heartbeatFn, Logger log) {
+    Thread heartbeat = new Thread() {
+      private long lastHeartbeat = 0;
+      @Override
+      public void run() {
+        while (alive.get()) {
+          try {
+            long now = now();
+            if (now - lastHeartbeat > 2 * period) {
+              log.warn("Heartbeat interval slipped to {}ms", now - lastHeartbeat);
+            }
+            if (now - lastHeartbeat >= period - 1) {
+              lastHeartbeat = now;
+              // -- do the heartbeat --
+              heartbeatFn.run();
+              // --                  --
+              long timeTakenOnHeartbeat = now - now();
+              if (timeTakenOnHeartbeat > period) {
+                log.warn("Heartbeat execution took {}ms", timeTakenOnHeartbeat);
+              }
+            }
+            sleep(0, 100000);  // 0.1ms
+          } catch (InterruptedException ignored) {
+          } catch (Throwable t) {
+            log.warn("Exception on heartbeat thread: ", t);
+          }
+        }
+      }
+    };
+    heartbeat.setPriority(Thread.MAX_PRIORITY);
+    heartbeat.setDaemon(true);
+    heartbeat.setName("raft-heartbeat");
+    // 1.2. Start the thread
+    heartbeat.start();
   }
 
 
@@ -133,7 +190,7 @@ public interface RaftTransport {
   }
 
 
-  /** Schedule an event every |period| seconds. This is an alias for {@link ai.eloquent.util.SafeTimer#schedule(SafeTimerTask, long)}, but mockable */
+  /** Schedule an for a time |delay| seconds from now. This is an alias for {@link ai.eloquent.util.SafeTimer#schedule(SafeTimerTask, long)}, but mockable */
   default void schedule(SafeTimerTask timerTask, long delay) {
     RaftLifecycle.global.timer.get().schedule(timerTask, delay);
   }

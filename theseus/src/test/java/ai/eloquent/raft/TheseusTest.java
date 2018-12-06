@@ -57,21 +57,21 @@ public class TheseusTest extends WithLocalTransport {
    protected void awaitElection(LocalTransport transport, Theseus... nodes) {
     Arrays.stream(nodes).forEach(Theseus::start);
     for (int i = 0;
-         i < 1000 &&
+         i < 10 * nodes[0].node.algorithm.electionTimeoutMillisRange().end / nodes[0].node.algorithm.heartbeatMillis() &&
              !( Arrays.stream(nodes).anyMatch(x -> x.node.algorithm.state().isLeader()) &&
                  Arrays.stream(nodes).allMatch(x -> x.node.algorithm.state().log.getQuorumMembers().containsAll(Arrays.stream(nodes).map(n -> n.node.algorithm.serverName()).collect(Collectors.toList()))) &&
                  Arrays.stream(nodes).allMatch(x -> x.node.algorithm.state().leader.isPresent())
              );
          ++i) {
-      transport.sleep(1000);
+      transport.sleep(nodes[0].node.algorithm.heartbeatMillis());
     }
-    assertTrue("Someone should have gotten elected in 10 [virtual] seconds",
+    assertTrue("Someone should have gotten elected in 10 election timeouts",
         Arrays.stream(nodes).anyMatch(x -> x.node.algorithm.state().isLeader()));
     assertTrue("Every node should see every other node in the quorum",
         Arrays.stream(nodes).allMatch(x -> x.node.algorithm.state().log.getQuorumMembers().containsAll(Arrays.stream(nodes).map(n -> n.node.algorithm.serverName()).collect(Collectors.toList()))));
      assertTrue("Every node should see a leader",
          Arrays.stream(nodes).allMatch(x -> x.node.algorithm.state().leader.isPresent()));
-     assertTrue("No node is a candidate",
+     assertTrue("No node should be a candidate, but the following are: " + Arrays.stream(nodes).filter(x -> x.node.algorithm.state().isCandidate()).map(x -> x.serverName).collect(Collectors.toList()),
          Arrays.stream(nodes).noneMatch(x -> x.node.algorithm.state().isCandidate()));
     log.info("Cluster bootstrapped @ t={}", transport.now());
   }
@@ -465,7 +465,6 @@ public class TheseusTest extends WithLocalTransport {
         log.info("Doing "+(numIters * numThreads)+" atomic increments took "+((double)duration / (numIters * numThreads))+"ms per increment");
 
         // Check the sum
-        //noinspection ConstantConditions
         byte[] value = raftNodes[0].getElement("running_sum").get();
         int intValue = ByteBuffer.wrap(value).getInt();
         assertEquals("Should have made the right number of function calls", numThreads * numIters - failureCount.get(), callCount.get());
@@ -640,12 +639,15 @@ public class TheseusTest extends WithLocalTransport {
       }
       submitter.setElementAsync("transient", new byte[]{42}, permanent, Duration.ofSeconds(5)).get();
       killMethod.accept(submitter);
-      transport.sleep(EloquentRaftAlgorithm.MACHINE_DOWN_TIMEOUT);
-      transport.sleep(5000);
+      log.info("Waiting for machine to be removed");
+      transport.sleep(EloquentRaftAlgorithm.MACHINE_DOWN_TIMEOUT + L.node.algorithm.heartbeatMillis() * 2);
+      log.info("Waiting for election");
+      awaitElection(transport, L, B);
+      log.info("Checking permanence");
       if (permanent) {
-        assertArrayEquals(new byte[]{42}, L.getElement("transient").orElse(null));
+        assertArrayEquals("Permanent item should still be present", new byte[]{42}, L.getElement("transient").orElse(null));
       } else {
-        assertEquals(Optional.empty(), L.getElement("transient").map(Arrays::toString));
+        assertEquals("Transient item should no longer be present", Optional.empty(), L.getElement("transient").map(Arrays::toString));
       }
     }, L, A, B);
     transport.stop();
@@ -733,7 +735,7 @@ public class TheseusTest extends WithLocalTransport {
   /**
    * Boots and shuts down three nodes. Runs some code in the middle.
    */
-  private void threeNodeSimpleTest(ThrowableConsumer<Theseus[]> withNodes) {
+  private Theseus[] threeNodeSimpleTest(ThrowableConsumer<Theseus[]> withNodes) {
     Theseus L = new Theseus("L", transport, new HashSet<>(Arrays.asList("L", "A", "B")), RaftLifecycle.newBuilder().mockTime().build());
     Theseus A = new Theseus("A", transport, new HashSet<>(Arrays.asList("L", "A", "B")), RaftLifecycle.newBuilder().mockTime().build());
     Theseus B = new Theseus("B", transport, new HashSet<>(Arrays.asList("L", "A", "B")), RaftLifecycle.newBuilder().mockTime().build());
@@ -748,6 +750,7 @@ public class TheseusTest extends WithLocalTransport {
     if (B.node.algorithm instanceof SingleThreadedRaftAlgorithm) {
       ((SingleThreadedRaftAlgorithm) B.node.algorithm).flush(() -> { if(transport != null) { transport.waitForSilence(); }});
     }
+    return new Theseus[]{L, A, B};
   }
 
   /**
@@ -755,16 +758,20 @@ public class TheseusTest extends WithLocalTransport {
    */
   @Test
   public void testWithElementThrowsException() {
-    threeNodeSimpleTest((nodes) -> {
-      String KEY = "key";
+    final String KEY = "key";
 
+    Theseus[] flushedStates = threeNodeSimpleTest((nodes) ->
       nodes[2].withElementAsync(KEY, (old) -> {
         throw new RuntimeException("Wat");
-      }, () -> new byte[]{42}, true).get();
+      }, () -> new byte[]{42}, true).get()
+    );
 
-      assertEquals(0, nodes[0].getLocks().size()); // We don't hold the lock
-      assertFalse(nodes[0].getElement(KEY).isPresent()); // Value wasn't set
-    });
+    assertEquals(0, flushedStates[0].getLocks().size()); // We don't hold the lock
+    assertEquals(0, flushedStates[1].getLocks().size()); // We don't hold the lock
+    assertEquals(0, flushedStates[2].getLocks().size()); // We don't hold the lock
+    assertFalse(flushedStates[0].getElement(KEY).isPresent()); // Value wasn't set
+    assertFalse(flushedStates[1].getElement(KEY).isPresent()); // Value wasn't set
+    assertFalse(flushedStates[2].getElement(KEY).isPresent()); // Value wasn't set
   }
 
   /**

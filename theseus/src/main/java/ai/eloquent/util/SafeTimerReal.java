@@ -8,6 +8,7 @@ import java.util.Timer;
 /**
  * Created by keenon on 2/16/18.
  */
+@Deprecated  // User PreciseSafeTimer instead
 public class SafeTimerReal implements SafeTimer {
   /**
    * An SLF4J Logger for this class.
@@ -80,9 +81,9 @@ public class SafeTimerReal implements SafeTimer {
   /** {@inheritDoc} */
   @Override
   public void cancel() {
-    if (!this.alive) {
-      timer.cancel();
+    if (this.alive) {
       this.alive = false;
+      timer.cancel();
     } else {
       log.warn("Ignoring duplicate timer cancel");
     }

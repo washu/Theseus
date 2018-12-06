@@ -401,17 +401,20 @@ public class RaftState {
     log.assertConsistency();
     try {
       // This is possible, just because the clock takes a while to process functions
-//    assert this.electionTimeoutCheckpoint < 0 || this.electionTimeoutCheckpoint <= now : "Should not be able to move election timeout checkpoint backwards! now=" + now +";  checkpoint=" + this.electionTimeoutCheckpoint;
       if (this.electionTimeoutCheckpoint < 0 || this.electionTimeoutCheckpoint <= now) {
-        // 1. Reset the election timeout
+        // 1. Step down from any elections
+        //    This must come first
+        if (this.leadership == LeadershipStatus.CANDIDATE && leader.isPresent() && !leader.get().equals(this.serverName)) {
+          this.stepDownFromElection();  // just in case we were a candidate
+        }
+        // 2. Reset the election timeout
         this.electionTimeoutCheckpoint = now;
-        // 2. Set the leader pointer
-//        if (!leader.isPresent() || log.getQuorumMembers().contains(leader.get())) {  // note[gabor]: this is ok in case of handoffs
-          assert !leader.isPresent() || !leader.get().equals(this.serverName) || this.isLeader() || this.isCandidate() : "Can only set the leader to ourselves if we're a leader or candidate";
-          if (!this.leader.equals(leader)) {
-            this.leader = leader;
-          }
-//        }
+        // 3. Set the leader pointer
+        assert !leader.isPresent() || !leader.get().equals(this.serverName) || this.isLeader() || this.isCandidate() : "Can only set the leader to ourselves if we're a leader or candidate";
+        if (!this.leader.equals(leader)) {
+          // Set the leader
+          this.leader = leader;
+        }
       }
     } finally {
       log.assertConsistency();

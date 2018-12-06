@@ -120,20 +120,6 @@ public class NetRaftTransport implements RaftTransport {
 
   /** {@inheritDoc} */
   @Override
-  public void scheduleAtFixedRate(SafeTimerTask timerTask, long period) {
-    RaftLifecycle.global.timer.get().scheduleAtFixedRate(timerTask, 0L, period);
-  }
-
-
-  /** {@inheritDoc} */
-  @Override
-  public void schedule(SafeTimerTask timerTask, long delay) {
-    RaftLifecycle.global.timer.get().schedule(timerTask, delay);
-  }
-
-
-  /** {@inheritDoc} */
-  @Override
   public synchronized void bind(RaftAlgorithm listener) {
     if (!boundAlgorithms.contains(listener)) {
       // Bind ourselves to UDP

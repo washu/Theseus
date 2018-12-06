@@ -53,8 +53,11 @@ public class EloquentRaftNodeTest extends WithLocalTransport {
    */
   private RaftState[] bootstrap(Consumer<EloquentRaftNode[]> callback, RaftTransport transport) {
     EloquentRaftNode L = mkNode("L", transport);
+    L.lifecycle.registerRaft(L);
     EloquentRaftNode A = mkNode("A", transport);
+    L.lifecycle.registerRaft(A);
     EloquentRaftNode B = mkNode("B", transport);
+    L.lifecycle.registerRaft(B);
     L.start();
     A.start();
     B.start();
@@ -112,6 +115,7 @@ public class EloquentRaftNodeTest extends WithLocalTransport {
     EloquentRaftNode L = mkNode("L", transport);
     L.start();
     L.bootstrap(false);
+    L.lifecycle.registerRaft(L);
     awaitElection(transport, true, L);
 
     // Variables
@@ -144,6 +148,7 @@ public class EloquentRaftNodeTest extends WithLocalTransport {
     // In parallel, bring up a new node
     Pointer<EloquentRaftNode> rtn = new Pointer<>();
     EloquentRaftNode A = mkNode("A", transport);
+    A.lifecycle.registerRaft(A);
     Thread newNode = new Thread(() -> {
       transport.sleep(10);
       A.start();
@@ -297,6 +302,9 @@ public class EloquentRaftNodeTest extends WithLocalTransport {
     nodes[0] = mkNode("leftover", transport, numNodes);
     for (int i = 1; i < numNodes; ++i) {
       nodes[i] = mkNode("a" + i, transport, numNodes);
+    }
+    for (int i = 0; i < numNodes; ++i) {
+      nodes[i].lifecycle.registerRaft(nodes[i]);  // explicitly register the Raft node
     }
 
     // 2. Start the nodes

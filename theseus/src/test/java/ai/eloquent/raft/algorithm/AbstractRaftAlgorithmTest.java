@@ -663,6 +663,7 @@ public abstract class AbstractRaftAlgorithmTest {
     RaftState[] closedNodes = bootstrap((nodes, states) -> {
       states[0].transition(new byte[]{42});
       nodes[0].heartbeat();
+      waitMillis(50);
     });
     basicSuccessTests(closedNodes, 0, Optional.of(new HashSet<>(Arrays.asList("L", "A", "B"))), false);
 
@@ -1940,11 +1941,14 @@ public abstract class AbstractRaftAlgorithmTest {
         for (int i = 0; i < nodes.length; ++i) {
           RaftAlgorithm node = nodes[i];
           RaftState state = states[i];
-          schedule(node.heartbeatMillis(), (int) (100 + node.electionTimeoutMillisRange().end / node.heartbeatMillis() + 5), (k, now) -> {  // run for 1000 heartbeats
-            if (k >= 1000 || rand.nextDouble() < 0.1) {  // only issue 10% of heartbeats
+          schedule(node.heartbeatMillis(), (int) (100 + 5 + 2 * node.electionTimeoutMillisRange().end / node.heartbeatMillis()), (k, now) -> {  // run for 1000 heartbeats + some cleanup time
+            if (k == 100) {
+              log.info("Restoring regular heartbeats");
+            }
+            if (k >= 100 || rand.nextDouble() < 0.1) {  // issue enough heartbeats to reconnect at the end
               node.heartbeat();
             }
-            if (k < 1000 && rand.nextDouble() < 0.1) {  // 10% of heartbeat pings, introduce a network partition
+            if (k < 100 && rand.nextDouble() < 0.1) {  // 10% of heartbeat pings, introduce a network partition
               partitionOff(now, now + node.electionTimeoutMillisRange().end + 1000, state.serverName, states[rand.nextInt(states.length)].serverName);
 
             }
