@@ -309,7 +309,7 @@ public class EloquentRaftAlgorithm implements RaftAlgorithm {
 
 
   /** {@inheritDoc} */
-  @SuppressWarnings({"ConstantConditions", "StatementWithEmptyBody"})
+  @SuppressWarnings("StatementWithEmptyBody")
   @Override
   public void receiveAppendEntriesReply(AppendEntriesReply reply) {
     assert drivingThreadId < 0 || drivingThreadId == Thread.currentThread().getId() : "Eloquent Raft Algorithm should only be run from the driving thread (" + drivingThreadId + ") but is being driven by " + Thread.currentThread();
@@ -540,9 +540,8 @@ public class EloquentRaftAlgorithm implements RaftAlgorithm {
     long minLogTerm = Long.MAX_VALUE;
     List<LogEntry> argminEntries = null;
     if (state.nextIndex.isPresent()) {
-      //noinspection ConstantConditions,OptionalGetWithoutIsPresent
+      //noinspection OptionalGetWithoutIsPresent
       Map<String, Long> nextIndex = state.nextIndex.get();
-      //noinspection ConstantConditions
       for (String member : state.log.getQuorumMembers()) {
         if (!member.equals(state.serverName)) {  // don't include the leader
           // 3.1. Make sure the member is in state's nextIndex

@@ -69,7 +69,7 @@ public class EloquentRaftNodeTest extends WithLocalTransport {
       assertEquals("L should know about A and B", new HashSet<>(Arrays.asList("A", "B")), L.algorithm.mutableState().lastMessageTimestamp.get().keySet());
       callback.accept(new EloquentRaftNode[]{L, A, B});
     } finally {
-      L.lifecycle.shutdown(false);
+      L.lifecycle.shutdown(true);
     }
     RaftState[] states = new RaftState[]{L.algorithm.mutableState(), A.algorithm.mutableState(), B.algorithm.mutableState()};
     A.lifecycle.shutdown(true);

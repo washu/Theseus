@@ -6,7 +6,6 @@ import com.google.common.util.concurrent.ThreadFactoryBuilder;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.io.Closeable;
 import java.time.Duration;
 import java.util.*;
 import java.util.concurrent.*;
@@ -21,7 +20,51 @@ public class RaftLifecycle {
    */
   private static final Logger log = LoggerFactory.getLogger(RaftLifecycle.class);
 
-  public static RaftLifecycle global = RaftLifecycle.newBuilder().build();
+  /**
+   * The global singleton lifecycle to use for an actual running instance.
+   */
+  public static RaftLifecycle global;
+
+  static {
+    // Try to create a lifecycle
+    String lifecycleClass = System.getProperty("raft.lifecycle");
+    if (lifecycleClass == null) {
+      lifecycleClass = System.getenv("RAFT_LIFECYCLE");
+    }
+    if (lifecycleClass == null) {
+      lifecycleClass = "ai.eloquent.web.EloquentLifecycle";
+    }
+    RaftLifecycle lifecycle;
+    try {
+      Class<?> clazz = Class.forName(lifecycleClass);
+      lifecycle = (RaftLifecycle) clazz.getMethod("register").invoke(null);
+      log.info("Using lifecycle @ " + lifecycleClass);
+    } catch (Throwable t) {
+      log.info("Using default Raft lifecycle");
+      lifecycle = RaftLifecycle.newBuilder().build();
+    }
+    RaftLifecycle.global = lifecycle;
+
+    // Set up the shutdown hook
+    Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+      // if we're on a CI server (where shutdown doesn't matter)
+      if (System.getenv("CI") != null) {
+        return;
+      }
+
+      log.info(global.logServerNamePrefix()+"-----------------BEGIN SHUTDOWN " + SystemUtils.HOST + "--------------------");
+
+      // 1-11. Run shutdown
+      global.shutdown(false);
+
+      // N+1. Shutdown logging
+      log.info(global.logServerNamePrefix()+"-----------------END SHUTDOWN " + SystemUtils.HOST + "--------------------");
+      Uninterruptably.sleep(1000);  // sleep a while to give everyone a chance to flush if they haven't already
+      log.info(global.logServerNamePrefix()+"Done with shutdown");
+      log.info(global.logServerNamePrefix()+"-----------------TERMINATION " + SystemUtils.HOST + "--------------------");
+    }));
+  }
+
 
   /**
    * A global timer that we can use.
@@ -42,7 +85,15 @@ public class RaftLifecycle {
   }
 
 
-   /**
+  /** A critical section, which is allowed to throw an exception. */
+  @FunctionalInterface
+  public interface CriticalSection {
+    /** The block of code to execute, disallowing server shutdown. */
+    void execute() throws Exception;
+  }
+
+
+  /**
    * A builder for a lifecycle.
    */
   public static class Builder {
@@ -93,7 +144,7 @@ public class RaftLifecycle {
    * This creates a helpful prefix for watching the log messages of RaftLifecycle when we have multiple RaftLifecycle objects in
    * the same test.
    */
-  protected String logServerNamePrefix() {
+  public String logServerNamePrefix() {
     return registeredRaft.map(eloquentRaftNode -> eloquentRaftNode.serverName() + " - ").orElse("");
   }
 
@@ -235,6 +286,95 @@ public class RaftLifecycle {
   }
 
 
+  /** Add a shutdown hook to the end of the list. It will be run last. */
+  public void addShutdownHook(Runnable hook) {
+    synchronized (shutdownHooks) {
+      if (IS_SHUTTING_DOWN.get()) {
+        log.warn(logServerNamePrefix()+"Got shutdown hook while shutting down. Running immediately");
+        hook.run();
+      }
+      else {
+        shutdownHooks.add(hook);
+      }
+    }
+  }
+
+
+  /**
+   * Remove a shutdown hook.
+   *
+   * @param hook The hook to remove. This must be identical (==) to a hook that was added
+   *             with {@link RaftLifecycle#addShutdownHook(Runnable)} or
+   *
+   * @return True if we found the shutdown hook and removed it.
+   */
+  public boolean removeShutdownHook(Runnable hook) {
+    synchronized (shutdownHooks) {
+      return shutdownHooks.remove(hook);
+    }
+  }
+
+
+  /**
+   * This replaces the global timer with a mock, if useMock is true, or recreates a timer with a SafeTimerReal.
+   */
+  public void useTimerMock(boolean useMock) {
+    if (useMock) {
+      timer = Lazy.of(SafeTimerMock::new);
+    } else {
+      timer = Lazy.of(PreciseSafeTimer::new);
+    }
+  }
+
+
+  /**
+   * Register a block of code as a critical section.
+   * This prevents this code from being interrupted by the system shutting down.
+   * The system will wait for this code to finish when it is shutting down.
+   * Of course, this is no protection against SIGKILL, only SIGTERM.
+   *
+   * @param fn The code to run protected from shutdown.
+   */
+  public void criticalSection(CriticalSection fn) throws Exception {
+    ReentrantLock lock = new ReentrantLock();
+    // 1. Lock the lock
+    lock.lock();
+    boolean haveUnlocked = false;
+    try {
+      // 2. Register the critical section
+      //    This must be after locking the lock, to prevent race conditions
+      synchronized (criticalSections) {
+        if (allowCriticalSections) {
+          criticalSections.add(lock);
+        } else {
+          // In this case, we are already shutting down, and should not allow the critical section
+          // to execute.
+          lock.unlock();
+          haveUnlocked = true;
+          throw new IllegalStateException("We are in the process of shutting down -- not entering critical section");
+        }
+      }
+      // 3. Run the critical section
+      try {
+        fn.execute();
+      } finally {
+        // 4. Release the lock, in case anyone is waiting on it.
+        //    At this point, it doesn't matter if we remove or unlock first,
+        //    we just have to make sure to unlock the lock at some point
+        lock.unlock();
+        synchronized (criticalSections) {
+          haveUnlocked = true;
+          criticalSections.remove(lock);
+        }
+      }
+    } finally {
+      if (!haveUnlocked) {
+        lock.unlock();
+      }
+    }
+  }
+
+
   // Stuff to shut down elegantly
   /** The set of shutdown hooks we should run on shutdown, once we are no longer receiving traffic */
   protected final IdentityHashSet<Runnable> shutdownHooks = new IdentityHashSet<>();
@@ -287,26 +427,6 @@ public class RaftLifecycle {
    */
   protected boolean allowCriticalSections = true;
 
-  static {
-    // Set up the shutdown hook
-    Runtime.getRuntime().addShutdownHook(new Thread(() -> {
-      // if we're on a CI server (where shutdown doesn't matter)
-      if (System.getenv("CI") != null) {
-        return;
-      }
-
-      log.info(global.logServerNamePrefix()+"-----------------BEGIN SHUTDOWN " + SystemUtils.HOST + "--------------------");
-
-      // 1-11. Run shutdown
-      global.shutdown(false);
-
-      // N+1. Shutdown logging
-      log.info(global.logServerNamePrefix()+"-----------------END SHUTDOWN " + SystemUtils.HOST + "--------------------");
-      Uninterruptably.sleep(1000);  // sleep a while to give everyone a chance to flush if they haven't already
-      log.info(global.logServerNamePrefix()+"Done with shutdown");
-      log.info(global.logServerNamePrefix()+"-----------------TERMINATION " + SystemUtils.HOST + "--------------------");
-    }));
-  }
 
   /**
    * This is called from the shutdown hooks, but also can be called from within tests to simulate a shutdown for a
