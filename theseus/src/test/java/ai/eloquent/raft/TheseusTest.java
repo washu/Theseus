@@ -16,6 +16,7 @@ import java.nio.ByteBuffer;
 import java.time.Duration;
 import java.util.*;
 import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
 import java.util.function.Function;
@@ -421,6 +422,7 @@ public class TheseusTest extends WithLocalTransport {
         AtomicInteger failureCount = new AtomicInteger(0);
 
         long startTime = System.currentTimeMillis();
+        AtomicBoolean holdLock = new AtomicBoolean(false);
         List<Thread> threads = IntStream.range(0, numThreads).mapToObj(threadI -> {
           Thread t = new Thread(() -> {
             for (int i = 0; i < numIters; ++i) {
@@ -430,12 +432,19 @@ public class TheseusTest extends WithLocalTransport {
               try {
                 Theseus node = raftNodes[r.nextInt(raftNodes.length)];
                 CompletableFuture<Boolean> future = node.withElementAsync("running_sum", (oldBytes) -> {
-                  callCount.incrementAndGet();
-                  fnCallCount.incrementAndGet();
-                  int value = ByteBuffer.wrap(oldBytes).getInt() + 1;
-                  assertFalse(numbersSeen.contains(value));
-                  numbersSeen.add(value);
-                  return ByteBuffer.allocate(4).putInt(value).array();
+                  try {
+                    if (holdLock.getAndSet(true)) {
+                      log.warn("Someone else holds the running sum lock! This is going to cause an error");
+                    }
+                    callCount.incrementAndGet();
+                    fnCallCount.incrementAndGet();
+                    int value = ByteBuffer.wrap(oldBytes).getInt() + 1;
+                    assertFalse(numbersSeen.contains(value));
+                    numbersSeen.add(value);
+                    return ByteBuffer.allocate(4).putInt(value).array();
+                  } finally {
+                    holdLock.set(false);
+                  }
                 }, () -> ByteBuffer.allocate(4).putInt(0).array(), true);
                 success = future.get(10, TimeUnit.SECONDS);
               } catch (InterruptedException | ExecutionException | TimeoutException e) {

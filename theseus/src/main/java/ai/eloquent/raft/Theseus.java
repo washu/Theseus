@@ -377,15 +377,22 @@ public class Theseus implements HasRaftLifecycle {
               this.node.algorithm.mutableState().leader.isPresent()  // note[gabor]: if we have no leader (we're in the middle of an election), we're just asking for pain
           ) {
             // 2. Release the locks
-            log.warn("Trying to release {} unreleased locks", unreleasedLocksCopy.length);
+            log.info("Trying to release {} unreleased locks", unreleasedLocksCopy.length);
             byte[] bulkTransition = KeyValueStateMachine.createGroupedTransition(unreleasedLocksCopy);
             Boolean success = node.submitTransition(bulkTransition)
-                .get(node.algorithm.electionTimeoutMillisRange().end + 100, TimeUnit.MILLISECONDS);
+                .get(node.algorithm.electionTimeoutMillisRange().end * 2, TimeUnit.MILLISECONDS);
             if (success != null && success) {
               // 3.A. Success: stop trying locks
-              log.warn("Successfully released {} unreleased locks", unreleasedLocksCopy.length);
+              log.info("Successfully released {} unreleased locks", unreleasedLocksCopy.length);
               synchronized (unreleasedLocks) {
-                unreleasedLocks.removeAll(Arrays.asList(unreleasedLocksCopy));
+                unreleasedLocks.removeIf(lock -> {
+                  for (byte[] justReleased : unreleasedLocksCopy) {
+                    if (Arrays.equals(justReleased, lock)) {
+                      return true;
+                    }
+                  }
+                  return false;
+                });
               }
             } else {
               // 3.B. Failure: signal failure
@@ -394,7 +401,7 @@ public class Theseus implements HasRaftLifecycle {
           }
         } catch (Throwable t) {
           if (t instanceof TimeoutException ||
-              (t instanceof CompletionException && t.getCause() != null && t.getCause() instanceof TimeoutException)) {
+              (t instanceof ExecutionException && t.getCause() != null && t.getCause() instanceof TimeoutException)) {
             log.info("Caught a timeout exception in the lockCleanupThread in Theseus");
           } else {
             log.warn("Caught an exception in the lockCleanupThread in Theseus", t);
@@ -627,7 +634,7 @@ public class Theseus implements HasRaftLifecycle {
             });
       } else {
         // 2.b. Otherwise, wait on the lock
-        return stateMachine.createLockAcquiredFuture(lockName, serverName, randomHash, pool).thenCompose((gotLock) -> {
+        return stateMachine.createLockAcquiredFuture(lockName, serverName, randomHash).thenCompose((gotLock) -> {
           if (gotLock) {
             // 3. Run our runnable, which returns a CompletableFuture
             try {
@@ -833,7 +840,7 @@ public class Theseus implements HasRaftLifecycle {
       } else {
 
         // 3.b. Otherwise, wait on the lock
-        return stateMachine.createLockAcquiredFuture(elementName, serverName, randomHash, pool).thenCompose((gotLock) -> {
+        return stateMachine.createLockAcquiredFuture(elementName, serverName, randomHash).thenCompose((gotLock) -> {
           if (gotLock) {
             // Run our runnable, which returns a CompletableFuture
             try {

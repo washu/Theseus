@@ -55,9 +55,9 @@ public class EloquentRaftNodeTest extends WithLocalTransport {
     EloquentRaftNode L = mkNode("L", transport);
     L.lifecycle.registerRaft(L);
     EloquentRaftNode A = mkNode("A", transport);
-    L.lifecycle.registerRaft(A);
+    A.lifecycle.registerRaft(A);
     EloquentRaftNode B = mkNode("B", transport);
-    L.lifecycle.registerRaft(B);
+    B.lifecycle.registerRaft(B);
     L.start();
     A.start();
     B.start();
@@ -69,7 +69,7 @@ public class EloquentRaftNodeTest extends WithLocalTransport {
       assertEquals("L should know about A and B", new HashSet<>(Arrays.asList("A", "B")), L.algorithm.mutableState().lastMessageTimestamp.get().keySet());
       callback.accept(new EloquentRaftNode[]{L, A, B});
     } finally {
-      L.lifecycle.shutdown(true);
+      L.lifecycle.shutdown(false);
     }
     RaftState[] states = new RaftState[]{L.algorithm.mutableState(), A.algorithm.mutableState(), B.algorithm.mutableState()};
     A.lifecycle.shutdown(true);
@@ -243,7 +243,9 @@ public class EloquentRaftNodeTest extends WithLocalTransport {
   @Test
   public void bootstrapTriggersElection() {
     EloquentRaftNode L = mkNode("L", transport);
+    L.lifecycle.registerRaft(L);
     EloquentRaftNode A = mkNode("A", transport);
+    A.lifecycle.registerRaft(A);
     L.start();
     A.start();
     L.bootstrap(false);

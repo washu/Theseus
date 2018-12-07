@@ -951,7 +951,11 @@ public class KeyValueStateMachine extends RaftStateMachine {
     }
     Queue<CompletableFuture<Boolean>> futures = lockAcquiredFutures.remove(new NamedLockRequest(lockName, holder.server, holder.uniqueHash));
     if (futures != null) {
-      futures.forEach(future -> pool.execute(() -> future.complete(true)));
+      futures.forEach(future -> pool.execute(() -> {
+        if (!future.isDone()) {
+          future.complete(true);
+        }
+      }));
     }
   }
 
@@ -988,13 +992,22 @@ public class KeyValueStateMachine extends RaftStateMachine {
    *
    * @param lock the lock we're interested in
    * @param requester the requester who will acquire the lock
-   * @param uniqueHash the unique hash to deduplicate requests on the same machine
-   * @param pool The pool to run futures on
+   * @param uniqueHash the unique hash to deduplicate requests on the same machine.
    *
    * @return a Future that completes when the lock is acquired by requester.
    */
-  CompletableFuture<Boolean> createLockAcquiredFuture(String lock, String requester, String uniqueHash, ExecutorService pool) {
+  CompletableFuture<Boolean> createLockAcquiredFuture(String lock, String requester, String uniqueHash) {
     // 1. Register the future
+    // note[gabor] even if it's already completed, we want to register it here now in case
+    // something changes before we check. We'll remove it later.
+    // This relies on the fact that double-completing a future is harmless.
+    //
+    // In more detail, we can argue in cases:
+    //   1. If at this point the lock is not held yet, then there is some future point when it will be
+    //      acquired and the future will fire then.
+    //   2. If at this point the lock is held, we'll pick it up below.
+    //   3. DISALLOWED: if the lock releases before we get the lock, we have an error, but then
+    //      we shouldn't fire the future anyways because we don't have the lock.
     CompletableFuture<Boolean> lockAcquiredFuture = new CompletableFuture<>();
     NamedLockRequest request = new NamedLockRequest(lock, requester, uniqueHash);
     this.lockAcquiredFutures.computeIfAbsent(request, k -> new ConcurrentLinkedQueue<>()).add(lockAcquiredFuture);
@@ -1002,10 +1015,23 @@ public class KeyValueStateMachine extends RaftStateMachine {
     // 2. Check for immediate completion
     QueueLock lockObj = locks.get(lock);
     if (lockObj != null) {
-      executeFutures(lockObj.holder, lock, pool);
+      LockRequest holder = lockObj.holder;
+      if (holder != null) {
+        if (Objects.equals(requester, holder.server) && Objects.equals(uniqueHash, holder.uniqueHash)) {
+          // 3. If we just completed the future, remove it from the waitlist
+          Queue<CompletableFuture<Boolean>> futures = this.lockAcquiredFutures.get(request);
+          if (futures != null) {
+            futures.remove(lockAcquiredFuture);
+          }
+          if (!lockAcquiredFuture.isDone()) {
+            lockAcquiredFuture.complete(true);
+          }
+
+        }
+      }
     }
 
-    // 3. Return
+    // 4. Return
     return lockAcquiredFuture;
   }
 

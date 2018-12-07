@@ -389,19 +389,30 @@ public class RaftLog {
     assertConsistency();
     try {
       // Requesting an update in the future is just requesting a heartbeat
-      if (startIndex > getLastEntryIndex()) return Optional.of(new ArrayList<>());
+      if (startIndex > getLastEntryIndex()) {
+        return Optional.of(Collections.emptyList());
+      }
 
       // This would indicate that we've already compacted this part of the logs
       if (!getEntryAtIndex(startIndex).isPresent()) return Optional.empty();
 
       // Get the entries
-      List<EloquentRaftProto.LogEntry> entries = new ArrayList<>();
-      for (long i = startIndex; i <= getLastEntryIndex(); i++) {
-        Optional<EloquentRaftProto.LogEntry> optionalLogEntry = getEntryAtIndex(i);
+      long lastEntryIndex = getLastEntryIndex();
+      if (startIndex == lastEntryIndex) {
+        // shortcut: only getting one entry
+        Optional<EloquentRaftProto.LogEntry> optionalLogEntry = getEntryAtIndex(startIndex);
         assert (optionalLogEntry.isPresent());
-        entries.add(optionalLogEntry.get());
+        return Optional.of(Collections.singletonList(optionalLogEntry.get()));
+      } else {
+        // Getting multiple entries -- iterate over whole list
+        List<EloquentRaftProto.LogEntry> entries = new ArrayList<>();
+        for (EloquentRaftProto.LogEntry entry : this.logEntries) {
+          if (entry.getIndex() >= startIndex && entry.getIndex() <= lastEntryIndex) {
+            entries.add(entry);
+          }
+        }
+        return Optional.of(entries);
       }
-      return Optional.of(entries);
     } finally {
       assertConsistency();
       assert fast("getEntriesSinceInclusive", timerStart);
