@@ -58,7 +58,7 @@ public class TheseusTest extends WithLocalTransport {
    protected void awaitElection(LocalTransport transport, Theseus... nodes) {
     Arrays.stream(nodes).forEach(Theseus::start);
     for (int i = 0;
-         i < 10 * nodes[0].node.algorithm.electionTimeoutMillisRange().end / nodes[0].node.algorithm.heartbeatMillis() &&
+         i < 25 * nodes[0].node.algorithm.electionTimeoutMillisRange().end / nodes[0].node.algorithm.heartbeatMillis() &&
              !( Arrays.stream(nodes).anyMatch(x -> x.node.algorithm.state().isLeader()) &&
                  Arrays.stream(nodes).allMatch(x -> x.node.algorithm.state().log.getQuorumMembers().containsAll(Arrays.stream(nodes).map(n -> n.node.algorithm.serverName()).collect(Collectors.toList()))) &&
                  Arrays.stream(nodes).allMatch(x -> x.node.algorithm.state().leader.isPresent())
