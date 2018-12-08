@@ -265,6 +265,7 @@ public abstract class AbstractRaftTransportTest {
    * Set the timeout for an RPC to be within the range of network delay.
    * Note that this method has its own retry semantics, and ignores {@link #retryCount()} and friends.
    */
+  @Ignore  // note[gabor]: Good to run on occasion, but this is inherently nondeterministic
   @Test
   public void testMaybeTimeout() {
     Assume.assumeTrue(shouldRunFuzzTests());  // this counts as a fuzz test
