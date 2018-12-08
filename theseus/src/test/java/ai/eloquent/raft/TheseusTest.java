@@ -309,37 +309,44 @@ public class TheseusTest extends WithLocalTransport {
         return x;
       }, () -> {
         transport.partitionOff(0, Long.MAX_VALUE, "A");  // partition while lock is held
-        return new byte[0];
+        return new byte[1];
       }, true);
+
       // 2. Check that we registered the failsafe
       for (int i = 0; i < 1000 && L.unreleasedLocks.size() == 0; ++i) {
         Uninterruptably.sleep(100);
       }
       assertEquals("We should have registered our lock as unreleased", 1, L.unreleasedLocks.size());
+
       // 3. Check that we can't make progress
       Boolean shouldFail = FunctionalUtils.ofThrowable(() -> L.withElementAsync("foo", x -> {
         x[0] += 1;
         return x;
-      }, () -> new byte[0], true).get(5, TimeUnit.SECONDS)).orElse(false);
+      }, () -> new byte[1], true).get(5, TimeUnit.SECONDS)).orElse(false);
       assertFalse("Should not be able to make progress without unlocking stuck lock", shouldFail);
+
       // 4. Lift the partition
       transport.liftPartitions();
+      transport.sleep(L.node.algorithm.electionTimeoutMillisRange().end + 100);
+      awaitElection(transport, L, A);
       synchronized (L.unreleasedLocks) {
         L.unreleasedLocks.notifyAll();
       }
       for (int i = 0; i < 1000 && L.unreleasedLocks.size() > 0; ++i) {
         Uninterruptably.sleep(100);
       }
+      Uninterruptably.sleep(100);
+
       // 5. Check that the lock unlocked
       // 5.1. ...In theory
       assertEquals("We should clear out our unreleased lock", 0, L.unreleasedLocks.size());
       // 5.2. ...In practice
       Boolean result = L.withElementAsync("foo", x -> {
         x[0] += 1;
-        transport.partitionOff(0, Long.MAX_VALUE, "A");  // partition while lock is held
         return x;
-      }, () -> new byte[0], true).get(5, TimeUnit.SECONDS);
+      }, () -> new byte[1], true).get(5, TimeUnit.SECONDS);
       assertTrue("We should be able to complete withElement on the previously locked key", result);
+
     }, L, A);
     transport.stop();
   }
@@ -439,6 +446,7 @@ public class TheseusTest extends WithLocalTransport {
                     callCount.incrementAndGet();
                     fnCallCount.incrementAndGet();
                     int value = ByteBuffer.wrap(oldBytes).getInt() + 1;
+                    log.info("Adding {} to the seen set", value);
                     assertFalse(numbersSeen.contains(value));
                     numbersSeen.add(value);
                     return ByteBuffer.allocate(4).putInt(value).array();

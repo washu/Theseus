@@ -16,6 +16,7 @@ import java.net.UnknownHostException;
 import java.time.Duration;
 import java.util.*;
 import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Function;
 import java.util.function.Supplier;
@@ -794,6 +795,9 @@ public class Theseus implements HasRaftLifecycle {
   }
 
 
+  private static final AtomicBoolean haveLock = new AtomicBoolean(false);
+
+
   /**
    * This is the safest way to do a withElement() update. We take a global lock, and then manipulate the item, and set
    * the result. This means the mutator() can have side effects and not be idempotent, since it will only be called
@@ -822,98 +826,112 @@ public class Theseus implements HasRaftLifecycle {
     byte[] requestLockTransition = KeyValueStateMachine.createRequestLockTransition(elementName, serverName, randomHash);
     byte[] releaseLockTransition = KeyValueStateMachine.createReleaseLockTransition(elementName, serverName, randomHash);
     // 1.2. The lock release thunk
-    Supplier<CompletableFuture<Boolean>> releaseLockWithoutChange = () ->
-        node.submitTransition(releaseLockTransition)  // note[gabor]: let failsafe retry -- same reasoning as above.
+    Supplier<CompletableFuture<Boolean>> releaseLockWithoutChange = () -> {
+      log.warn("Releasing lock {} on error", elementName);
+      return exceptionProof(node.submitTransition(releaseLockTransition)  // note[gabor]: let failsafe retry -- same reasoning as above.
           .whenComplete((s, e) -> {  // note[gabor]: this is not exception-proof; `e` may not be null.
             handleReleaseLockResult(s, e, releaseLockTransition);
-          });
+          }));
+    };
 
     // 2. Submit the lock request
-    return exceptionProof(retryTransitionAsync(requestLockTransition, defaultTimeout)).thenCompose((success) -> {
+    CompletableFuture<Boolean> future = new CompletableFuture<>();
+    exceptionProof(retryTransitionAsync(requestLockTransition, defaultTimeout)).whenComplete((acquireSuccess, acquireException) -> {
+      if (acquireSuccess != null && acquireException == null && acquireSuccess) {
+        // 2.A. Case: we've verifiably submitted the lock request
+        // Next, let's actually wait on the lock
+        stateMachine.createLockAcquiredFuture(elementName, serverName, randomHash).whenComplete((gotLockSuccess, gotLockException) -> {
+          haveLock.set(true);
+          if (gotLockSuccess != null && gotLockException == null && gotLockSuccess) {
+            // 2.A.A. Case: we've acquired the lock
+            // Next, let's do our mutation
+            pool.execute(() -> {
+              // (some asserts)
+              assert stateMachine.locks.get(elementName) != null : "We do not hold the lock we claim to (no lock)";
+              assert stateMachine.locks.get(elementName).holder != null : "We do not hold the lock we claim to (no holder)";
+              //noinspection ConstantConditions
+              assert Objects.equals(stateMachine.locks.get(elementName).holder.server, serverName)  : "Someone else holds the lock we claim to hold";
+              //noinspection ConstantConditions
+              assert Objects.equals(stateMachine.locks.get(elementName).holder.uniqueHash, randomHash)  : "Someone else holds the lock we claim to hold (different hash)";
 
-      // 3. Handle mutation now that lock is held
-      // 3.a. If we fail to submit the transition to get the lock, it is possible that we failed while waiting for the
-      // transition to commit, but the transition is still out there. To be totally correct, we need to release the lock
-      // here in the rare event that the request lock transition is still around and eventually gets committed.
-      if (!success) {
-        return releaseLockWithoutChange.get();
-      } else {
-
-        // 3.b. Otherwise, wait on the lock
-        return stateMachine.createLockAcquiredFuture(elementName, serverName, randomHash).thenCompose((gotLock) -> {
-          if (gotLock) {
-            // Run our runnable, which returns a CompletableFuture
-            try {
-              // i. Get the object, if it is present
+              // i. Create the object, if it isn't present
               Optional<byte[]> optionalObject = stateMachine.get(elementName, node.transport.now());
-
-              CompletableFuture<Boolean> future = new CompletableFuture<>();
-              pool.execute(() -> {
-                // ii. Create the object, if it isn't present
-                boolean newObject = false;
-                byte[] object;
-                if (optionalObject.isPresent()) {
-                  object = optionalObject.get();
-                } else if (createNew != null) {
-                  try {
-                    object = createNew.get();
-                    newObject = true;
-                  } catch (Throwable e) {
-                    log.warn("withElementAsync() object creator threw an exception. Returning failure");
-                    releaseLockWithoutChange.get().thenAccept(future::complete);
-                    return;
-                  }
-                } else {
-                  log.warn("withElementAsync() object creator is null and there's nothing in the map. Returning failure");
-                  releaseLockWithoutChange.get().thenAccept(future::complete);
-                  return;
-                }
-
-                // iii. If we returned a null from creation, that's a signal to stop the withElement call
-                if (object == null) {
-                  releaseLockWithoutChange.get().thenAccept(future::complete);
-                  return;
-                }
-
-                // iv. Mutate the object
-                byte[] mutated;
+              boolean newObject = false;
+              byte[] object;
+              if (optionalObject.isPresent()) {
+                object = optionalObject.get();
+              } else if (createNew != null) {
                 try {
-                  mutated = mutator.apply(object);
+                  object = createNew.get();
+                  newObject = true;
                 } catch (Throwable t) {
-                  releaseLockWithoutChange.get().thenAccept(future::complete);
+                  log.warn("withElementAsync() object creator threw an exception: ", t);
+                  releaseLockWithoutChange.get().whenComplete((x, e) -> future.complete(false));
                   return;
                 }
+              } else {
+                log.warn("withElementAsync() object creator is null and there's nothing in the map. Returning failure");
+                releaseLockWithoutChange.get().whenComplete((x, e) -> future.complete(false));
+                return;
+              }
 
-                // v. Put the object back into the map AND release the lock in a single transition
-                if (newObject || (mutated != null && !Arrays.equals(object, mutated))) {  // only if there was a change, or if it's a new object
-                  retryTransitionAsync(
-                      KeyValueStateMachine.createGroupedTransition(createSetValueTransition(elementName, mutated, permanent), releaseLockTransition),
-                      defaultTimeout).whenComplete((result, exception) -> {
-                    if (result == null || !result) {
-                      log.warn("Could not apply transition and/or release object lock: ", exception);
-                      releaseLockWithoutChange.get().thenAccept(future::complete);
-                    } else {
-                      future.complete(true); // SUCCESSFUL CASE
-                    }
-                  });
-                } else {
-                  // vi. If the mutator chose not to mutate the object, then this is trivially successful
-                  releaseLockWithoutChange.get().thenAccept(future::complete);
-                }
-              });
+              // ii. If we returned a null from creation, that's a signal to stop the withElement call
+              if (object == null) {
+                log.info("Creator returned null -- not mutating");
+                releaseLockWithoutChange.get().whenComplete((x, e) -> future.complete(false));
+                return;
+              }
 
-              return future;
-            } catch (Throwable t) {
-              log.warn("Uncaught exception when mutating element in withElementAsync: ", t);
-              return releaseLockWithoutChange.get();
-            }
+              // iii. Mutate the object
+              byte[] mutated;
+              byte[] input = new byte[object.length];  // note[gabor]: copy so mutator doesn't have to be functional
+              System.arraycopy(object, 0, input, 0, object.length);
+              try {
+                mutated = mutator.apply(input);
+              } catch (Throwable t) {
+                log.warn("withElementAsync() object mutator threw an exception: ", t);
+                releaseLockWithoutChange.get().whenComplete((x, e) -> future.complete(false));
+                return;
+              }
+
+              // iv. Put the object back into the map AND release the lock in a single transition
+              if (newObject || (mutated != null && !Arrays.equals(object, mutated))) {  // only if there was a change, or if it's a new object
+                retryTransitionAsync(
+                    KeyValueStateMachine.createGroupedTransition(createSetValueTransition(elementName, mutated, permanent), releaseLockTransition),
+                    defaultTimeout).whenComplete((transitionSuccess, transitionException) -> {
+                      if (transitionSuccess != null && transitionException == null && transitionSuccess) {
+                        // 2.A.A.A. Case: we've finished our mutation
+                        future.complete(true); // SUCCESSFUL CASE
+                      } else {
+                        // 2.A.A.B. Case: we could not submit our transition and/or lock
+                        log.warn("Could not apply transition and/or release object lock: ", transitionException);
+                        releaseLockWithoutChange.get().whenComplete((x, e) -> future.complete(false));
+                        //noinspection UnnecessaryReturnStatement
+                        return;
+                      }
+                });
+              } else {
+
+                // v. If the mutator chose not to mutate the object, then this is trivially successful
+                releaseLockWithoutChange.get().whenComplete((x, e) -> future.complete(true));  // note[gabor]: completes as true
+                //noinspection UnnecessaryReturnStatement
+                return;
+
+              }
+            });
+
           } else {
-            // Always release the lock just in case
-            return releaseLockWithoutChange.get();
+            // 2.A.B. Case: we were unable to acquire the lock
+            releaseLockWithoutChange.get().whenComplete((x, e) -> future.complete(false));
           }
         });
+      } else {
+        // 2.B. Case: something went wrong submitting the lock request
+        releaseLockWithoutChange.get().whenComplete((x, e) -> future.complete(false));
       }
     });
+
+    return future;
   }
 
 
@@ -1194,6 +1212,7 @@ public class Theseus implements HasRaftLifecycle {
    * @param timeout a length of time in which to retry failed transitions - IMPORTANT: the CompletableFuture returned
    *                doesn't have to finish in this amount of time, we just stop retrying failed transitions after this
    *                window elapses.
+   *
    * @return a CompletableFuture for the transition wrapped in retries
    */
   private CompletableFuture<Boolean> retryTransitionAsync(byte[] transition, Duration timeout) {
