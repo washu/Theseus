@@ -265,7 +265,6 @@ public class UDPTransport implements Transport {
         byte[] recvBuffer = new byte[MAX_UDP_PACKET_SIZE];
         DatagramPacket packet = new DatagramPacket(recvBuffer, recvBuffer.length);
         log.info("Started UDP listener thread");
-        //noinspection InfiniteLoopStatement
         while (true) {
           try {
             // 1. Receive the packet
@@ -336,7 +335,6 @@ public class UDPTransport implements Transport {
       try {
         ServerSocket sock = new ServerSocket(tcpListenPort);
         log.info("Started TCP listener thread");
-        //noinspection InfiniteLoopStatement
         while (true) {
           // 1. Accept the client
           try {
@@ -414,7 +412,6 @@ public class UDPTransport implements Transport {
     // them one by one. The motivation here is to allow the thread to be
     // interrupted by the timer task below if a message takes too long to send.
     Thread sender = new Thread(() -> {
-      //noinspection InfiniteLoopStatement
       while (true) {
         try {
           // 1. Wait for a message
@@ -804,7 +801,6 @@ public class UDPTransport implements Transport {
     synchronized (sendQueue) {
       if (sendQueue.size() < 10000) {
         sendQueue.offer(() -> {
-          //noinspection SynchronizationOnLocalVariableOrMethodParameter
           synchronized (tcpSocket) {
             try {
               proto.writeDelimitedTo(tcpSocket.getOutputStream());

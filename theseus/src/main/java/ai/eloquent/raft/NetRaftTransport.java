@@ -4,7 +4,6 @@ import ai.eloquent.data.UDPBroadcastProtos;
 import ai.eloquent.data.UDPTransport;
 import ai.eloquent.util.ConcurrencyUtils;
 import ai.eloquent.util.IdentityHashSet;
-import ai.eloquent.util.SafeTimerTask;
 import ai.eloquent.util.Span;
 import com.google.protobuf.InvalidProtocolBufferException;
 import io.grpc.*;
@@ -90,7 +89,7 @@ public class NetRaftTransport implements RaftTransport {
           public void rpc(EloquentRaftProto.RaftMessage request, StreamObserver<EloquentRaftProto.RaftMessage> responseObserver) {
             log.trace("Got an RPC request");
             try {
-              UDPTransport.DEFAULT.get().doAction(async, "handle inbound RPC", () -> {
+              UDPTransport.DEFAULT.get().doAction(thread, "handle inbound RPC", () -> {
                 for (RaftAlgorithm listener : boundAlgorithms) {
                   listener.receiveRPC(request).whenComplete((EloquentRaftProto.RaftMessage response, Throwable exception) -> {
                     if (exception != null || response == null) {
