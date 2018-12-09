@@ -20,6 +20,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
 import java.util.function.Function;
+import java.util.function.Supplier;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 
@@ -28,6 +29,7 @@ import static org.junit.Assert.*;
 /**
  * This runs fuzz tests on our implementation of Raft
  */
+@Category(SlowTests.class)
 @SuppressWarnings("OptionalGetWithoutIsPresent")
 public class TheseusTest extends WithLocalTransport {
   /**
@@ -409,87 +411,162 @@ public class TheseusTest extends WithLocalTransport {
   /**
    * Test locking and withElement by keeping a running sum
    */
-  @Category(SlowTests.class)
   @Test
   public void withElement() {
-    // quietly(() -> {
-      // Start the cluster
-      int numThreads = 5;
-      int numIters = 20;
-      Random r = new Random(42L);
-      Theseus[] nodes = new Theseus[]{
-          new Theseus("L", transport, new HashSet<>(Arrays.asList("L", "A", "B")), RaftLifecycle.newBuilder().mockTime().build()),
-          new Theseus("A", transport, new HashSet<>(Arrays.asList("L", "A", "B")), RaftLifecycle.newBuilder().mockTime().build()),
-          new Theseus("B", transport, new HashSet<>(Arrays.asList("L", "A", "B")), RaftLifecycle.newBuilder().mockTime().build())
-      };
-      withNodes(transport, (raftNodes) -> {
-        // Run the sum computation
-        Set<Integer> numbersSeen = ConcurrentHashMap.newKeySet();
-        AtomicInteger callCount = new AtomicInteger(0);
-        AtomicInteger failureCount = new AtomicInteger(0);
+    // Start the cluster
+    int numThreads = 5;
+    int numIters = 20;
+    Random r = new Random(42L);
+    Theseus[] nodes = new Theseus[]{
+        new Theseus("L", transport, new HashSet<>(Arrays.asList("L", "A", "B")), RaftLifecycle.newBuilder().mockTime().build()),
+        new Theseus("A", transport, new HashSet<>(Arrays.asList("L", "A", "B")), RaftLifecycle.newBuilder().mockTime().build()),
+        new Theseus("B", transport, new HashSet<>(Arrays.asList("L", "A", "B")), RaftLifecycle.newBuilder().mockTime().build())
+    };
+    withNodes(transport, (raftNodes) -> {
+      // Run the sum computation
+      Set<Integer> numbersSeen = ConcurrentHashMap.newKeySet();
+      AtomicInteger callCount = new AtomicInteger(0);
+      AtomicInteger failureCount = new AtomicInteger(0);
 
-        long startTime = System.currentTimeMillis();
-        AtomicBoolean holdLock = new AtomicBoolean(false);
-        List<Thread> threads = IntStream.range(0, numThreads).mapToObj(threadI -> {
-          Thread t = new Thread(() -> {
-            for (int i = 0; i < numIters; ++i) {
-              AtomicInteger fnCallCount = new AtomicInteger(0);
-              boolean success = false;
-              long start = System.currentTimeMillis();
-              try {
-                Theseus node = raftNodes[r.nextInt(raftNodes.length)];
-                CompletableFuture<Boolean> future = node.withElementAsync("running_sum", (oldBytes) -> {
-                  try {
-                    if (holdLock.getAndSet(true)) {
-                      log.warn("Someone else holds the running sum lock! This is going to cause an error");
-                    }
-                    callCount.incrementAndGet();
-                    fnCallCount.incrementAndGet();
-                    int value = ByteBuffer.wrap(oldBytes).getInt() + 1;
-                    log.info("Adding {} to the seen set", value);
-                    assertFalse(numbersSeen.contains(value));
-                    numbersSeen.add(value);
-                    return ByteBuffer.allocate(4).putInt(value).array();
-                  } finally {
-                    holdLock.set(false);
+      long startTime = System.currentTimeMillis();
+      AtomicBoolean holdLock = new AtomicBoolean(false);
+      List<Thread> threads = IntStream.range(0, numThreads).mapToObj(threadI -> {
+        Thread t = new Thread(() -> {
+          for (int i = 0; i < numIters; ++i) {
+            AtomicInteger fnCallCount = new AtomicInteger(0);
+            boolean success = false;
+            long start = System.currentTimeMillis();
+            try {
+              Theseus node = raftNodes[r.nextInt(raftNodes.length)];
+              CompletableFuture<Boolean> future = node.withElementAsync("running_sum", (oldBytes) -> {
+                try {
+                  if (holdLock.getAndSet(true)) {
+                    log.warn("Someone else holds the running sum lock! This is going to cause an error");
                   }
-                }, () -> ByteBuffer.allocate(4).putInt(0).array(), true);
-                success = future.get(10, TimeUnit.SECONDS);
-              } catch (InterruptedException | ExecutionException | TimeoutException e) {
-                e.printStackTrace();
-              } finally {
-                log.info("{} iteration {} / {} completed in {}", Thread.currentThread(), i + 1, numIters, TimerUtils.formatTimeSince(start));
-              }
-              if (success) {
-                // If the transition succeeded, we should have called the mutator exactly once
-                assertEquals("Each mutator should be called exactly once!", 1, fnCallCount.get());
-              } else {
-                // On failed transitions, it's possible to not call the mutator at all (if we failed to acquire the
-                // lock).
-                assertTrue("Each mutator should be called at most once!", fnCallCount.get() <= 1);
-                failureCount.incrementAndGet();
-              }
+                  callCount.incrementAndGet();
+                  fnCallCount.incrementAndGet();
+                  int value = ByteBuffer.wrap(oldBytes).getInt() + 1;
+                  log.info("Adding {} to the seen set", value);
+                  assertFalse(numbersSeen.contains(value));
+                  numbersSeen.add(value);
+                  return ByteBuffer.allocate(4).putInt(value).array();
+                } finally {
+                  holdLock.set(false);
+                }
+              }, () -> ByteBuffer.allocate(4).putInt(0).array(), true);
+              success = future.get(10, TimeUnit.SECONDS);
+            } catch (InterruptedException | ExecutionException | TimeoutException e) {
+              e.printStackTrace();
+            } finally {
+              log.info("{} iteration {} / {} completed in {}", Thread.currentThread(), i + 1, numIters, TimerUtils.formatTimeSince(start));
             }
-          });
-          t.setName("withElement-" + threadI);
-          t.setDaemon(true);
-          return t;
-        }).collect(Collectors.toList());
-        threads.forEach(Thread::start);
-        threads.forEach(Uninterruptably::join);
-        long duration = System.currentTimeMillis() - startTime;
-        log.info("Doing "+(numIters * numThreads)+" atomic increments took "+ TimerUtils.formatTimeDifference(duration));
-        log.info("Doing "+(numIters * numThreads)+" atomic increments took "+((double)duration / (numIters * numThreads))+"ms per increment");
+            if (success) {
+              // If the transition succeeded, we should have called the mutator exactly once
+              assertEquals("Each mutator should be called exactly once!", 1, fnCallCount.get());
+            } else {
+              // On failed transitions, it's possible to not call the mutator at all (if we failed to acquire the
+              // lock).
+              assertTrue("Each mutator should be called at most once!", fnCallCount.get() <= 1);
+              failureCount.incrementAndGet();
+            }
+          }
+        });
+        t.setName("withElement-" + threadI);
+        t.setDaemon(true);
+        return t;
+      }).collect(Collectors.toList());
+      threads.forEach(Thread::start);
+      threads.forEach(Uninterruptably::join);
+      long duration = System.currentTimeMillis() - startTime;
+      log.info("Doing "+(numIters * numThreads)+" atomic increments took "+ TimerUtils.formatTimeDifference(duration));
+      log.info("Doing "+(numIters * numThreads)+" atomic increments took "+((double)duration / (numIters * numThreads))+"ms per increment");
 
-        // Check the sum
-        byte[] value = raftNodes[0].getElement("running_sum").get();
-        int intValue = ByteBuffer.wrap(value).getInt();
-        assertEquals("Should have made the right number of function calls", numThreads * numIters - failureCount.get(), callCount.get());
-        assertEquals("Should have seen the right number of numbers", numThreads * numIters - failureCount.get(), numbersSeen.size());
-        assertEquals("Running sum should have been consistent", numThreads * numIters - failureCount.get(), intValue);
-      }, nodes);
-      transport.stop();
-    // });
+      // Check the sum
+      byte[] value = raftNodes[0].getElement("running_sum").get();
+      int intValue = ByteBuffer.wrap(value).getInt();
+      assertEquals("Should have made the right number of function calls", numThreads * numIters - failureCount.get(), callCount.get());
+      assertEquals("Should have seen the right number of numbers", numThreads * numIters - failureCount.get(), numbersSeen.size());
+      assertEquals("Running sum should have been consistent", numThreads * numIters - failureCount.get(), intValue);
+    }, nodes);
+    transport.stop();
+  }
+
+
+  /**
+   * Ensure that {@link Theseus#withElementAsync(String, Function, Supplier, boolean)} always
+   * releases its held locks
+   *
+   * @param partitionTime The amount of time to partition for before running withElements. A value of -1 ensures
+   *                      a sufficiently long timeout that all the calls timeout and go into failsafe
+   */
+  private void withElementAlwaysReleasesLocks(long partitionTime) {
+    // Start the cluster
+    Theseus[] nodes = new Theseus[]{
+        new Theseus("L", transport, new HashSet<>(Arrays.asList("L", "A", "B")), RaftLifecycle.newBuilder().mockTime().build()),
+        new Theseus("A", transport, new HashSet<>(Arrays.asList("L", "A", "B")), RaftLifecycle.newBuilder().mockTime().build()),
+        new Theseus("B", transport, new HashSet<>(Arrays.asList("L", "A", "B")), RaftLifecycle.newBuilder().mockTime().build())
+    };
+    withNodes(transport, (raftNodes) -> {
+      Theseus L = raftNodes[0];
+      // 1. Raise partition
+      long adjustedPartitionTime = partitionTime;
+      if (adjustedPartitionTime != 0) {
+        log.info("Raising partition");
+        if (adjustedPartitionTime < 0) {
+          adjustedPartitionTime = nodes[0].defaultTimeout.toMillis() * 5;
+        }
+        transport.completePartition(transport.now(), transport.now() + adjustedPartitionTime, "L", "A", "B");
+      }
+
+      // 2. Run our calls
+      List<CompletableFuture<Boolean>> futures = IntStream.range(0, 1000).mapToObj(iter ->
+          L.withElementAsync("elem", value -> {
+            log.debug("[{}] mutating sum", ByteBuffer.wrap(value).getInt());
+            return ByteBuffer.allocate(4).putInt(ByteBuffer.wrap(value).getInt() + 1).array();
+          }, () -> ByteBuffer.allocate(4).putInt(0).array(), true)
+      ).collect(Collectors.toList());
+
+      // 3. Complete futures
+      for (CompletableFuture<Boolean> future : futures) {
+        future.get(600000, TimeUnit.MILLISECONDS);  // assume we're running at least at 0.5x real time
+      }
+
+      // 4. Check the lock
+      for (int i = 0; i < 100 && Arrays.stream(raftNodes).anyMatch(node -> node.stateMachine.locks.get("elem") != null); ++i) {
+        transport.sleep(100);
+      }
+      for (Theseus node : raftNodes) {
+        assertNull(node.stateMachine.locks.get("elem"));
+      }
+      log.info("----- TESTS PASS -----");
+    }, nodes);
+  }
+
+
+  /**
+   * @see #withElementAlwaysReleasesLocks(long)
+   */
+  @Test
+  public void withElementAlwaysReleasesLocksSimple() {
+    withElementAlwaysReleasesLocks(0);
+  }
+
+
+  /**
+   * @see #withElementAlwaysReleasesLocks(long)
+   */
+  @Test
+  public void withElementAlwaysReleasesLocksLongPartition() {
+    withElementAlwaysReleasesLocks(-1);  // default timeout
+  }
+
+
+  /**
+   * @see #withElementAlwaysReleasesLocks(long)
+   */
+  @Test
+  public void withElementAlwaysReleasesLocksShortPartition() {
+    withElementAlwaysReleasesLocks(EloquentRaftAlgorithm.DEFAULT_ELECTION_RANGE.end * 2);  // force a confused election
   }
 
 

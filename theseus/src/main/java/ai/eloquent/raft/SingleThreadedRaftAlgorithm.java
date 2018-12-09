@@ -495,6 +495,16 @@ public class SingleThreadedRaftAlgorithm implements RaftAlgorithm {
 
 
   /**
+   * Create a single threaded Raft algorithm, using the implementing algorithm's pool
+   *
+   * @param impl The implementing algorithm.
+   */
+  public SingleThreadedRaftAlgorithm(RaftAlgorithm impl) {
+    this(impl, impl.mutableState().log.pool);
+  }
+
+
+  /**
    * Return the number of tasks we have queued to be executed by Raft.
    */
   public int queuedTaskCount() {
@@ -948,7 +958,7 @@ public class SingleThreadedRaftAlgorithm implements RaftAlgorithm {
       synchronized (this.raftTasks) {
         while (!this.raftTasks.isEmpty()) {
           try {
-            this.raftTasks.wait(100);
+            this.raftTasks.wait(1000);
           } catch (InterruptedException e) {
             throw new RuntimeInterruptedException(e);
           }

@@ -322,7 +322,7 @@ public class Theseus implements HasRaftLifecycle {
    * The default timeout for our calls. Large enough that we can weather an election timeout, but small
    * enough that we we return a failure in a reasonable amount of time.
    */
-  private final Duration defaultTimeout;
+  protected final Duration defaultTimeout;
 
 
   /**
@@ -352,7 +352,7 @@ public class Theseus implements HasRaftLifecycle {
     this.defaultTimeout = Duration.ofMillis(node.algorithm.electionTimeoutMillisRange().end * 2);
     this.stateMachine = (KeyValueStateMachine) algo.mutableStateMachine();
     this.lifecycle = lifecycle;
-    this.pool = lifecycle.managedThreadPool("raft-async", true);
+    this.pool = algo.mutableState().log.pool;
 
     //
     // II. Create lock cleanup thread
@@ -433,9 +433,8 @@ public class Theseus implements HasRaftLifecycle {
                 new KeyValueStateMachine(serverName),
                 transport,
                 targetClusterSize,
-                lifecycle.managedThreadPool("raft-public", true),
-                Optional.of(lifecycle)),
-            lifecycle.managedThreadPool("raft-pubic", true)),
+                lifecycle.managedThreadPool(16, "theseus_" + serverName, true),
+                Optional.of(lifecycle))),
         transport, lifecycle);
   }
 
@@ -455,9 +454,8 @@ public class Theseus implements HasRaftLifecycle {
                 new KeyValueStateMachine(serverName),
                 transport,
                 initialMembership,
-                lifecycle.managedThreadPool("raft-public", true),
-                Optional.of(lifecycle)),
-            lifecycle.managedThreadPool("raft-pubic", true)),
+                lifecycle.managedThreadPool(16, "theseus_" + serverName, true),
+                Optional.of(lifecycle))),
         transport, lifecycle);
   }
 
@@ -827,7 +825,7 @@ public class Theseus implements HasRaftLifecycle {
     byte[] releaseLockTransition = KeyValueStateMachine.createReleaseLockTransition(elementName, serverName, randomHash);
     // 1.2. The lock release thunk
     Supplier<CompletableFuture<Boolean>> releaseLockWithoutChange = () -> {
-      log.warn("Releasing lock {} on error", elementName);
+      log.warn("Releasing lock '{}' on error", elementName);
       return exceptionProof(node.submitTransition(releaseLockTransition)  // note[gabor]: let failsafe retry -- same reasoning as above.
           .whenComplete((s, e) -> {  // note[gabor]: this is not exception-proof; `e` may not be null.
             handleReleaseLockResult(s, e, releaseLockTransition);
@@ -1219,7 +1217,7 @@ public class Theseus implements HasRaftLifecycle {
     int uniqueID = new Random().nextInt();
     long startTime = System.currentTimeMillis();
     log.trace("\n-------------\nSTARTING TRANSITION {}\n-------------\n", uniqueID);
-    return retryAsync(() -> node.submitTransition(transition), timeout).thenApply((success) -> {
+    return retryAsync(() -> node.submitTransition(transition), timeout, node.transport.now()).thenApply((success) -> {
       log.trace("\n-------------\nFINISHED TRANSITION {}: {} ({})\n-------------\n", uniqueID, success, TimerUtils.formatTimeSince(startTime));
       return success;
     });
@@ -1260,25 +1258,25 @@ public class Theseus implements HasRaftLifecycle {
    * @param timeout a length of time in which to retry failed transitions - IMPORTANT: the CompletableFuture returned
    *                doesn't have to finish in this amount of time, we just stop retrying failed transitions after this
    *                window elapses.
+   * @param startTime The time we started the call>
    * @return a CompletableFuture for the transition wrapped in retries
    */
-  private CompletableFuture<Boolean> retryAsync(Supplier<CompletableFuture<Boolean>> action, Duration timeout) {
-    long startTime = node.transport.now();
-
+  private CompletableFuture<Boolean> retryAsync(Supplier<CompletableFuture<Boolean>> action, Duration timeout, long startTime) {
     // Create a transition future
     CompletableFuture<Boolean> future = exceptionProof(action.get());
     return future.thenCompose((result) -> {
-      if (result) {
+      if (result != null && result) {
         // A. Case: the future was successful
         return CompletableFuture.completedFuture(true);
       } else {
-        log.info("Retrying a failed transition @ {} - this is fine, but should be rare", node.transport.now());
         // B. Case: the future failed
         // B.1. Get the remaining time on the timeout
         long elapsed = node.transport.now() - startTime;
         long remainingTime = timeout.toMillis() - elapsed;
+        log.debug("Retrying a failed transition @ {} ({}ms left). This is fine, but should be rare", node.transport.now(), remainingTime);
         // B.2. Check if there's still time on the timeout, and we haven't shut down the node yet
         if (remainingTime < 0 || !node.isAlive()) {
+          log.info("Failed transition @ {} after {}ms (timeout of {}); not retrying further.", node.transport.now(), elapsed, timeout.toMillis());
           return CompletableFuture.completedFuture(false);
         }
         // B.3. Retry if there's still time
@@ -1286,7 +1284,7 @@ public class Theseus implements HasRaftLifecycle {
         node.transport.schedule(new SafeTimerTask() {
                                   @Override
                                   public void runUnsafe() {
-                                    retryAsync(action, Duration.ofMillis(remainingTime)).thenApply(ret::complete);
+                                    retryAsync(action, timeout, startTime).thenApply(ret::complete);
                                   }
                                 }, node.algorithm.electionTimeoutMillisRange().begin / 5); // Wait a bit before trying again, to avoid flooding the system with too many requests
         return ret;

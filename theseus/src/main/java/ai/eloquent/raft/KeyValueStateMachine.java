@@ -19,6 +19,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.ExecutorService;
+import java.util.function.Predicate;
 import java.util.stream.Collectors;
 
 
@@ -198,11 +199,14 @@ public class KeyValueStateMachine extends RaftStateMachine {
     @Nullable LockRequest holder;
     /** The requesters waiting on this lock */
     final ConcurrentLinkedQueue<LockRequest> waiting;
+    /** The set of requesters waiting on the lock. This is the unordered mirror of {@link #waiting}. */
+    private final HashSet<LockRequest> waitingSet;
 
     /** Create a new lock */
     public QueueLock(@Nullable LockRequest holder, List<LockRequest> waiting) {
       this.holder = holder;
       this.waiting = new ConcurrentLinkedQueue<>(waiting);
+      this.waitingSet = new HashSet<>(waiting);
     }
 
 
@@ -225,9 +229,11 @@ public class KeyValueStateMachine extends RaftStateMachine {
         //       In this case, we want to return ourselves, to fire any listeners
         //       waiting on us to take the lock (these fire immediately)
         return holder;
-      } else if(!waiting.contains(requestLockRequest)) {
+      } else if(!waitingSet.contains(requestLockRequest)) {
         // Case: let's wait on the lock
         waiting.add(requestLockRequest);
+        waitingSet.add(requestLockRequest);
+        assert waiting.size() == waitingSet.size() : "Waiting and waitset should be in sync";
         return null;
       } else {
         // Case: we're already waiting on the lock
@@ -247,11 +253,24 @@ public class KeyValueStateMachine extends RaftStateMachine {
     public synchronized @Nullable LockRequest release(LockRequest requestLockRequest) {
       if (Objects.equals(holder, requestLockRequest)) {
         holder = waiting.poll();
+        waitingSet.remove(holder);
         return holder;
       } else {
         waiting.remove(requestLockRequest);
+        waitingSet.remove(requestLockRequest);
+        assert waiting.size() == waitingSet.size() : "Waiting and waitset should be in sync";
         return null;
       }
+    }
+
+    /**
+     * Stop waiting on this lock if the given condition is true.
+     *
+     * @param condition The condition to check to determine if we should stop waiting on this lock.
+     */
+    public synchronized void stopWaitingIf(Predicate<LockRequest> condition) {
+      this.waiting.removeIf(condition);
+      this.waitingSet.removeIf(condition);
     }
 
 
@@ -886,7 +905,7 @@ public class KeyValueStateMachine extends RaftStateMachine {
     for (Map.Entry<String, QueueLock> entry : this.locks.entrySet()) {
       QueueLock lock = entry.getValue();
       // 3.1. Stop waiting on the lock
-      lock.waiting.removeIf(req -> Objects.equals(req.server, owner));
+      lock.stopWaitingIf(req -> Objects.equals(req.server, owner));
       // 3.2. Release the lock if we hold it
       if (lock.holder != null && Objects.equals(lock.holder.server, owner)) {
         executeFutures(lock.release(lock.holder), entry.getKey(), pool);

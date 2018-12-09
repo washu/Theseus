@@ -1,11 +1,14 @@
 package ai.eloquent.raft;
 
+import ai.eloquent.test.SlowTests;
 import ai.eloquent.util.Pointer;
 import ai.eloquent.util.TimerUtils;
 import com.google.common.util.concurrent.MoreExecutors;
+import com.google.common.util.concurrent.ThreadFactoryBuilder;
 import com.google.protobuf.ByteString;
 import org.junit.Ignore;
 import org.junit.Test;
+import org.junit.experimental.categories.Category;
 
 import java.time.Duration;
 import java.util.*;
@@ -940,6 +943,57 @@ public class KeyValueStateMachineTest {
             .setTypeValue(100).build().toByteArray()));
     assertEquals("Unrecognized - invalid proto",
         x.debugTransition(new byte[2]));
+  }
+
+
+  /**
+   * Test that we can fuzz acquiring locks from multiple threads and still have all the futures fire
+   * at the right times.
+   */
+  @Category(SlowTests.class)
+  @Test
+  public void fuzzLockFutures() throws InterruptedException {
+    int numLocks = 10000;
+    int numThreads = 4;
+    KeyValueStateMachine sm = new KeyValueStateMachine("server");
+    Queue<Throwable> exceptions = new ConcurrentLinkedQueue<>();
+    ExecutorService pool = Executors.newFixedThreadPool(numThreads, new ThreadFactoryBuilder().setNameFormat("raftpool-%d").setDaemon(true).setUncaughtExceptionHandler((t, e) -> exceptions.offer(e)).build());
+    try {
+
+      // 1. Submit + release the locks
+      List<CompletableFuture<Boolean>> futures = new ArrayList<>();
+      for (int lockI = 0; lockI < numLocks; ++lockI) {
+        final String hash = Integer.toString(lockI);
+        sm.applyTransition(KeyValueStateMachine.createRequestLockTransition("fuzzLock", "me", hash), TimerUtils.mockableNow().toEpochMilli(), pool);
+        futures.add(
+            sm.createLockAcquiredFuture("fuzzLock", "me", hash)
+                .thenApply(success -> {
+                  assertEquals("We should hold the lock we thing we own", hash, sm.locks.get("fuzzLock").holder.uniqueHash);
+                  sm.applyTransition(KeyValueStateMachine.createReleaseLockTransition("fuzzLock", "me", hash), TimerUtils.mockableNow().toEpochMilli(), pool);
+                  return success;
+                })
+        );
+      }
+
+      // 2. Check the futures
+      for (CompletableFuture<Boolean> future : futures) {
+        try {
+          assertTrue("Should eventually take the lock we requested", future.get(10, TimeUnit.SECONDS));
+        } catch (InterruptedException | ExecutionException | TimeoutException e) {
+          throw new RuntimeException(e);
+        }
+      }
+
+      // 3. Stray exceptions
+      for (Throwable t : exceptions) {
+        t.printStackTrace();
+      }
+      assertTrue("Should have no exceptions from test", exceptions.isEmpty());
+
+    } finally {
+      pool.shutdown();
+      assertTrue("Pool should close", pool.awaitTermination(5, TimeUnit.SECONDS));
+    }
   }
 
 

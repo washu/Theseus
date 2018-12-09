@@ -195,7 +195,7 @@ public class RaftLogTest {
 
     assertFalse("Should not have snapshotted yet", log.snapshot.isPresent());
     assertEquals("Should have "+RaftLog.COMPACTION_LIMIT+" entries", RaftLog.COMPACTION_LIMIT, log.logEntries.size());
-    log.commitIndex = RaftLog.COMPACTION_LIMIT;  // commit, so we can snapshot
+    log.setCommitIndex(log.getLastEntryIndex(), 0L);
     assertTrue("Should be able to add the entry that triggers the snapshot",
         log.appendEntries(RaftLog.COMPACTION_LIMIT, 1, Collections.singletonList(makeEntry(RaftLog.COMPACTION_LIMIT + 1, 1, 3))));
     assertTrue("Should now have a snapshot", log.snapshot.isPresent());

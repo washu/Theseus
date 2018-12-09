@@ -171,6 +171,7 @@ public class EloquentRaftAlgorithmTest {
    * "dead_server" - a bad quorum member, no longer responds to anything
    * "new_server" - a server trying to join the quorum, which fails to do so
    */
+  @Ignore // note[gabor] Not failing, just very slow with the longer machine down timeout
   @Test
   public void testAddServerRunaway() {
     SingleByteStateMachine stateMachine = new SingleByteStateMachine();
@@ -183,7 +184,7 @@ public class EloquentRaftAlgorithmTest {
     try {
       state.elect(0);
 
-      for (long i = 0; i < 100000; i++) {
+      for (long i = 0; i < EloquentRaftAlgorithm.MACHINE_DOWN_TIMEOUT * 2; i++) {
         transport.advanceTimeOneMs();
         state.observeLifeFrom("new_server", i);
         algorithm.heartbeat();

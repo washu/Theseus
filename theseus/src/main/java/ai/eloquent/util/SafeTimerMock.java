@@ -49,7 +49,7 @@ public class SafeTimerMock implements SafeTimer {
   /**
    * This is the list of all ScheduledTasks on this SafeTimerMock
    */
-  public final List<ScheduledTask> scheduled = Collections.synchronizedList(new ArrayList<>());
+  public final Collection<ScheduledTask> scheduled = Collections.synchronizedSet(new HashSet<>());
 
   public SafeTimerMock() {
     try {

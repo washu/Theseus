@@ -17,6 +17,7 @@ import java.time.Instant;
 import java.util.*;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.BiFunction;
 import java.util.function.Consumer;
@@ -43,7 +44,7 @@ public class EloquentRaftAlgorithm implements RaftAlgorithm {
    *   <li>Removing a server from the configuration that has not been responding to heartbeats.</li>
    * </ol>
    */
-  public static final long MACHINE_DOWN_TIMEOUT = 30000;
+  public static final long MACHINE_DOWN_TIMEOUT = 300000;  // 5 minutes
 
   /**
    * The number of broadcasts that can happen within a heartbeat interval before
@@ -390,6 +391,7 @@ public class EloquentRaftAlgorithm implements RaftAlgorithm {
     Optional<Long> prevEntryTerm = state.log.getPreviousEntryTerm(nextIndex - 1);
     if (entries.isPresent() && prevEntryTerm.isPresent()) {
       // 1A. We have entries to send -- send them.
+      log.trace("{} - sending appendEntriesRequest; logIndex={}  logTerm={}  # entries={}", state.serverName, nextIndex - 1, prevEntryTerm.get(), entries.get().size());
       appendEntriesRequest = Optional.of(AppendEntriesRequest
           .newBuilder()
           .setTerm(state.currentTerm)
@@ -399,9 +401,9 @@ public class EloquentRaftAlgorithm implements RaftAlgorithm {
           .addAllEntries(entries.get())
           .setLeaderCommit(state.log.getCommitIndex())
           .build());
-      log.trace("{} - sending appendEntriesRequest; logIndex={}  logTerm={}  # entries={}", state.serverName, nextIndex - 1, prevEntryTerm.get(), entries.get().size());
     } else {
       // 1B. We should send a snapshot
+      log.trace("{} - sending snapshot; logIndex={}  snapshotLastTerm={}", state.serverName, nextIndex - 1, state.log.snapshot.map(x -> x.lastTerm).orElse(-1L));
       snapshotRequest = state.log.snapshot.map(snapshot ->
           InstallSnapshotRequest
               .newBuilder()
@@ -436,7 +438,11 @@ public class EloquentRaftAlgorithm implements RaftAlgorithm {
           if (result != null) {
             return result;
           } else {
-            log.warn("{} - {} Failure: <{}>", state.serverName, methodName, exception == null ? "unknown error" : (exception.getClass().getName() + ": " + exception.getMessage()));
+            if (exception instanceof TimeoutException) {
+              log.debug("{} - {} Timed out append entries", state.serverName, methodName);
+            } else {
+              log.warn("{} - {} Failure: <{}>", state.serverName, methodName, exception == null ? "unknown error" : (exception.getClass().getName() + ": " + exception.getMessage()));
+            }
             return RaftTransport.mkRaftMessage(state.serverName, RaftMessage.newBuilder().setAppendEntriesReply(AppendEntriesReply.newBuilder()
                 .setFollowerName(target)
                 .setTerm(state.currentTerm)
@@ -450,7 +456,11 @@ public class EloquentRaftAlgorithm implements RaftAlgorithm {
           if (result != null) {
             return result;
           } else {
-            log.warn("{} - {} Failure: <{}>", state.serverName, methodName, exception == null ? "unknown error" : (exception.getClass().getName() + ": " + exception.getMessage()));
+            if (exception instanceof TimeoutException) {
+              log.debug("{} - {} Timed out append entries", state.serverName, methodName);
+            } else {
+              log.warn("{} - {} Failure: <{}>", state.serverName, methodName, exception == null ? "unknown error" : (exception.getClass().getName() + ": " + exception.getMessage()));
+            }
             return RaftTransport.mkRaftMessage(state.serverName, RaftMessage.newBuilder().setInstallSnapshotReply(InstallSnapshotReply.newBuilder()
                 .setTerm(state.currentTerm)
                 .build()));
@@ -516,7 +526,7 @@ public class EloquentRaftAlgorithm implements RaftAlgorithm {
     if (!force) {
       int broadcastsSinceLastHeartbeat = 0;
       for (long broadcastTime : lastBroadcastTimes) {
-        if (broadcastTime > 0 && transport.now() > broadcastTime && (transport.now() - broadcastTime) < this.heartbeatMillis()) {  // note[gabor] broadcastTime > 0 so that unit tests grounded at 0 can pass
+        if (broadcastTime > 0 && transport.now() >= broadcastTime && (transport.now() - broadcastTime) < this.heartbeatMillis()) {  // note[gabor] broadcastTime > 0 so that unit tests grounded at 0 can pass
           broadcastsSinceLastHeartbeat += 1;
         }
       }
@@ -602,7 +612,8 @@ public class EloquentRaftAlgorithm implements RaftAlgorithm {
 
     // 7. Send the broadcast
     // 7.1. (log the broadcast while in a lock)
-    log.trace("{} - Broadcasting appendEntriesRequest; logIndex={}  logTerm={}  # entries={}", state.serverName, minLogIndex, minLogTerm, argminEntries.size());
+    log.trace("{} - Broadcasting appendEntriesRequest; logIndex={}  logTerm={}  # entries={}  forced={}  @t={}",
+        state.serverName, minLogIndex, minLogTerm, argminEntries.size(), force, transport.now());
     // 7.2. (the sending does not need to be locked)
     long broadcastStart = System.currentTimeMillis();
     try {
@@ -1016,7 +1027,7 @@ public class EloquentRaftAlgorithm implements RaftAlgorithm {
         // Case: We're not the leader -- forward it to the leader
         if (addServerRequest.getForwardedByList().contains(state.serverName)) {
           // Case: We're being forwarded this message in a loop (we've forwarded this message in the past), so fail it
-          log.info("{} - {}; we've been forwarded our own message back to us in a loop. Failing the message", state.serverName, methodName);
+          log.warn("{} - {}; we've been forwarded our own message back to us in a loop. Failing the message", state.serverName, methodName);
           return CompletableFuture.completedFuture(RaftMessage.newBuilder().setSender(state.serverName).setAddServerReply(AddServerReply
               .newBuilder()
               .setStatus(MembershipChangeStatus.NOT_LEADER)).build());
@@ -1028,7 +1039,11 @@ public class EloquentRaftAlgorithm implements RaftAlgorithm {
             if (result != null) {
               return result;
             } else {
-              log.warn("{} - {} Failure: <{}>", state.serverName, methodName, exception == null ? "unknown error" : (exception.getClass().getName() + ": " + exception.getMessage()));
+              if (exception instanceof TimeoutException) {
+                log.debug("{} - {} Timed out transition", state.serverName, methodName);
+              } else {
+                log.warn("{} - {} Failure: <{}>", state.serverName, methodName, exception == null ? "unknown error" : (exception.getClass().getName() + ": " + exception.getMessage()));
+              }
               return RaftMessage.newBuilder().setSender(state.serverName).setAddServerReply(AddServerReply.newBuilder()
                   .setStatus(MembershipChangeStatus.NOT_LEADER)).build();
             }
@@ -1037,7 +1052,8 @@ public class EloquentRaftAlgorithm implements RaftAlgorithm {
       } else {
         // Case: We're not the leader, and we don't know who is.
         //       We have no choice but to fail the request.
-        log.info("{} - got {}; we're not the leader and don't know who the leader is", state.serverName, methodName);
+        //       This is the common failure case during an election.
+        log.debug("{} - got {}; we're not the leader and don't know who the leader is", state.serverName, methodName);
         return CompletableFuture.completedFuture(RaftMessage.newBuilder().setSender(state.serverName).setAddServerReply(AddServerReply
             .newBuilder()
             .setStatus(MembershipChangeStatus.NOT_LEADER)).build());
@@ -1202,7 +1218,11 @@ public class EloquentRaftAlgorithm implements RaftAlgorithm {
             if (result != null) {
               return result;
             } else {
-              log.warn("{} - {} Failure: <{}>", state.serverName, methodName, exception == null ? "unknown error" : (exception.getClass().getName() + ": " + exception.getMessage()));
+              if (exception instanceof TimeoutException) {
+                log.debug("{} - {} Timed out remove server", state.serverName, methodName);
+              } else {
+                log.warn("{} - {} Failure: <{}>", state.serverName, methodName, exception == null ? "unknown error" : (exception.getClass().getName() + ": " + exception.getMessage()));
+              }
               return RaftMessage.newBuilder().setSender(state.serverName).setRemoveServerReply(RemoveServerReply.newBuilder()
                   .setStatus(MembershipChangeStatus.NOT_LEADER)).build();
             }
@@ -1211,7 +1231,7 @@ public class EloquentRaftAlgorithm implements RaftAlgorithm {
       } else {
         // Case: We're not the leader, and we don't know who is.
         //       We have no choice but to fail the request.
-        log.info("{} - got {}; we're not the leader and don't know who the leader is", state.serverName, methodName);
+        log.debug("{} - got {}; we're not the leader and don't know who the leader is", state.serverName, methodName);
         return CompletableFuture.completedFuture(RaftMessage.newBuilder().setSender(state.serverName).setRemoveServerReply(RemoveServerReply
             .newBuilder()
             .setStatus(MembershipChangeStatus.NOT_LEADER)).build());
@@ -1289,9 +1309,13 @@ public class EloquentRaftAlgorithm implements RaftAlgorithm {
                 log.trace("{} - {}; received reply to forwarded message", state.serverName, methodName);
                 return result;
               } else {
-                log.warn("{} - [{}] {} Failure: <{}>;  is_leader={}  leader={}",
-                    state.serverName, transport.now(), methodName, exception == null ? "unknown error" : (exception.getClass().getName() + ": " + exception.getMessage()),
-                    state.isLeader(), state.leader.orElse("<unknown>"));
+                if (exception instanceof TimeoutException) {
+                  log.debug("{} - {} Timed out apply transition", state.serverName, methodName);
+                } else {
+                  log.warn("{} - [{}] {} Failure: <{}>;  is_leader={}  leader={}",
+                      state.serverName, transport.now(), methodName, exception == null ? "unknown error" : (exception.getClass().getName() + ": " + exception.getMessage()),
+                      state.isLeader(), state.leader.orElse("<unknown>"));
+                }
                 return RaftMessage.newBuilder().setSender(state.serverName).setApplyTransitionReply(ApplyTransitionReply
                     .newBuilder()
                     .setTerm(state.currentTerm)
@@ -1325,7 +1349,7 @@ public class EloquentRaftAlgorithm implements RaftAlgorithm {
                   return RaftMessage.newBuilder().setSender(state.serverName).setApplyTransitionReply(reply).build();
                 });
               } else {
-                log.info("{} - {}; failed to apply transition (reply proto had failure marked); returning failure", state.serverName, methodName);
+                log.debug("{} - {}; failed to apply transition (reply proto had failure marked); returning failure", state.serverName, methodName);
                 return CompletableFuture.completedFuture(leaderResponse);
               }
             });
@@ -1333,7 +1357,7 @@ public class EloquentRaftAlgorithm implements RaftAlgorithm {
     } else {
       // Case: We're not the leader, and we don't know who is.
       //       We have no choice but to fail the request.
-      log.info("{} - {}; we're not the leader and don't know who the leader is", state.serverName, methodName);
+      log.debug("{} - {}; we're not the leader and don't know who the leader is", state.serverName, methodName);
       rtn = CompletableFuture.completedFuture(RaftMessage.newBuilder().setSender(state.serverName).setApplyTransitionReply(ApplyTransitionReply
           .newBuilder()
           .setTerm(state.currentTerm)
@@ -1454,11 +1478,12 @@ public class EloquentRaftAlgorithm implements RaftAlgorithm {
     if (timeElapsed > 50) {
       long lastGcTime = -1L;
       try {
+        long uptime = ManagementFactory.getRuntimeMXBean().getStartTime();
         for (GarbageCollectorMXBean gcBean : ManagementFactory.getGarbageCollectorMXBeans()) {
           com.sun.management.GarbageCollectorMXBean sunGcBean = (com.sun.management.GarbageCollectorMXBean) gcBean;
           GcInfo lastGcInfo = sunGcBean.getLastGcInfo();
           if (lastGcInfo != null) {
-            lastGcTime = lastGcInfo.getStartTime();
+            lastGcTime = lastGcInfo.getStartTime() + uptime;
           }
         }
       } catch (Throwable t) {

@@ -7,6 +7,7 @@ import com.sun.management.GcInfo;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import javax.annotation.Nullable;
 import java.lang.management.GarbageCollectorMXBean;
 import java.lang.management.ManagementFactory;
 import java.util.*;
@@ -107,12 +108,12 @@ public class RaftLog {
   /**
    * The number of log entries to keep in the log before compacting into a snapshot.
    */
-  public static final int COMPACTION_LIMIT = 1024;
+  public static final int COMPACTION_LIMIT = 4096;
 
   /**
    * A pool for completing commit futures.
    */
-  private final ExecutorService pool;
+  final ExecutorService pool;
 
 
   /**
@@ -230,11 +231,12 @@ public class RaftLog {
     if (duration > 5) {
       long lastGcTime = -1L;
       try {
+        long uptime = ManagementFactory.getRuntimeMXBean().getStartTime();
         for (GarbageCollectorMXBean gcBean : ManagementFactory.getGarbageCollectorMXBeans()) {
           com.sun.management.GarbageCollectorMXBean sunGcBean = (com.sun.management.GarbageCollectorMXBean) gcBean;
           GcInfo lastGcInfo = sunGcBean.getLastGcInfo();
           if (lastGcInfo != null) {
-            lastGcTime = lastGcInfo.getStartTime();
+            lastGcTime = lastGcInfo.getStartTime() + uptime;
           }
         }
       } catch (Throwable t) {
@@ -245,9 +247,9 @@ public class RaftLog {
         interruptedByGC = true;
       }
       if (duration > 1000) {
-        log.warn("{} took {};  interrupted_by_gc={}", description, TimerUtils.formatTimeDifference(duration), interruptedByGC);
+        log.warn("{} took {};  interrupted_by_gc={}; log_length={}", description, TimerUtils.formatTimeDifference(duration), interruptedByGC, logEntries.size());
       } else {
-        log.info("{} took {};  interrupted_by_gc={}", description, TimerUtils.formatTimeDifference(duration), interruptedByGC);
+        log.info("{} took {};  interrupted_by_gc={}; log_length={}", description, TimerUtils.formatTimeDifference(duration), interruptedByGC, logEntries.size());
       }
     }
     return true;
@@ -584,13 +586,15 @@ public class RaftLog {
     assertConsistency();
     try {
       if (leaderCommit > commitIndex) {
+        // 1. Some checks
         long lastIndex = snapshot.map(s -> s.lastIndex).orElse(0L);
-        if (logEntries.size() > 0) lastIndex = Math.max(logEntries.peekLast().getIndex(), lastIndex);
+        if (logEntries.size() > 0) {
+          lastIndex = Math.max(logEntries.peekLast().getIndex(), lastIndex);
+        }
         long newCommitIndex = Math.min(leaderCommit, lastIndex);
         assert (newCommitIndex > commitIndex);
 
-        // Commit the new entry transitions to the state machine
-
+        // 2. Commit the new entry transitions to the state machine
         for (EloquentRaftProto.LogEntry entry : this.logEntries) {
           if (entry.getIndex() > commitIndex && entry.getIndex() <= newCommitIndex) {  // if it's a new entry
             if (entry.getType() == EloquentRaftProto.LogEntryType.TRANSITION) {
@@ -608,19 +612,26 @@ public class RaftLog {
           }
         }
 
-        // Update the commit index
+        // 3. Update the commit index
         commitIndex = newCommitIndex;
         assertConsistency();
 
-        // Complete any CommitFutures that are waiting for this commit
+        // 4. Complete any CommitFutures that are waiting for this commit
+        Map<Long, Long> previousEntryTermCache = new HashMap<>();  // A cache to avoid too many calls to previousEntryTerm
         for (CommitFuture commitFuture : new ArrayList<>(commitFutures)) {
           // (check for success)
           if (commitIndex >= commitFuture.index) {
-            Optional<Long> termAtCommit = getPreviousEntryTerm(commitFuture.index);
-            boolean success = termAtCommit.map(term -> term == commitFuture.term).orElse(false);
+            @Nullable Long termAtCommit = previousEntryTermCache.get(commitFuture.index);
+            if (termAtCommit == null) {
+              termAtCommit = getPreviousEntryTerm(commitFuture.index).orElse(null);
+              if (termAtCommit != null) {
+                previousEntryTermCache.put(commitFuture.index, termAtCommit);
+              }
+            }
+            boolean success = termAtCommit != null && termAtCommit == commitFuture.term;
             if (!success) {
-              if (termAtCommit.isPresent()) {
-                log.trace("Failing commit future (bad term; actual={} != expected={})", termAtCommit.get(), commitFuture.term);
+              if (termAtCommit != null) {
+                log.trace("Failing commit future (bad term; actual={} != expected={})", termAtCommit, commitFuture.term);
               } else {
                 log.trace("Failing commit future (bad term; already compacted entry in snapshot)");
               }
@@ -653,7 +664,6 @@ public class RaftLog {
    *
    * @return true if the append command is in the log.
    */
-  @SuppressWarnings("ConstantConditions")
   public boolean appendEntries(long prevLogIndex, long prevLogTerm, List<EloquentRaftProto.LogEntry> entries) {
     Object timerStart = Prometheus.startTimer(summaryTiming);
     assertConsistency();
@@ -695,17 +705,35 @@ public class RaftLog {
       // 2. If an existing entry conflicts with a new one (same index but different terms), delete the existing entry and all
       //    that follow it.
       if (!entries.isEmpty()) {
-        for (EloquentRaftProto.LogEntry entry : entries) {
-          Optional<EloquentRaftProto.LogEntry> potentiallyConflictingEntry = getEntryAtIndex(entry.getIndex());
-          // If we find a conflicting entry, then tructate after that
-          if (potentiallyConflictingEntry.isPresent()) {
-            if (potentiallyConflictingEntry.get().getTerm() != entry.getTerm()) {
+        if (entries.size() <= 2) {
+          // 2.A. If we only have a few entries, it's faster use getEntryAtIndex()
+          for (EloquentRaftProto.LogEntry entry : entries) {  // loop length is bounded
+            Optional<EloquentRaftProto.LogEntry> potentiallyConflictingEntry = getEntryAtIndex(entry.getIndex());
+            // If we find a conflicting entry, then truncate after that
+            if (potentiallyConflictingEntry.isPresent()) {
+              if (potentiallyConflictingEntry.get().getTerm() != entry.getTerm()) {
+                truncateLogAfterIndexInclusive(entry.getIndex());
+                break;
+              } else {
+                // If they're the same term, this is an opportunity to assert that it's the same transition
+                assert(entry.toByteString().equals(potentiallyConflictingEntry.get().toByteString()));
+              }
+            }
+          }
+        } else {
+          // 2.B. If we have multiple entries, it's faster to construct a map
+          Map<Long, Long> termForIndex = new HashMap<>(this.logEntries.size());
+          for (EloquentRaftProto.LogEntry entryInLog : this.logEntries) {
+            termForIndex.put(entryInLog.getIndex(), entryInLog.getTerm());
+          }
+          for (EloquentRaftProto.LogEntry entry : entries) {
+            Long potentiallyConflictingTerm = termForIndex.get(entry.getIndex());
+            if (potentiallyConflictingTerm != null && potentiallyConflictingTerm != entry.getTerm()) {
               truncateLogAfterIndexInclusive(entry.getIndex());
               break;
-            }
-            // If they're the same term, this is an opportunity to assert that it's the same transition
-            else {
-              assert(entry.toByteString().equals(potentiallyConflictingEntry.get().toByteString()));
+            } else {
+              //noinspection OptionalGetWithoutIsPresent
+              assert potentiallyConflictingTerm == null || entry.toByteString().equals(getEntryAtIndex(entry.getIndex()).get().toByteString()) : "Entry at same term + index should have the same transition";
             }
           }
         }
@@ -733,10 +761,8 @@ public class RaftLog {
             latestQuorumMembers.addAll(entries.get(i).getConfigurationList());
           }
         }
-        // 3.3. Force a compaction if our log is longer than 100 entries long - this may be a noop if none of these hundred
-        // entities is committed, but that's extremely rare in general.
-//        if (snapshot.map(sn -> sn.lastIndex + COMPACTION_LIMIT <= this.commitIndex).orElse(commitIndex >= COMPACTION_LIMIT)) {
-        if (this.logEntries.size() >= COMPACTION_LIMIT) {
+        // 3.3. Force a compaction if our log is too long
+        if (this.logEntries.size() >= COMPACTION_LIMIT && commitIndex >= this.logEntries.getFirst().getIndex()) {
           forceSnapshot();
         }
       }
@@ -820,16 +846,20 @@ public class RaftLog {
     Object timerStart = Prometheus.startTimer(summaryTiming);
     assertConsistency();
     try {
-      Optional<EloquentRaftProto.LogEntry> optionalCommitEntry = getEntryAtIndex(commitIndex);
-      // 1. If there are no entries that we can compact, then return a Snapshot without editing the log
-      if (!optionalCommitEntry.isPresent()) {
-        log.info("Snapshotting without any entries to snapshot. This means that our commitIndex has gotten more than "+COMPACTION_LIMIT+" behind our latest entry: commitIndex={}, number non-compacted entries={}, latestEntry={}", commitIndex, logEntries.size(), logEntries.size() > 0 ? logEntries.getLast().getIndex() : -1);
-        // 1.1. If we've taken any previous snapshot, return that
-        if (snapshot.isPresent()) {
-          return snapshot.get();
+      // 1. Error check
+      EloquentRaftProto.LogEntry earliestEntry = logEntries.peekFirst();
+      Optional<EloquentRaftProto.LogEntry> optionalCommitEntry;
+      if (earliestEntry == null || earliestEntry.getIndex() > commitIndex || !(optionalCommitEntry = getEntryAtIndex(commitIndex)).isPresent()) {
+        if (logEntries.size() >= COMPACTION_LIMIT) {
+          log.warn("Log has {} uncommitted entries (commitIndex={}; lastIndex={})", logEntries.size(), commitIndex, logEntries.peekLast().getIndex());
+        } else {
+          log.debug("Forced a snapshot on a small log, where we haven't finished committing any entries in the log yet");
         }
-        // 1.2. Otherwise, create a snapshot starting with no entries
-        else {
+        if (snapshot.isPresent()) {
+          // 1.1. If we've taken any previous snapshot, return that
+          return snapshot.get();
+        } else {
+          // 1.2. Otherwise, create a snapshot starting with no entries
           assert (commitIndex <= 1);
           return new Snapshot(stateMachine.serialize(), 0L, 0L, committedQuorumMembers);
         }

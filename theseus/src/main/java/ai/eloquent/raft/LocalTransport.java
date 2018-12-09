@@ -766,6 +766,17 @@ public class LocalTransport implements RaftTransport {
 
 
   /**
+   * Form a complete partition between all of the specified nodes.
+   *
+   * @see #partitionOff(long, long, String...)
+   */
+  public void completePartition(long fromMillis, long toMillis, String... nodeNames) {
+    for (String node : nodeNames) {
+      partitionOff(fromMillis, toMillis, node);
+    }
+  }
+
+  /**
    * Lift all of our network partitions.
    */
   public void liftPartitions() {
@@ -1021,7 +1032,11 @@ public class LocalTransport implements RaftTransport {
               response.whenComplete((reply, e) -> {
                 // (this is an RPC response, which is special because it has a correlation id)
                 if (e != null) {
-                  log.warn("Got exception from RPC: ", e);
+                  if (e instanceof TimeoutException || (e instanceof CompletionException && e.getCause() != null && e.getCause() instanceof TimeoutException)) {
+                    log.debug("RPC timed out: ", e);
+                  } else {
+                    log.warn("Got exception from RPC: ", e);
+                  }
                 }
                 sendMessage(message.target, message.sender, reply, Optional.of(message.id));
               });
