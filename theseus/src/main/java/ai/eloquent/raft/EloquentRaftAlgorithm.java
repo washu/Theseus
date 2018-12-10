@@ -1330,7 +1330,7 @@ public class EloquentRaftAlgorithm implements RaftAlgorithm {
                 log.trace("{} - {}; waiting for commit", state.serverName, methodName);
                 long index = leaderResponse.getApplyTransitionReply().getNewEntryIndex();
                 long term = leaderResponse.getApplyTransitionReply().getNewEntryTerm();
-                return state.log.createCommitFuture(index, term, true).thenApply(success -> {
+                return state.log.createCommitFuture(index, term, true).handle((success, t) -> {
                   assert drivingThreadId < 0 || drivingThreadId == Thread.currentThread().getId() : "Eloquent Raft Algorithm should only be run from the driving thread (" + drivingThreadId + ") but is being driven by " + Thread.currentThread();
                   log.trace("{} - {}; Entry @ {} (term={}) is committed in the local log", state.serverName, methodName, index, term);
                   // The transition was either committed or overwritten
@@ -1338,8 +1338,8 @@ public class EloquentRaftAlgorithm implements RaftAlgorithm {
                       .newBuilder()
                       .setTerm(state.currentTerm)
                       .setNewEntryIndex(-4)  // just so this isn't the default proto. Overwritten below
-                      .setSuccess(success);
-                  if (success) {
+                      .setSuccess(success == null ? false : success);
+                  if (success != null && success) {
                     reply
                         .setNewEntryIndex(index)
                         .setNewEntryTerm(term);

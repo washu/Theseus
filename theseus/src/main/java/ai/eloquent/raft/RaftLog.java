@@ -513,17 +513,29 @@ public class RaftLog {
 
 
   /**
-   * This returns a CompletableFuture of a boolean indicating whether or not this entry was successfully committed to
-   * the logs. This is used to allow a leader to have a callback once a given transition has either committed to the
-   * logs, or failed to commit to the logs. We know when we've had a failure when a commit has a different term number
-   * than expected. That indicates it was overwritten.
+   * <p>
+   *   This returns a CompletableFuture of a boolean indicating whether or not this entry was successfully committed to
+   *   the logs. This is used to allow a leader to have a callback once a given transition has either committed to the
+   *   logs, or failed to commit to the logs. We know when we've had a failure when a commit has a different term number
+   *   than expected. That indicates it was overwritten.
+   * </p>
+   *
+   * <p>
+   *   Note that in rare cases, we can fail a commit future even if the commit went through. This happens when we're
+   *   checking for entry in the log but it's already snapshotted, and the snapshot has a more recent latest term than
+   *   the term we're looking for.
+   *   In this case, we can't discriminate between the commit being successful and an election happening afterwards,
+   *   or the commit failing from an election and then a snapshot being taken before we can create the commit future.
+   * </p>
    *
    * @param index the index we're interested in hearing about
    * @param term the term we expect the index to be in
    * @param isInternal if true, this is an internal future that should complete on the master Raft thread.
    *                   Otherwise, we complete it on the worker pool.
    *
-   * @return a CompletableFuture
+   * @return a CompletableFuture that will fire once either (1) the commit goes through, or (2) the commit fails.
+   *         Note, again, that the commit <i>may</i> have gone through even if the future completes with a false
+   *         value, we just can't guarantee it.
    */
   CompletableFuture<Boolean> createCommitFuture(long index, long term, boolean isInternal) {
     Object timerStart = Prometheus.startTimer(summaryTiming);
@@ -533,17 +545,19 @@ public class RaftLog {
       // 1. If this is a future for an event that has already happened, then complete it now
       if (index <= getCommitIndex()) {
         // 1.1. Check if the commit is in the snapshot
-        boolean success = snapshot.map(snap -> index < snap.lastIndex && term <= snap.lastTerm).orElse(false);
+        boolean success = snapshot.map(snap -> index < snap.lastIndex && term == snap.lastTerm).orElse(false);
         // 1.2. Otherwise, check the commit in the current log
         if (!success) {
-          Optional<Long> pastTerm = getPreviousEntryTerm(index);
-          success = (pastTerm.isPresent() && pastTerm.get() == term);
-          if (!success) {
-            log.trace("Failing commit future (bad term; actual={} != expected={})", pastTerm.isPresent() ? pastTerm.get() : "<unk>", term);
-          }
+          Optional<EloquentRaftProto.LogEntry> entry = getEntryAtIndex(index);
+          success = entry.isPresent() && entry.get().getTerm() == term;
         }
         // 1.3. Complete the future
-        listener.complete(success);
+        if (isInternal) {
+          listener.complete(success);
+        } else {
+          final boolean successFinal = success;
+          this.pool.submit(() -> listener.complete(successFinal));
+        }
       } else {
         // If this hasn't happened yet, then add this to a list
         if (isInternal) {
@@ -617,17 +631,24 @@ public class RaftLog {
         assertConsistency();
 
         // 4. Complete any CommitFutures that are waiting for this commit
-        Map<Long, Long> previousEntryTermCache = new HashMap<>();  // A cache to avoid too many calls to previousEntryTerm
+        Map<Long, Long> termForIndex = new HashMap<>();  // A cache to avoid too many calls to previousEntryTerm
         for (CommitFuture commitFuture : new ArrayList<>(commitFutures)) {
-          // (check for success)
-          if (commitIndex >= commitFuture.index) {
-            @Nullable Long termAtCommit = previousEntryTermCache.get(commitFuture.index);
+          if (commitIndex >= commitFuture.index) {  // we've committed past this future
+            // 4.1. try to get the term from the log
+            @Nullable Long termAtCommit = termForIndex.get(commitFuture.index);
             if (termAtCommit == null) {
-              termAtCommit = getPreviousEntryTerm(commitFuture.index).orElse(null);
+              termAtCommit = getEntryAtIndex(commitFuture.index).map(EloquentRaftProto.LogEntry::getTerm).orElse(null);
               if (termAtCommit != null) {
-                previousEntryTermCache.put(commitFuture.index, termAtCommit);
+                termForIndex.put(commitFuture.index, termAtCommit);
               }
             }
+            // 4.2. try to get the term from the snapshot
+            if (termAtCommit == null && this.snapshot.isPresent() &&   // we didn't find the term in the log and have a snapshot
+                commitFuture.index < this.snapshot.get().lastIndex &&  // ... and we're looking for something in the snapshot
+                this.snapshot.get().lastTerm == commitFuture.term) {   // ... and the snapshot is at our term (pessimistic assumption)
+              termAtCommit = commitFuture.term;  // ... then we can guarantee our term is correct
+            }
+            // 4.3. Get success
             boolean success = termAtCommit != null && termAtCommit == commitFuture.term;
             if (!success) {
               if (termAtCommit != null) {
@@ -636,7 +657,7 @@ public class RaftLog {
                 log.trace("Failing commit future (bad term; already compacted entry in snapshot)");
               }
             }
-            // (register the future)
+            // 4.4. fire the future
             commitFuture.complete.accept(success);
             commitFutures.remove(commitFuture);
           }

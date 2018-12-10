@@ -380,7 +380,7 @@ public class Theseus implements HasRaftLifecycle {
             // 2. Release the locks
             log.info("Trying to release {} unreleased locks", unreleasedLocksCopy.length);
             byte[] bulkTransition = KeyValueStateMachine.createGroupedTransition(unreleasedLocksCopy);
-            Boolean success = node.submitTransition(bulkTransition)
+            Boolean success = exceptionProof(node.submitTransition(bulkTransition))
                 .get(node.algorithm.electionTimeoutMillisRange().end * 2, TimeUnit.MILLISECONDS);
             if (success != null && success) {
               // 3.A. Success: stop trying locks
@@ -408,6 +408,13 @@ public class Theseus implements HasRaftLifecycle {
             log.warn("Caught an exception in the lockCleanupThread in Theseus", t);
           }
         }
+      }
+      // Just a sanity check
+      //noinspection ConstantConditions  // note[gabor]: worry if this stopps being needed.
+      if (alive) {
+        log.error("Theseus lock cleanup thread stopped while we're still alive!");
+      } else {
+        log.info("Stopped Theseus lock cleanup thread on shutdown");
       }
     });
     lockCleanupThread.setName("raft-lock-cleanup");
@@ -1234,15 +1241,19 @@ public class Theseus implements HasRaftLifecycle {
   private static CompletableFuture<Boolean> exceptionProof(CompletableFuture<Boolean> future) {
     CompletableFuture<Boolean> wrapper = new CompletableFuture<>();
     future.whenComplete((success, t) -> {
-      if (t != null) {
-        if (t instanceof TimeoutException ||
-            (t instanceof CompletionException && t.getCause() != null && t.getCause() instanceof TimeoutException)) {
-          log.info("Caught a timeout exception exception proof wrapper");
-        } else {
-          log.warn("Caught an exception in exception proof wrapper", t);
+      try {
+        // If we got an exception, mark success as false.
+        if (t != null || success == null) {
+          if (t instanceof TimeoutException ||
+              (t instanceof CompletionException && t.getCause() != null && t.getCause() instanceof TimeoutException)) {
+            log.info("Caught a timeout exception exception proof wrapper");
+          } else {
+            log.warn("Caught an exception in exception proof wrapper", t);
+          }
+          success = false;
         }
-        wrapper.complete(false);
-      } else {
+      } finally {
+        // Complete our future no matter what
         wrapper.complete(success);
       }
     });
