@@ -136,17 +136,19 @@ public class RaftLog {
    * This is used in truncating the logs when they grow too long.
    */
   public static class Snapshot {
+    /** The serialized state machine, as a byte blob */
     byte[] serializedStateMachine;
 
-    // the snapshot replaces all entries up through and including this index
+    /** The snapshot replaces all entries up through and including this index */
     long lastIndex;
 
-    // term of lastIndex
+    /** term of lastIndex */
     long lastTerm;
 
-    // latest cluster configuration as of lastIndex
+    /** latest cluster configuration as of lastIndex */
     Set<String> lastClusterMembership;
 
+    /** The straightforward constructor */
     public Snapshot(byte[] serializedStateMachine, long lastIndex, long lastTerm, Collection<String> lastClusterMembership) {
       this.serializedStateMachine = serializedStateMachine;
       this.lastIndex = lastIndex;

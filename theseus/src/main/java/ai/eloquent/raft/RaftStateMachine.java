@@ -61,7 +61,9 @@ public abstract class RaftStateMachine {
    * This overwrites the current state of the state machine with a serialized proto. All the current state of the state
    * machine is overwritten, and the new state is substituted in its place.
    *
-   * @param serialized the state machine to overwrite this one with, in serialized form
+   * @param serialized the state machine to overwrite this one with, in serialized form.
+   *                   This is the payload of the state machine -- that is, already of the correct
+   *                   type. See {@link EloquentRaftProto.StateMachine#getPayload()}
    * @param now the current time, in epoch millis.
    * @param pool an executor pool to run lock future commits on.
    */
@@ -82,9 +84,7 @@ public abstract class RaftStateMachine {
       this.hospice = proto.getHospiceList().toArray(new String[0]);
       this.overwriteWithSerializedImpl(proto.getPayload().toByteArray(), now, pool);
     } catch (InvalidProtocolBufferException e) {
-      log.warn("Could not deserialize state machine; assuming it's in a legacy form");
-      this.hospice = new String[0];
-      this.overwriteWithSerializedImpl(serialized, now, pool);
+      log.error("Could not install snapshot!", e);
     }
   }
 

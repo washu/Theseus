@@ -288,10 +288,14 @@ public class KeyValueStateMachine extends RaftStateMachine {
     /** Read this lock from a proto */
     public static QueueLock deserialize(KeyValueStateMachineProto.QueueLock queueLock) {
       @Nullable LockRequest holder = null;
-      if (queueLock.hasHolder()) {
+      if (queueLock.hasHolder() && queueLock.getHolder() != ai.eloquent.raft.KeyValueStateMachineProto.LockRequest.getDefaultInstance()) {
         holder = LockRequest.deserialize(queueLock.getHolder());
       }
       List<LockRequest> waitingList = queueLock.getWaitingList().stream().map(LockRequest::deserialize).collect(Collectors.toList());
+      if (holder == null && !waitingList.isEmpty()) {
+        log.warn("Deserialized lock with no holder but a waitlist. Granting lock to {}", waitingList.get(0));
+        holder = waitingList.remove(0);
+      }
       return new QueueLock(holder, waitingList);
     }
 
@@ -303,14 +307,20 @@ public class KeyValueStateMachine extends RaftStateMachine {
       if (o == null || getClass() != o.getClass()) return false;
       QueueLock queueLock = (QueueLock) o;
       return Objects.equals(holder, queueLock.holder) &&
-          Objects.equals(waiting, queueLock.waiting);
+          Objects.equals(waitingSet, queueLock.waitingSet);
     }
 
 
     /** {@inheritDoc} */
     @Override
     public int hashCode() {
-      return Objects.hash(holder, waiting);
+      return Objects.hash(holder, waitingSet);
+    }
+
+    /** {@inheritDoc} */
+    @Override
+    public String toString() {
+      return "[holder=" + holder + "; waiting=" + waiting + "]";
     }
   }
 
@@ -320,7 +330,9 @@ public class KeyValueStateMachine extends RaftStateMachine {
    * This is the private implementation for a LockRequest.
    */
   static class LockRequest {
+    /** The server that holds this lock */
     String server;
+    /** A unique hash specifying the particular instance of the lock grant this request encodes. */
     String uniqueHash;
 
     public LockRequest(String server, String uniqueHash) {
@@ -328,6 +340,7 @@ public class KeyValueStateMachine extends RaftStateMachine {
       this.uniqueHash = uniqueHash;
     }
 
+    /** Write this lock request to a proto */
     public KeyValueStateMachineProto.LockRequest serialize() {
       KeyValueStateMachineProto.LockRequest.Builder builder = KeyValueStateMachineProto.LockRequest.newBuilder();
       builder.setServer(server);
@@ -335,6 +348,7 @@ public class KeyValueStateMachine extends RaftStateMachine {
       return builder.build();
     }
 
+    /** Read this lock request from a proto*/
     public static LockRequest deserialize(KeyValueStateMachineProto.LockRequest lockRequest) {
       return new LockRequest(lockRequest.getServer(), lockRequest.getUniqueHash());
     }
@@ -581,7 +595,8 @@ public class KeyValueStateMachine extends RaftStateMachine {
    * This overwrites the current state of the state machine with a serialized proto. All the current state of the state
    * machine is overwritten, and the new state is substituted in its place.
    *
-   * @param serialized the state machine to overwrite this one with, in serialized form
+   * @param serialized the state machine to overwrite this one with, in serialized form.
+   *                   This should be a {@link KeyValueStateMachine}, not a {@link EloquentRaftProto.StateMachine}.
    * @param now the current time, for mocking.
    */
   @Override
@@ -594,18 +609,38 @@ public class KeyValueStateMachine extends RaftStateMachine {
     try {
       KeyValueStateMachineProto.KVStateMachine serializedStateMachine = KeyValueStateMachineProto.KVStateMachine.parseFrom(serialized);
 
+      // 1. Overwrite the values
       this.values.clear();
       for (int i = 0; i < serializedStateMachine.getValuesKeysCount(); ++i) {
         ValueWithOptionalOwner value = ValueWithOptionalOwner.deserialize(serializedStateMachine.getValuesValues(i));
         this.values.put(serializedStateMachine.getValuesKeys(i), value);
       }
 
+      // 2. Overwrite the locks
+      Map<String, QueueLock> oldLocks = new HashMap<>(this.locks);
       this.locks.clear();
       for (int i = 0; i < serializedStateMachine.getLocksKeysCount(); ++i) {
+        // 2.1. Set the lock
         String lockName = serializedStateMachine.getLocksKeys(i);
         QueueLock lock = QueueLock.deserialize(serializedStateMachine.getLocksValues(i));
-        this.locks.put(lockName, lock);
-        executeFutures(lock.holder, lockName, pool);
+        if (lock.holder != null) {
+          this.locks.put(lockName, lock);
+        } else {
+          log.warn("Deserialized an unheld lock: {}", lockName);
+        }
+        // 2.2. Execute futures on the lock's holder
+        executeFutures(lock.holder, lockName, pool, true);
+        // 2.3. Fail futures for anyone no longer waiting
+        Set<LockRequest> waiting = Optional.ofNullable(oldLocks.get(lockName)).map(x -> (Set<LockRequest>) new HashSet<>(x.waitingSet)).orElse(Collections.emptySet());
+        if (!waiting.isEmpty()) {
+          waiting.removeAll(lock.waitingSet);
+          if (lock.holder != null) {
+            waiting.remove(lock.holder);
+          }
+          for (LockRequest req : waiting) {
+            executeFutures(req, lockName, pool, false);
+          }
+        }
       }
     } catch (InvalidProtocolBufferException e) {
       log.error("Attempting to deserialize an invalid snapshot! This is very bad. Leaving current state unchanged.", e);
@@ -657,7 +692,7 @@ public class KeyValueStateMachine extends RaftStateMachine {
           KeyValueStateMachineProto.RequestLock serializedRequestLock = serializedTransition.getRequestLock();
           LockRequest requestLockRequest = new LockRequest(serializedRequestLock.getRequester(), serializedRequestLock.getUniqueHash());
           lock = locks.computeIfAbsent(serializedRequestLock.getLock(), lockName -> new QueueLock(requestLockRequest, Collections.emptyList()));
-          executeFutures(lock.acquire(requestLockRequest), serializedRequestLock.getLock(), pool);
+          executeFutures(lock.acquire(requestLockRequest), serializedRequestLock.getLock(), pool, true);
           break;
 
         case RELEASE_LOCK:
@@ -665,12 +700,13 @@ public class KeyValueStateMachine extends RaftStateMachine {
           lock = locks.get(serializedReleaseLock.getLock());
           if (lock != null) {
             LockRequest releaseLockRequest = new LockRequest(serializedReleaseLock.getRequester(), serializedReleaseLock.getUniqueHash());
-            executeFutures(lock.release(releaseLockRequest), serializedReleaseLock.getLock(), pool);
+            executeFutures(lock.release(releaseLockRequest), serializedReleaseLock.getLock(), pool, true);
             if (lock.holder == null) {
               locks.remove(serializedReleaseLock.getLock());
             }
           } else {
-            log.warn("Received a release lock command that will not result in any action (lock not registered) - this is fine, but should be rare");
+            log.warn("Received release lock on unregistered lock: '{}' (server={}  hash={})",
+                serializedReleaseLock.getLock(), serializedReleaseLock.getRequester(), serializedReleaseLock.getUniqueHash());
           }
           break;
 
@@ -679,7 +715,7 @@ public class KeyValueStateMachine extends RaftStateMachine {
           LockRequest requestTryLock = new LockRequest(serializedTryLock.getRequester(), serializedTryLock.getUniqueHash());
           lock = locks.computeIfAbsent(serializedTryLock.getLock(), lockName -> new QueueLock(requestTryLock, new ArrayList<>()));
           if (lock.holder != null) {
-            executeFutures(lock.holder, serializedTryLock.getLock(), pool);
+            executeFutures(lock.holder, serializedTryLock.getLock(), pool, true);
           }
           break;
 
@@ -908,7 +944,7 @@ public class KeyValueStateMachine extends RaftStateMachine {
       lock.stopWaitingIf(req -> Objects.equals(req.server, owner));
       // 3.2. Release the lock if we hold it
       if (lock.holder != null && Objects.equals(lock.holder.server, owner)) {
-        executeFutures(lock.release(lock.holder), entry.getKey(), pool);
+        executeFutures(lock.release(lock.holder), entry.getKey(), pool, true);
       }
     }
   }
@@ -963,8 +999,9 @@ public class KeyValueStateMachine extends RaftStateMachine {
    * @param holder The new lock holder.
    * @param lockName The name of the lock we're considering.
    * @param pool The pool to use to execute the futures on.
+   * @param result The result to execute the future with.
    */
-  private void executeFutures(@Nullable LockRequest holder, String lockName, ExecutorService pool) {
+  private void executeFutures(@Nullable LockRequest holder, String lockName, ExecutorService pool, boolean result) {
     if (holder == null) {
       return;
     }
@@ -972,7 +1009,10 @@ public class KeyValueStateMachine extends RaftStateMachine {
     if (futures != null) {
       futures.forEach(future -> pool.execute(() -> {
         if (!future.isDone()) {
-          future.complete(true);
+          if (!result) {
+            log.warn("Failing future for lock '{}'", lockName);
+          }
+          future.complete(result);
         }
       }));
     }
@@ -1132,7 +1172,7 @@ public class KeyValueStateMachine extends RaftStateMachine {
       try {
         transitionBuilder.addTransitions(KeyValueStateMachineProto.Transition.parseFrom(transition));
       } catch (InvalidProtocolBufferException e) {
-        log.warn("Unable to parse");
+        log.warn("Unable to parse an element of a grouped transition: ", e);
       }
     }
 

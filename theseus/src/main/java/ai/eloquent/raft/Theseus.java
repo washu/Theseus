@@ -16,7 +16,6 @@ import java.net.UnknownHostException;
 import java.time.Duration;
 import java.util.*;
 import java.util.concurrent.*;
-import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Function;
 import java.util.function.Supplier;
@@ -800,9 +799,6 @@ public class Theseus implements HasRaftLifecycle {
   }
 
 
-  private static final AtomicBoolean haveLock = new AtomicBoolean(false);
-
-
   /**
    * This is the safest way to do a withElement() update. We take a global lock, and then manipulate the item, and set
    * the result. This means the mutator() can have side effects and not be idempotent, since it will only be called
@@ -846,7 +842,6 @@ public class Theseus implements HasRaftLifecycle {
         // 2.A. Case: we've verifiably submitted the lock request
         // Next, let's actually wait on the lock
         stateMachine.createLockAcquiredFuture(elementName, serverName, randomHash).whenComplete((gotLockSuccess, gotLockException) -> {
-          haveLock.set(true);
           if (gotLockSuccess != null && gotLockException == null && gotLockSuccess) {
             // 2.A.A. Case: we've acquired the lock
             // Next, let's do our mutation

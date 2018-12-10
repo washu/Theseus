@@ -6,6 +6,7 @@ import ai.eloquent.util.TimerUtils;
 import com.google.common.util.concurrent.MoreExecutors;
 import com.google.common.util.concurrent.ThreadFactoryBuilder;
 import com.google.protobuf.ByteString;
+import com.google.protobuf.InvalidProtocolBufferException;
 import org.junit.Ignore;
 import org.junit.Test;
 import org.junit.experimental.categories.Category;
@@ -24,6 +25,34 @@ import static ai.eloquent.raft.KeyValueStateMachine.*;
 public class KeyValueStateMachineTest {
 
   private long now = TimerUtils.mockableNow().toEpochMilli();
+
+  /**
+   * Assert that a given state machine serializes correctly.
+   */
+  private void assertSerializable(KeyValueStateMachine original) {
+    try {
+      EloquentRaftProto.StateMachine proto = EloquentRaftProto.StateMachine.parseFrom(original.serialize());
+      KeyValueStateMachineProto.KVStateMachine serialized = KeyValueStateMachineProto.KVStateMachine.parseFrom(proto.getPayload());
+
+      // Check the locks
+      assertEquals(new HashSet<>(serialized.getLocksKeysList()), new HashSet<>(original.locks.keySet()));
+      for (Map.Entry<String, QueueLock> entry : original.locks.entrySet()) {
+        KeyValueStateMachineProto.QueueLock serValue = serialized.getLocksValues(serialized.getLocksKeysList().indexOf(entry.getKey()));
+        assertEquals(entry.getValue(), QueueLock.deserialize(serValue));
+      }
+
+      // Check the values
+      assertEquals(new HashSet<>(serialized.getValuesKeysList()), new HashSet<>(original.values.keySet()));
+      for (Map.Entry<String, ValueWithOptionalOwner> entry : original.values.entrySet()) {
+        KeyValueStateMachineProto.ValueWithOptionalOwner serValue = serialized.getValuesValues(serialized.getValuesKeysList().indexOf(entry.getKey()));
+        assertEquals(entry.getValue(), ValueWithOptionalOwner.deserialize(serValue));
+      }
+
+    } catch (InvalidProtocolBufferException e) {
+      throw new RuntimeException(e);
+    }
+  }
+
 
   @Test
   public void testGetSet() {
@@ -994,6 +1023,73 @@ public class KeyValueStateMachineTest {
       pool.shutdown();
       assertTrue("Pool should close", pool.awaitTermination(5, TimeUnit.SECONDS));
     }
+  }
+
+
+  /**
+   * Test that a {@link LockRequest} has a well-behaved equals, hashCode, and serialize.
+   */
+  @Test
+  public void lockRequestBasicContract() {
+    LockRequest original = new LockRequest("server", "hash");
+    LockRequest same = new LockRequest("server", "hash");
+    assertEquals(original, original);
+    assertEquals(original, same);
+    assertEquals(original.hashCode(), same.hashCode());
+    assertEquals(original, LockRequest.deserialize(original.serialize()));
+  }
+
+
+  /**
+   * Test that a {@link QueueLock} has a well-behaved equals, hashCode, and serialize.
+   */
+  @Test
+  public void queueLockBasicContract() {
+    LockRequest a = new LockRequest("A", "hash");
+    LockRequest b = new LockRequest("B", "hash");
+    LockRequest c = new LockRequest("C", "hash");
+    QueueLock original = new QueueLock(a, Arrays.asList(b, c));
+    QueueLock same = new QueueLock(a, Arrays.asList(b, c));
+
+    assertEquals(original, original);
+    assertEquals(original, same);
+    assertEquals(original.hashCode(), same.hashCode());
+    assertEquals(original, QueueLock.deserialize(original.serialize()));
+  }
+
+
+  /**
+   * Ensure that any waiting locks that got completely bypassed and clobbered on a snapshot
+   * install have their futures completed.
+   */
+  @Test
+  public void failWaitingLocksOnSnapshotInstall() {
+    // Create an initial lock state
+    KeyValueStateMachine me = new KeyValueStateMachine("me");
+    LockRequest a = new LockRequest("A", "1");
+    LockRequest b = new LockRequest("B", "2");
+    LockRequest c = new LockRequest("C", "3");
+    me.locks.put("lock", new QueueLock(a, Arrays.asList(b, c)));
+    assertSerializable(me);
+
+    // Create futures waiting on things
+    CompletableFuture<Boolean> futureB = me.createLockAcquiredFuture("lock", b.server, b.uniqueHash);
+    CompletableFuture<Boolean> futureC = me.createLockAcquiredFuture("lock", c.server, c.uniqueHash);
+
+    // Some foreign machine forgets locks A and B
+    KeyValueStateMachine foreign = new KeyValueStateMachine("me");
+    foreign.locks.put("lock", new QueueLock(c, Collections.emptyList()));
+    assertSerializable(foreign);
+    byte[] snapshot = foreign.serializeImpl().toByteArray();
+
+    // We overwrite our state with the foreign snapshot
+    me.overwriteWithSerializedImpl(snapshot, 0L, MoreExecutors.newDirectExecutorService());
+
+    // Check that all our futures fired
+    assertTrue("lock C (the one newly acquired) should have its future executed", futureC.isDone());
+    assertTrue("lock C (the one newly acquired) should have its future return True", futureC.getNow(false));
+    assertTrue("lock B (the one forgotten) should have its future executed", futureB.isDone());
+    assertFalse("lock B (the one forgotten) should have its future return False, since it was never obtained", futureB.getNow(true));
   }
 
 
