@@ -13,6 +13,7 @@ import org.slf4j.LoggerFactory;
 import java.lang.management.GarbageCollectorMXBean;
 import java.lang.management.ManagementFactory;
 import java.lang.management.OperatingSystemMXBean;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.*;
 import java.util.concurrent.CompletableFuture;
@@ -44,7 +45,7 @@ public class EloquentRaftAlgorithm implements RaftAlgorithm {
    *   <li>Removing a server from the configuration that has not been responding to heartbeats.</li>
    * </ol>
    */
-  public static final long MACHINE_DOWN_TIMEOUT = 300000;  // 5 minutes
+  public static final long MACHINE_DOWN_TIMEOUT = Duration.ofMinutes(5).toMillis();  // 5 minutes
 
   /**
    * The number of broadcasts that can happen within a heartbeat interval before

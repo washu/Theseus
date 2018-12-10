@@ -482,11 +482,14 @@ public class TheseusTest extends WithLocalTransport {
       log.info("Doing "+(numIters * numThreads)+" atomic increments took "+((double)duration / (numIters * numThreads))+"ms per increment");
 
       // Check the sum
-      byte[] value = raftNodes[0].getElement("running_sum").get();
-      int intValue = ByteBuffer.wrap(value).getInt();
+      AtomicInteger intValue = new AtomicInteger(0);
+      raftNodes[0].withElementAsync("running_sum", elem -> {
+        intValue.set(ByteBuffer.wrap(elem).getInt());
+        return elem;
+      }, () -> null, false).get(10, TimeUnit.SECONDS);
       assertEquals("Should have made the right number of function calls", numThreads * numIters - failureCount.get(), callCount.get());
       assertEquals("Should have seen the right number of numbers", numThreads * numIters - failureCount.get(), numbersSeen.size());
-      assertEquals("Running sum should have been consistent", numThreads * numIters - failureCount.get(), intValue);
+      assertEquals("Running sum should have been consistent", numThreads * numIters - failureCount.get(), intValue.get());
     }, nodes);
     transport.stop();
   }
