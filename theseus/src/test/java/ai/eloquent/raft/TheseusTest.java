@@ -30,7 +30,6 @@ import static org.junit.Assert.*;
  * This runs fuzz tests on our implementation of Raft
  */
 @Category(SlowTests.class)
-@SuppressWarnings("OptionalGetWithoutIsPresent")
 public class TheseusTest extends WithLocalTransport {
   /**
    * An SLF4J Logger for this class.
