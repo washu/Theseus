@@ -912,7 +912,11 @@ public class SingleThreadedRaftAlgorithm implements RaftAlgorithm {
   /** {@inheritDoc} */
   @Override
   public void heartbeat() {
-    execute("heartbeat", TaskPriority.HIGH, RaftAlgorithm::heartbeat);
+    if (this.raftTasks.criticalPriority.size() > 100 || this.raftTasks.criticalPriority.stream().anyMatch(x -> "heartbeat".equals(x.debugString))) {
+      log.warn("Skipping heartbeat; either prior heartbeat is still on the queue, or >100 critical tasks are on the queue");
+    } else {
+      execute("heartbeat", TaskPriority.CRITICAL, RaftAlgorithm::heartbeat);
+    }
   }
 
 
