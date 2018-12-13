@@ -191,14 +191,17 @@ public class KeyValueStateMachine extends RaftStateMachine {
     }
   }
 
+
   /**
    * This is the private implementation for a QueueLock.
    */
   static class QueueLock {
     /** The holder of this lock */
     @Nullable LockRequest holder;
+
     /** The requesters waiting on this lock */
     final ConcurrentLinkedQueue<LockRequest> waiting;
+
     /** The set of requesters waiting on the lock. This is the unordered mirror of {@link #waiting}. */
     private final HashSet<LockRequest> waitingSet;
 
@@ -262,6 +265,22 @@ public class KeyValueStateMachine extends RaftStateMachine {
         return null;
       }
     }
+
+
+    /**
+     * Release all of the following requests.
+     * Note that you're on your own for firing the associated futures
+     *
+     * @param locks The locks to release
+     */
+    private synchronized void releaseAll(Collection<LockRequest> locks) {
+      waiting.removeIf(locks::contains);
+      waitingSet.removeAll(locks);
+      if (locks.contains(holder)) {
+        holder = waiting.poll();
+      }
+    }
+
 
     /**
      * Stop waiting on this lock if the given condition is true.
@@ -363,14 +382,12 @@ public class KeyValueStateMachine extends RaftStateMachine {
       if (this == o) return true;
       if (o == null || getClass() != o.getClass()) return false;
       LockRequest request = (LockRequest) o;
-      return server.equals(request.server) && uniqueHash.equals(request.uniqueHash);
+      return uniqueHash.equals(request.uniqueHash) && server.equals(request.server);
     }
 
     @Override
     public int hashCode() {
-      int result = server.hashCode();
-      result = 31 * result + uniqueHash.hashCode();
-      return result;
+      return uniqueHash.hashCode();
     }
   }
 
@@ -399,15 +416,16 @@ public class KeyValueStateMachine extends RaftStateMachine {
       if (this == o) return true;
       if (o == null || getClass() != o.getClass()) return false;
       NamedLockRequest that = (NamedLockRequest) o;
-      return Objects.equals(lockName, that.lockName) &&
-          Objects.equals(requester, that.requester) &&
-          Objects.equals(uniqueHash, that.uniqueHash);
+      return
+          Objects.equals(uniqueHash, that.uniqueHash) &&
+          Objects.equals(lockName, that.lockName) &&
+          Objects.equals(requester, that.requester);
     }
 
     /** {@inheritDoc} */
     @Override
     public int hashCode() {
-      return Objects.hash(lockName, requester, uniqueHash);
+      return uniqueHash.hashCode();
     }
   }
 
@@ -683,8 +701,38 @@ public class KeyValueStateMachine extends RaftStateMachine {
       switch (serializedTransition.getType()) {
 
         case TRANSITION_GROUP:
-          for (KeyValueStateMachineProto.Transition transition : serializedTransition.getTransitionsList()) {
-            applyTransition(transition, now, pool, true);
+          if (serializedTransition.getTransitionsCount() > 5 && serializedTransition.getTransitionsList().stream().allMatch(x -> x.getType() == KeyValueStateMachineProto.TransitionType.RELEASE_LOCK)) {
+            // special case bulk lock releases
+            Map<String, Set<LockRequest>> releases = new HashMap<>();
+            for (KeyValueStateMachineProto.Transition transition : serializedTransition.getTransitionsList()) {
+              KeyValueStateMachineProto.ReleaseLock serializedReleaseLock = transition.getReleaseLock();
+              LockRequest releaseLockRequest = new LockRequest(serializedReleaseLock.getRequester(), serializedReleaseLock.getUniqueHash());
+              releases.computeIfAbsent(serializedReleaseLock.getLock(), k -> new HashSet<>(serializedTransition.getTransitionsCount())).add(releaseLockRequest);
+            }
+            for (Map.Entry<String, Set<LockRequest>> entry : releases.entrySet()) {
+              lock = locks.get(entry.getKey());
+              if (lock != null) {
+                lock.releaseAll(entry.getValue());
+                for (LockRequest l : entry.getValue()) {
+                  if (Objects.equals(l, lock.holder)) {
+                    executeFutures(l, entry.getKey(), pool, true);
+                  } else {
+                    executeFutures(l, entry.getKey(), pool, false);
+                  }
+                }
+                if (lock.holder == null) {
+                  locks.remove(entry.getKey());
+                }
+              } else {
+                log.warn("Received bulk release lock on unregistered lock: '{}'", entry.getKey());
+              }
+
+            }
+          } else {
+            // Other bulk transition
+            for (KeyValueStateMachineProto.Transition transition : serializedTransition.getTransitionsList()) {
+              applyTransition(transition, now, pool, true);
+            }
           }
           break;
 

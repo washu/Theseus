@@ -10,10 +10,14 @@ import com.google.protobuf.InvalidProtocolBufferException;
 import org.junit.Ignore;
 import org.junit.Test;
 import org.junit.experimental.categories.Category;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.time.Duration;
 import java.util.*;
 import java.util.concurrent.*;
+import java.util.stream.Collectors;
+import java.util.stream.IntStream;
 
 import static org.junit.Assert.*;
 import static ai.eloquent.raft.KeyValueStateMachine.*;
@@ -23,6 +27,8 @@ import static ai.eloquent.raft.KeyValueStateMachine.*;
  */
 @SuppressWarnings("ConstantConditions")
 public class KeyValueStateMachineTest {
+
+  private static final Logger log = LoggerFactory.getLogger(KeyValueStateMachineTest.class);
 
   private long now = TimerUtils.mockableNow().toEpochMilli();
 
@@ -1093,6 +1099,47 @@ public class KeyValueStateMachineTest {
   }
 
 
+  /**
+   * Test that a {@link LockRequest} has a well-behaved equals, hashCode, and serialize.
+   */
+  @Test
+  public void bulkRelease() {
+    int count = 100;
+    // Create the transitions
+    KeyValueStateMachine sm = new KeyValueStateMachine("name");
+    byte[][] acquires = IntStream.range(0, count).mapToObj(i ->
+        KeyValueStateMachineProto.Transition.newBuilder().setType(KeyValueStateMachineProto.TransitionType.REQUEST_LOCK)
+            .setRequestLock(KeyValueStateMachineProto.RequestLock.newBuilder().setLock("lock").setRequester("me").setUniqueHash(Integer.toString(i)).build())
+            .build().toByteArray()
+    ).toArray(byte[][]::new);
+    byte[][] releases = IntStream.range(0, count).mapToObj(i ->
+        KeyValueStateMachineProto.Transition.newBuilder().setType(KeyValueStateMachineProto.TransitionType.RELEASE_LOCK)
+            .setReleaseLock(KeyValueStateMachineProto.ReleaseLock.newBuilder().setLock("lock").setRequester("me").setUniqueHash(Integer.toString(i)).build())
+            .build().toByteArray()
+    ).toArray(byte[][]::new);
+
+    // Create futures for the locks
+    List<CompletableFuture<Boolean>> futures = IntStream.range(0, count).mapToObj(i ->
+        sm.createLockAcquiredFuture("lock", "me", Integer.toString(i))
+    ).collect(Collectors.toList());
+
+    // Acquire the locks
+    sm.applyTransition(KeyValueStateMachine.createGroupedTransition(acquires), TimerUtils.mockableNow().toEpochMilli(), MoreExecutors.newDirectExecutorService());
+    assertEquals("Our first request should have the lock", "0", sm.locks.get("lock").holder.uniqueHash);
+    assertEquals("" + (count - 1) + " others should be waiting on locks", count - 1, sm.locks.get("lock").waiting.size());
+
+    // Release the locks
+    sm.applyTransition(KeyValueStateMachine.createGroupedTransition(releases), TimerUtils.mockableNow().toEpochMilli(), MoreExecutors.newDirectExecutorService());
+
+    // Check that everything is ok
+    assertNull("We should no longer track the lock", sm.locks.get("lock"));
+    assertTrue("The first future should have succeeded", futures.get(0).getNow(false));
+    for (int i = 1; i < count; ++i) {
+      assertFalse("Later futures (" + i + ") should have failed", futures.get(i).getNow(true));
+    }
+  }
+
+
   // --------------------------------------------------------------------------
   // Benchmarks
   // --------------------------------------------------------------------------
@@ -1194,5 +1241,56 @@ public class KeyValueStateMachineTest {
       System.out.println("Applying "+size+" transitions: "+ TimerUtils.formatTimeDifference(entries));
       System.out.println("Avg per transition: "+((double)entries / size)+"ms");
     }
+  }
+
+  @Ignore
+  @Test
+  public void benchmarkReleaseLock() {
+    // Params
+    int extraLocks = 1000;
+    int numReleases = 6226;  // a real use case :(
+    int iters = 10000;
+
+    // Setup
+    KeyValueStateMachine sm = new KeyValueStateMachine("name");
+    byte[][] alreadyTaken = IntStream.range(0, extraLocks).mapToObj(i ->
+      KeyValueStateMachineProto.Transition.newBuilder().setType(KeyValueStateMachineProto.TransitionType.REQUEST_LOCK)
+        .setRequestLock(KeyValueStateMachineProto.RequestLock.newBuilder().setLock("lock").setRequester("me").setUniqueHash(Integer.toString(i)).build())
+        .build().toByteArray()
+    ).toArray(byte[][]::new);
+    byte[][] acquires = IntStream.range(0, numReleases).mapToObj(i ->
+        KeyValueStateMachineProto.Transition.newBuilder().setType(KeyValueStateMachineProto.TransitionType.REQUEST_LOCK)
+            .setRequestLock(KeyValueStateMachineProto.RequestLock.newBuilder().setLock("lock").setRequester("me").setUniqueHash(Integer.toString(extraLocks + i)).build())
+            .build().toByteArray()
+    ).toArray(byte[][]::new);
+    byte[][] releases = IntStream.range(0, numReleases).mapToObj(i ->
+            KeyValueStateMachineProto.Transition.newBuilder().setType(KeyValueStateMachineProto.TransitionType.RELEASE_LOCK)
+                .setReleaseLock(KeyValueStateMachineProto.ReleaseLock.newBuilder().setLock("lock").setRequester("me").setUniqueHash(Integer.toString(extraLocks + i)).build())
+                .build().toByteArray()
+    ).toArray(byte[][]::new);
+    sm.applyTransition(KeyValueStateMachine.createGroupedTransition(alreadyTaken), TimerUtils.mockableNow().toEpochMilli(), MoreExecutors.newDirectExecutorService());
+
+    // Burn-in
+    for (int i = 0; i < 10; ++i) {
+      sm.applyTransition(KeyValueStateMachine.createGroupedTransition(acquires), TimerUtils.mockableNow().toEpochMilli(), MoreExecutors.newDirectExecutorService());
+      sm.applyTransition(KeyValueStateMachine.createGroupedTransition(releases), TimerUtils.mockableNow().toEpochMilli(), MoreExecutors.newDirectExecutorService());
+    }
+
+    // Test
+    long sum = 0L;
+    for (int i = 0; i < iters; ++i) {
+      sm.applyTransition(KeyValueStateMachine.createGroupedTransition(acquires), TimerUtils.mockableNow().toEpochMilli(), MoreExecutors.newDirectExecutorService());
+      long start = System.nanoTime();
+      sm.applyTransition(KeyValueStateMachine.createGroupedTransition(releases), TimerUtils.mockableNow().toEpochMilli(), MoreExecutors.newDirectExecutorService());
+      sum += System.nanoTime() - start;
+    }
+
+    // Report
+    long aveNanos = (sum) / iters;
+    double aveMillis = ((double) aveNanos) / 1000000.0;
+    log.info("took {}ns = {}ms to release {} locks in bulk release", aveNanos, aveMillis, numReleases);
+
+    // Asserts
+    assertEquals(extraLocks - 1, sm.locks.get("lock").waiting.size());
   }
 }

@@ -358,7 +358,7 @@ public class Theseus implements HasRaftLifecycle {
     //
     Thread lockCleanupThread = new Thread(() -> {
       long lastTry = 0;  // not Long#MIN_VALUE so we don't accidentally underflow
-      long timeout = node.algorithm.electionTimeoutMillisRange().end * 2;
+      long timeout = node.algorithm.electionTimeoutMillisRange().end * 10;
       while (alive) {
         try {
           // 1. Wait on new unreleased locks
@@ -371,7 +371,6 @@ public class Theseus implements HasRaftLifecycle {
             }
             unreleasedLocksCopy = unreleasedLocks.toArray(new byte[0][]);
           }
-          lastTry = System.currentTimeMillis();  // This counts as a try, even if we don't end up doing anything
           if (unreleasedLocksCopy.length > 0 &&                      // note[gabor]: only run if we have something to run
               (!alive || this.errors().isEmpty()) &&                 // note[gabor]: only run if we're error free (or shutting down). Otherwise this is a foolish attempt
               this.node.algorithm.mutableState().leader.isPresent()  // note[gabor]: if we have no leader (we're in the middle of an election), we're just asking for pain
@@ -406,6 +405,8 @@ public class Theseus implements HasRaftLifecycle {
           } else {
             log.warn("Caught an exception in the lockCleanupThread in Theseus", t);
           }
+        } finally {
+          lastTry = System.currentTimeMillis();  // This counts as a try, even if we don't end up doing anything
         }
       }
       // Just a sanity check

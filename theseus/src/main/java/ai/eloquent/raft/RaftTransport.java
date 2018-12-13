@@ -154,19 +154,25 @@ public interface RaftTransport {
       public void run() {
         while (alive.get()) {
           try {
-            long now = now();
-            if (now - lastHeartbeat > 2 * period) {
-              log.warn("Heartbeat interval slipped to {}ms", now - lastHeartbeat);
-            }
-            if (now - lastHeartbeat >= period - 1) {
-              lastHeartbeat = now;
-              // -- do the heartbeat --
-              heartbeatFn.run();
-              // --                  --
-              long timeTakenOnHeartbeat = now - now();
-              if (timeTakenOnHeartbeat > period) {
-                log.warn("Heartbeat execution took {}ms", timeTakenOnHeartbeat);
+            long nowBefore = now();
+            long nowAfter = nowBefore;  // to be overwritten below
+            try {
+              if (nowBefore - lastHeartbeat > 2 * period) {
+                log.warn("Heartbeat interval slipped to {}ms", nowBefore - lastHeartbeat);
               }
+              if (nowBefore - lastHeartbeat >= period - 1) {
+                lastHeartbeat = nowBefore;
+                // -- do the heartbeat --
+                heartbeatFn.run();
+                // --                  --
+                nowAfter = now();
+                long timeTakenOnHeartbeat = nowBefore - nowAfter;
+                if (timeTakenOnHeartbeat > period) {
+                  log.warn("Heartbeat execution took {}ms", timeTakenOnHeartbeat);
+                }
+              }
+            } finally {
+              lastHeartbeat = nowAfter;
             }
             sleep(0, 100000);  // 0.1ms
           } catch (InterruptedException ignored) {

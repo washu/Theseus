@@ -158,11 +158,13 @@ public class EloquentRaftNode implements HasRaftLifecycle {
     // Note[gabor]: we use a thread here to avoid issues with scheduling timers. This is nearly busy-waiting,
     // but with 0.1ms sleeps between loop iterations so we don't consume quite as much CPU.
     this.transport.scheduleHeartbeat(() -> alive, algorithm.heartbeatMillis(), () -> {
-      long now = transport.now();
       long lastHb = this.lastHeartbeat;
-      this.lastHeartbeat = now;
-      algorithm.heartbeat();
-      Prometheus.histogramObserve(histogramHeartbeatTiming, now - lastHb);
+      Prometheus.histogramObserve(histogramHeartbeatTiming, transport.now() - lastHb);
+      try {
+        algorithm.heartbeat();
+      } finally {
+        this.lastHeartbeat = transport.now();
+      }
     }, log);
 
     // 2. Failsafe timer

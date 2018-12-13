@@ -871,7 +871,7 @@ public class SingleThreadedRaftAlgorithm implements RaftAlgorithm {
   @Override
   public boolean bootstrap(boolean force) {
     try {
-      return execute("bootstrap", TaskPriority.CRITICAL, (Function<RaftAlgorithm, Boolean>) x -> x.bootstrap(force)).get(30, TimeUnit.SECONDS);
+      return execute("bootstrap", TaskPriority.HIGH, (Function<RaftAlgorithm, Boolean>) x -> x.bootstrap(force)).get(30, TimeUnit.SECONDS);
     } catch (InterruptedException | ExecutionException | TimeoutException e) {
       log.warn("Could not bootstrap -- returning unlocked version as a failsafe");
       return impl.bootstrap(force);
