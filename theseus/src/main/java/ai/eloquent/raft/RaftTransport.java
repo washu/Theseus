@@ -155,13 +155,12 @@ public interface RaftTransport {
         while (alive.get()) {
           try {
             long nowBefore = now();
-            long nowAfter = nowBefore;  // to be overwritten below
-            try {
-              if (nowBefore - lastHeartbeat > 2 * period) {
-                log.warn("Heartbeat interval slipped to {}ms", nowBefore - lastHeartbeat);
-              }
-              if (nowBefore - lastHeartbeat >= period - 1) {
-                lastHeartbeat = nowBefore;
+            if (nowBefore - lastHeartbeat > 2 * period) {
+              log.warn("Heartbeat interval slipped to {}ms", nowBefore - lastHeartbeat);
+            }
+            if (nowBefore - lastHeartbeat >= period - 1) {
+              long nowAfter = nowBefore;  // to be overwritten below
+              try {
                 // -- do the heartbeat --
                 heartbeatFn.run();
                 // --                  --
@@ -170,9 +169,9 @@ public interface RaftTransport {
                 if (timeTakenOnHeartbeat > period) {
                   log.warn("Heartbeat execution took {}ms", timeTakenOnHeartbeat);
                 }
+              } finally {
+                lastHeartbeat = nowAfter;  // use heartbeat time from after scheduling it
               }
-            } finally {
-              lastHeartbeat = nowAfter;
             }
             sleep(0, 100000);  // 0.1ms
           } catch (InterruptedException ignored) {
