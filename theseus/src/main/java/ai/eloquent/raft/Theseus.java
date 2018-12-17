@@ -1013,7 +1013,7 @@ public class Theseus implements HasRaftLifecycle {
   /**
    * THIS IS DANGEROUS TO USE! People can clobber each other's writes, and there are tons of race conditions if you use
    * this call in conjunction with getElement() with no outside synchronization mechanism. Much safer, if you haven't
-   * thought about it much, is to use withElement(). Only use setElement() if you're really certain that you are the
+   * thought about it much, is to use {@link #withElementAsync(String, Function, Supplier, boolean)}. Only use setElement() if you're really certain that you are the
    * only one in the cluster writing, or you don't mind being clobbered.
    *
    * @param elementName the name of the element to write
