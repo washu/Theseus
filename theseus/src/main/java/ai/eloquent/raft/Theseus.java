@@ -17,6 +17,7 @@ import java.time.Duration;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.BiFunction;
 import java.util.function.Function;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
@@ -828,8 +829,10 @@ public class Theseus implements HasRaftLifecycle {
     byte[] requestLockTransition = KeyValueStateMachine.createRequestLockTransition(elementName, serverName, randomHash);
     byte[] releaseLockTransition = KeyValueStateMachine.createReleaseLockTransition(elementName, serverName, randomHash);
     // 1.2. The lock release thunk
-    Supplier<CompletableFuture<Boolean>> releaseLockWithoutChange = () -> {
-      log.warn("Releasing lock '{}' on error", elementName);
+    BiFunction<String, Throwable, CompletableFuture<Boolean>> releaseLockWithoutChange = (error, exception) -> {
+      if (error != null) {
+        log.warn("Releasing lock '{}' on error: {}", elementName, error, exception);
+      }
       return exceptionProof(node.submitTransition(releaseLockTransition)  // note[gabor]: let failsafe retry -- same reasoning as above.
           .whenComplete((s, e) -> {  // note[gabor]: this is not exception-proof; `e` may not be null.
             handleReleaseLockResult(s, e, releaseLockTransition);
@@ -866,20 +869,17 @@ public class Theseus implements HasRaftLifecycle {
                   object = createNew.get();
                   newObject = true;
                 } catch (Throwable t) {
-                  log.warn("withElementAsync() object creator threw an exception: ", t);
-                  releaseLockWithoutChange.get().whenComplete((x, e) -> future.complete(false));
+                  releaseLockWithoutChange.apply("withElementAsync() object creator threw an exception: ", t).whenComplete((x, e) -> future.complete(false));
                   return;
                 }
               } else {
-                log.warn("withElementAsync() object creator is null and there's nothing in the map. Returning failure");
-                releaseLockWithoutChange.get().whenComplete((x, e) -> future.complete(false));
+                releaseLockWithoutChange.apply("withElementAsync() object creator is null and there's nothing in the map. Returning failure", null).whenComplete((x, e) -> future.complete(false));
                 return;
               }
 
               // ii. If we returned a null from creation, that's a signal to stop the withElement call
               if (object == null) {
-                log.info("Creator returned null -- not mutating");
-                releaseLockWithoutChange.get().whenComplete((x, e) -> future.complete(false));
+                releaseLockWithoutChange.apply("Creator returned null -- not mutating", null).whenComplete((x, e) -> future.complete(false));
                 return;
               }
 
@@ -890,8 +890,7 @@ public class Theseus implements HasRaftLifecycle {
               try {
                 mutated = mutator.apply(input);
               } catch (Throwable t) {
-                log.warn("withElementAsync() object mutator threw an exception: ", t);
-                releaseLockWithoutChange.get().whenComplete((x, e) -> future.complete(false));
+                releaseLockWithoutChange.apply("withElementAsync() object mutator threw an exception: ", t).whenComplete((x, e) -> future.complete(false));
                 return;
               }
 
@@ -905,8 +904,7 @@ public class Theseus implements HasRaftLifecycle {
                         future.complete(true); // SUCCESSFUL CASE
                       } else {
                         // 2.A.A.B. Case: we could not submit our transition and/or lock
-                        log.warn("Could not apply transition and/or release object lock: ", transitionException);
-                        releaseLockWithoutChange.get().whenComplete((x, e) -> future.complete(false));
+                        releaseLockWithoutChange.apply("Could not apply transition and/or release object lock", transitionException).whenComplete((x, e) -> future.complete(false));
                         //noinspection UnnecessaryReturnStatement
                         return;
                       }
@@ -914,7 +912,7 @@ public class Theseus implements HasRaftLifecycle {
               } else {
 
                 // v. If the mutator chose not to mutate the object, then this is trivially successful
-                releaseLockWithoutChange.get().whenComplete((x, e) -> future.complete(true));  // note[gabor]: completes as true
+                releaseLockWithoutChange.apply(null, null).whenComplete((x, e) -> future.complete(true));  // note[gabor]: completes as true
                 //noinspection UnnecessaryReturnStatement
                 return;
 
@@ -923,12 +921,12 @@ public class Theseus implements HasRaftLifecycle {
 
           } else {
             // 2.A.B. Case: we were unable to acquire the lock
-            releaseLockWithoutChange.get().whenComplete((x, e) -> future.complete(false));
+            releaseLockWithoutChange.apply("Failed to acquire the lock because the future returned false", null).whenComplete((x, e) -> future.complete(false));
           }
         });
       } else {
         // 2.B. Case: something went wrong submitting the lock request
-        releaseLockWithoutChange.get().whenComplete((x, e) -> future.complete(false));
+        releaseLockWithoutChange.apply("Failed to apply the request lock transition", null).whenComplete((x, e) -> future.complete(false));
       }
     });
 

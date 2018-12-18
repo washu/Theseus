@@ -1,5 +1,6 @@
 package ai.eloquent.raft;
 
+import ai.eloquent.monitoring.Prometheus;
 import ai.eloquent.util.Span;
 import com.google.protobuf.ByteString;
 
@@ -22,6 +23,12 @@ public class RaftState {
     CANDIDATE,
     OTHER
   }
+
+
+  /**
+   * Keep track of the current term as a Prometheus metric.
+   */
+  private static final Object METRIC_GAUGE_TERM = Prometheus.gaugeBuild("raft_term", "The current Raft term, as seen by this node");
 
 
   /* --------------------------------------------------------------------------
@@ -262,6 +269,9 @@ public class RaftState {
         this.votedFor = Optional.empty();
       }
       this.currentTerm = term;
+
+      // Notify Prometheus of the current term
+      Prometheus.gaugeSet(METRIC_GAUGE_TERM, this.currentTerm);
     } finally {
       log.assertConsistency();
     }
