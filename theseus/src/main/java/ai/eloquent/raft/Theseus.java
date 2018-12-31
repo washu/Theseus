@@ -1,6 +1,7 @@
 package ai.eloquent.raft;
 
 import ai.eloquent.error.RaftErrorListener;
+import ai.eloquent.monitoring.Prometheus;
 import ai.eloquent.util.Lazy;
 import ai.eloquent.util.SafeTimerTask;
 import ai.eloquent.util.TimerUtils;
@@ -46,6 +47,18 @@ public class Theseus implements HasRaftLifecycle {
    * A unique counter for, e.g., creating unique hashes.
    */
   private static final AtomicLong UNIQUE_COUNTER = new AtomicLong();
+
+  /**
+   * The number of listeners bound to this transport.
+   */
+  private static final Object COUNTER_CALLS =
+      Prometheus.counterBuild("theseus_calls", "The calls that are made to Theseus", "method");
+
+  /**
+   * The number of times we failed to acquire a lock.
+   */
+  private static final Object COUNTER_FAILED_LOCKS =
+      Prometheus.counterBuild("theseus_failed_locks", "The number of times we failed to acquire a lock");
 
 
   /**
@@ -220,7 +233,6 @@ public class Theseus implements HasRaftLifecycle {
     /**
      * This is a safety check to ensure that if a lock gets GC'd, it also gets released
      */
-    @SuppressWarnings("deprecation")  // Note[gabor]: Yes, we're doing a bad thing, but it's better than the alternative...
     @Override
     protected void finalize() throws Throwable {
       try {
@@ -349,7 +361,7 @@ public class Theseus implements HasRaftLifecycle {
         unreleasedLocks.notifyAll();
       }
     });
-    this.defaultTimeout = Duration.ofMillis(node.algorithm.electionTimeoutMillisRange().end * 2);
+    this.defaultTimeout = Duration.ofMillis(node.algorithm.electionTimeoutMillisRange().end * 5);
     this.stateMachine = (KeyValueStateMachine) algo.mutableStateMachine();
     this.lifecycle = lifecycle;
     this.pool = algo.mutableState().log.pool;
@@ -402,7 +414,7 @@ public class Theseus implements HasRaftLifecycle {
         } catch (Throwable t) {
           if (t instanceof TimeoutException ||
               (t instanceof ExecutionException && t.getCause() != null && t.getCause() instanceof TimeoutException)) {
-            log.info("Caught a timeout exception in the lockCleanupThread in Theseus");
+            log.debug("Caught a timeout exception in the lockCleanupThread in Theseus");
           } else {
             log.warn("Caught an exception in the lockCleanupThread in Theseus", t);
           }
@@ -626,6 +638,7 @@ public class Theseus implements HasRaftLifecycle {
    * @param runnable the runnable to execute while holding the lock
    */
   public CompletableFuture<Boolean> withDistributedLockAsync(String lockName, Supplier<CompletableFuture<Boolean>> runnable) {
+    Prometheus.counterInc(Prometheus.labelCounter(COUNTER_CALLS, "withDistributedLockAsync"));
     // 1. Create and submit the lock request
     final String randomHash = generateUniqueHash();
     byte[] releaseLockTransition = KeyValueStateMachine.createReleaseLockTransition(lockName, serverName, randomHash);
@@ -705,6 +718,7 @@ public class Theseus implements HasRaftLifecycle {
    *         release it. If we were unable to acquire the lock, returns empty.
    */
   public CompletableFuture<Optional<LongLivedLock>> tryLockAsync(String lockName, Duration safetyReleaseWindow) {
+    Prometheus.counterInc(Prometheus.labelCounter(COUNTER_CALLS, "tryLockAsync"));
     String randomHash = generateUniqueHash();
     CompletableFuture<Optional<LongLivedLock>> future = new CompletableFuture<>();
 
@@ -823,6 +837,7 @@ public class Theseus implements HasRaftLifecycle {
    * @return true on success, false if something went wrong
    */
   public CompletableFuture<Boolean> withElementAsync(String elementName, Function<byte[], byte[]> mutator, @Nullable Supplier<byte[]> createNew, boolean permanent) {
+    Prometheus.counterInc(Prometheus.labelCounter(COUNTER_CALLS, "withElementAsync"));
     // 1. Create the lock request
     // 1.1. The lock request
     final String randomHash = generateUniqueHash();
@@ -831,6 +846,7 @@ public class Theseus implements HasRaftLifecycle {
     // 1.2. The lock release thunk
     BiFunction<String, Throwable, CompletableFuture<Boolean>> releaseLockWithoutChange = (error, exception) -> {
       if (error != null) {
+        Prometheus.counterInc(COUNTER_FAILED_LOCKS);
         log.warn("Releasing lock '{}' on error: {}", elementName, error, exception);
       }
       return exceptionProof(node.submitTransition(releaseLockTransition)  // note[gabor]: let failsafe retry -- same reasoning as above.
@@ -1240,7 +1256,7 @@ public class Theseus implements HasRaftLifecycle {
         if (t != null || success == null) {
           if (t instanceof TimeoutException ||
               (t instanceof CompletionException && t.getCause() != null && t.getCause() instanceof TimeoutException)) {
-            log.info("Caught a timeout exception exception proof wrapper");
+            log.debug("Caught a timeout exception exception proof wrapper");
           } else {
             log.warn("Caught an exception in exception proof wrapper", t);
           }

@@ -17,6 +17,7 @@ import java.util.Objects;
  * We enforce that 2 metrics with the same name refer to the same metric.
  * Author: zameschua
  */
+@SuppressWarnings("Duplicates")
 public class Prometheus {
 
   /**
@@ -297,14 +298,12 @@ public class Prometheus {
       } catch (IllegalArgumentException | IllegalAccessException e) {
         log.warn("Prometheus methods could not be invoked (version mismatch?) -- not logging statistics", e);
         e.printStackTrace();
-        //noinspection ConstantConditions
         timerMetric = new TimerMock(null, labels);
       }
     } else {
       // If we are mocking Prometheus
       if (summary != null && !(summary instanceof SummaryMock)) {
         log.error("Starting a timer on something other than a SummaryMock: {}", summary.getClass());
-        //noinspection ConstantConditions
         timerMetric = new TimerMock(null, labels);
       // If we are mocking Prometheus and calling startTimer on something other than a SummaryMock
       } else {

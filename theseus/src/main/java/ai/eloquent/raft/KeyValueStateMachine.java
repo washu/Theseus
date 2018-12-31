@@ -1,6 +1,7 @@
 package ai.eloquent.raft;
 
 import ai.eloquent.error.RaftErrorListener;
+import ai.eloquent.io.IOUtils;
 import ai.eloquent.monitoring.Prometheus;
 import ai.eloquent.util.IdentityHashSet;
 import ai.eloquent.util.StackTrace;
@@ -132,7 +133,7 @@ public class KeyValueStateMachine extends RaftStateMachine {
     }
 
     /** The straightforward constructor. */
-    private ValueWithOptionalOwner(byte[] value, String owner, long now, long createdAt) {
+    ValueWithOptionalOwner(byte[] value, String owner, long now, long createdAt) {
       this.value = value;
       this.owner = Optional.ofNullable(owner);
       this.lastAccessed = now;
@@ -145,6 +146,68 @@ public class KeyValueStateMachine extends RaftStateMachine {
     public byte[] registerGet(long now) {
       this.lastAccessed = now;
       return value;
+    }
+
+
+    /**
+     * Get the number of bytes it takes to represent this value with
+     * {@link #serializeInto(byte[], int)}.
+     */
+    public int byteSize() {
+      return 4 + value.length +
+          IOUtils.stringSerializedSize(owner.orElse("")) +
+          16;
+    }
+
+
+    /**
+     * Serialize this value directly into a buffer.
+     *
+     * @param buffer The buffer we're serializing into.
+     * @param begin The position at which we're writing this value.
+     *
+     * @return The serialized size written
+     */
+    public int serializeInto(byte[] buffer, int begin) {
+      int position = begin;
+      // 1. Value
+      IOUtils.writeInt(buffer, position, value.length);
+      System.arraycopy(value, 0, buffer, position + 4, value.length);
+      // 2. Owner
+      position += 4 + value.length + IOUtils.writeString(buffer, position + 4 + value.length, owner.orElse(""));
+      // 3. Last accessed
+      IOUtils.writeLong(buffer, position, this.lastAccessed);
+      // 4. Created at
+      IOUtils.writeLong(buffer, position + 8, this.createdAt);
+      return (position + 16) - begin;
+    }
+
+
+    /**
+     * Read a value from a given byte stream, starting at the specified position.
+     *
+     * @param buffer The byte stream to read this value from.
+     * @param begin The position to start reading from.
+     *
+     * @return The read value.
+     */
+    public static ValueWithOptionalOwner readFrom(byte[] buffer, int begin) {
+      int position = begin;
+      // 1. Value
+      int valueLength = IOUtils.readInt(buffer, position);
+      position += 4;
+      byte[] value = new byte[valueLength];
+      System.arraycopy(buffer, position, value, 0, valueLength);
+      position += valueLength;
+      // 2. Owner
+      String owner = IOUtils.readString(buffer, position);
+      position += IOUtils.stringSerializedSize(owner);
+      // 3. Last accessed
+      long lastAccessed = IOUtils.readLong(buffer, position);
+      position += 8;
+      // 4. Created At
+      long createdAt = IOUtils.readLong(buffer, position);
+      return new ValueWithOptionalOwner(value, owner.length() > 0 ? owner : null, lastAccessed, createdAt);
     }
 
 
@@ -293,6 +356,69 @@ public class KeyValueStateMachine extends RaftStateMachine {
     }
 
 
+    /**
+     * Get the number of bytes it takes to represent this value with
+     * {@link #serializeInto(byte[], int)}.
+     */
+    public int byteSize() {
+      int size = 4;
+      if (holder != null) {
+        size += holder.byteSize();
+      }
+      for (LockRequest waiting : waitingSet) {
+        size += waiting.byteSize();
+      }
+      return size;
+    }
+
+
+    /**
+     * Serialize this value directly into a buffer.
+     *
+     * @param buffer The buffer we're serializing into.
+     * @param begin The position at which we're writing this value.
+     */
+    public int serializeInto(byte[] buffer, int begin) {
+      int position = begin;
+      IOUtils.writeInt(buffer, position, (holder != null ? 1 : 0) + waitingSet.size());
+      position += 4;
+      if (holder != null) {
+        position += holder.serializeInto(buffer, position);
+      }
+      for (LockRequest waiting : waiting) {
+        position += waiting.serializeInto(buffer, position);
+      }
+      return (position - begin);
+    }
+
+
+    /**
+     * Read a value from a given byte stream, starting at the specified position.
+     *
+     * @param buffer The byte stream to read this value from.
+     * @param begin The position to start reading from.
+     *
+     * @return The read value.
+     */
+    public static QueueLock readFrom(byte[] buffer, int begin) {
+      int position = begin;
+      int numHolders = IOUtils.readInt(buffer, position);
+      position += 4;
+      if (numHolders == 0) {
+        return new QueueLock(null, Collections.emptyList());
+      } else {
+        LockRequest holder = LockRequest.readFrom(buffer, position);
+        position += holder.byteSize();
+        List<LockRequest> waiting = new ArrayList<>();
+        for (int i = 1; i < numHolders; ++i) {
+          waiting.add(LockRequest.readFrom(buffer, position));
+          position += waiting.get(waiting.size() - 1).byteSize();
+        }
+        return new QueueLock(holder, waiting);
+      }
+    }
+
+
     /** Serialize this lock to proto */
     public synchronized KeyValueStateMachineProto.QueueLock serialize() {
       KeyValueStateMachineProto.QueueLock.Builder builder = KeyValueStateMachineProto.QueueLock.newBuilder();
@@ -358,6 +484,50 @@ public class KeyValueStateMachine extends RaftStateMachine {
       this.server = server;
       this.uniqueHash = uniqueHash;
     }
+
+
+    /**
+     * Get the number of bytes it takes to represent this value with
+     * {@link #serializeInto(byte[], int)}.
+     */
+    public int byteSize() {
+      return IOUtils.stringSerializedSize(server) +
+             IOUtils.stringSerializedSize(uniqueHash);
+    }
+
+
+    /**
+     * Serialize this value directly into a buffer.
+     *
+     * @param buffer The buffer we're serializing into.
+     * @param begin The position at which we're writing this value.
+     *
+     * @return The number of bytes written to the buffer
+     */
+    public int serializeInto(byte[] buffer, int begin) {
+      int position = begin;
+      position += IOUtils.writeString(buffer, position, server);
+      position += IOUtils.writeString(buffer, position, uniqueHash);
+      return position - begin;
+    }
+
+
+    /**
+     * Read a value from a given byte stream, starting at the specified position.
+     *
+     * @param buffer The byte stream to read this value from.
+     * @param begin The position to start reading from.
+     *
+     * @return The read value.
+     */
+    public static LockRequest readFrom(byte[] buffer, int begin) {
+      int position = begin;
+      String server = IOUtils.readString(buffer, position);
+      position += IOUtils.stringSerializedSize(server);
+      String uniqueHash = IOUtils.readString(buffer, position);
+      return new LockRequest(server, uniqueHash);
+    }
+
 
     /** Write this lock request to a proto */
     public KeyValueStateMachineProto.LockRequest serialize() {
@@ -579,6 +749,56 @@ public class KeyValueStateMachine extends RaftStateMachine {
    *
    * @return a proto of this state machine
    */
+  @SuppressWarnings("unused")  // deprecated Dec 29 2018; kept for backwards compatibility
+  @Deprecated
+  private ByteString serializeProto() {
+    KeyValueStateMachineProto.KVStateMachine.Builder builder = KeyValueStateMachineProto.KVStateMachine.newBuilder();
+    this.values.forEach((key, value) -> {
+      builder.addValuesKeys(key);
+      builder.addValuesValues(value.serialize());
+    });
+    this.locks.forEach((key, value) -> {
+      builder.addLocksKeys(key);
+      builder.addLocksValues(value.serialize());
+    });
+    return builder.build().toByteString();
+  }
+
+
+  /**
+   * Serialize this state machine directly into a byte array.
+   */
+  private ByteString serializeBytes() {
+    // 1. Compute the size
+    int[] size = new int[]{8};  // initially allocate space for 2 4-byte integers
+    this.values.forEach((key, value) -> size[0] += IOUtils.stringSerializedSize(key) + value.byteSize());
+    this.locks.forEach((key, value) -> size[0] += IOUtils.stringSerializedSize(key) + value.byteSize());
+    byte[] buffer = new byte[size[0]];
+
+    // 2. Write the values
+    IOUtils.writeInt(buffer, 0, this.values.size());
+    int[] position = new int[]{4};  // we start at position 4
+    this.values.forEach((key, value) -> {
+      position[0] += IOUtils.writeString(buffer, position[0], key);
+      position[0] += value.serializeInto(buffer, position[0]);
+    });
+    IOUtils.writeInt(buffer, position[0], this.locks.size());
+    position[0] += 4;
+    this.locks.forEach((key, value) -> {
+      position[0] += IOUtils.writeString(buffer, position[0], key);
+      position[0] += value.serializeInto(buffer, position[0]);
+    });
+
+    // 3. Return
+    return ByteString.copyFrom(buffer);
+  }
+
+
+  /**
+   * This serializes the state machine's current state into a proto that can be read from {@link #overwriteWithSerialized(byte[], long, ExecutorService)}.
+   *
+   * @return a proto of this state machine
+   */
   @Override
   public ByteString serializeImpl() {
     if (!threadsInFunctions.isEmpty()) {
@@ -587,27 +807,124 @@ public class KeyValueStateMachine extends RaftStateMachine {
     threadsInFunctions.put(Thread.currentThread().getId(), "serializeImpl");
     long begin = System.currentTimeMillis();
     try {
-      KeyValueStateMachineProto.KVStateMachine.Builder builder = KeyValueStateMachineProto.KVStateMachine.newBuilder();
-
-      this.values.forEach((key, value) -> {
-        builder.addValuesKeys(key);
-        builder.addValuesValues(value.serialize());
-      });
-
-      this.locks.forEach((key, value) -> {
-        builder.addLocksKeys(key);
-        builder.addLocksValues(value.serialize());
-      });
-
-      return builder.build().toByteString();
-
+      return serializeBytes();
     } finally {
-      if (!this.values.isEmpty() && System.currentTimeMillis() - begin > 10) {
+      if (!this.values.isEmpty() && System.currentTimeMillis() - begin > 50) {
         log.warn("Serialization of state machine took {}; {} entries and {} locks", TimerUtils.formatTimeSince(begin), this.values.size(), this.locks.size());
       }
       threadsInFunctions.remove(Thread.currentThread().getId());
     }
   }
+
+  /**
+   * Overwrite a given value from the serialized state machine.
+   *
+   * @param key The key we are overwriting
+   * @param value The value we're overwriting
+   */
+  private void overwriteValue(String key, ValueWithOptionalOwner value) {
+    this.values.put(key, value);
+  }
+
+
+  /**
+   * Overwrite a given lock from the serialized state machine.
+   *
+   * @param lockName The name of the lock.
+   * @param lock The lock itself.
+   * @param pool The pool we should execute lock futures on.
+   * @param oldLocks The old locks in the system.
+   */
+  private void overwriteLock(String lockName, QueueLock lock, ExecutorService pool, Map<String, QueueLock> oldLocks) {
+    if (lock.holder != null) {
+      this.locks.put(lockName, lock);
+    } else {
+      log.warn("Deserialized an unheld lock: {}", lockName);
+    }
+    // 2.2. Execute futures on the lock's holder
+    executeFutures(lock.holder, lockName, pool, true);
+    // 2.3. Fail futures for anyone no longer waiting
+    Set<LockRequest> waiting = Optional.ofNullable(oldLocks.get(lockName)).map(x -> (Set<LockRequest>) new HashSet<>(x.waitingSet)).orElse(Collections.emptySet());
+    if (!waiting.isEmpty()) {
+      waiting.removeAll(lock.waitingSet);
+      if (lock.holder != null) {
+        waiting.remove(lock.holder);
+      }
+      for (LockRequest req : waiting) {
+        executeFutures(req, lockName, pool, false);
+      }
+    }
+
+  }
+
+  /**
+   * This overwrites the current state of the state machine with a serialized proto. All the current state of the state
+   * machine is overwritten, and the new state is substituted in its place.
+   *
+   * @param serialized the state machine to overwrite this one with, in serialized form.
+   *                   This should be a {@link KeyValueStateMachine}, not a {@link EloquentRaftProto.StateMachine}.
+   */
+  @SuppressWarnings("unused")  // deprecated Dec 29 2018; kept for backwards compatibility
+  @Deprecated
+  private void overwriteWithSerializedProto(byte[] serialized, ExecutorService pool) {
+    try {
+      KeyValueStateMachineProto.KVStateMachine serializedStateMachine = KeyValueStateMachineProto.KVStateMachine.parseFrom(serialized);
+
+      // 1. Overwrite the values
+      this.values.clear();
+      for (int i = 0; i < serializedStateMachine.getValuesKeysCount(); ++i) {
+        ValueWithOptionalOwner value = ValueWithOptionalOwner.deserialize(serializedStateMachine.getValuesValues(i));
+        overwriteValue(serializedStateMachine.getValuesKeys(i), value);
+      }
+
+      // 2. Overwrite the locks
+      Map<String, QueueLock> oldLocks = new HashMap<>(this.locks);
+      this.locks.clear();
+      for (int i = 0; i < serializedStateMachine.getLocksKeysCount(); ++i) {
+        // 2.1. Set the lock
+        String lockName = serializedStateMachine.getLocksKeys(i);
+        QueueLock lock = QueueLock.deserialize(serializedStateMachine.getLocksValues(i));
+        overwriteLock(lockName, lock, pool, oldLocks);
+      }
+    } catch (InvalidProtocolBufferException e) {
+      log.error("Attempting to deserialize an invalid snapshot! This is very bad. Leaving current state unchanged.", e);
+    }
+  }
+
+
+  /**
+   * Overwrite this state machine with the serialized bytes.
+   * Symmetric with {@link #serializeBytes()}.
+   */
+  private void overwriteWithSerializedBytes(byte[] serialized, ExecutorService pool) {
+    int position = 0;
+
+    // 1. Overwrite the values
+    int numValues = IOUtils.readInt(serialized, position);
+    position += 4;
+    this.values.clear();
+    for (int i = 0; i < numValues; ++i) {
+      String key = IOUtils.readString(serialized, position);
+      position += IOUtils.stringSerializedSize(key);
+      ValueWithOptionalOwner value = ValueWithOptionalOwner.readFrom(serialized, position);
+      position += value.byteSize();
+      overwriteValue(key, value);
+    }
+
+    // 2. Overwrite the locks
+    int numLocks = IOUtils.readInt(serialized, position);
+    position += 4;
+    Map<String, QueueLock> oldLocks = new HashMap<>(this.locks);
+    this.locks.clear();
+    for (int i = 0; i < numLocks; ++i) {
+      String key = IOUtils.readString(serialized, position);
+      position += IOUtils.stringSerializedSize(key);
+      QueueLock value = QueueLock.readFrom(serialized, position);
+      position += value.byteSize();
+      overwriteLock(key, value, pool, oldLocks);
+    }
+  }
+
 
   /**
    * This overwrites the current state of the state machine with a serialized proto. All the current state of the state
@@ -623,49 +940,13 @@ public class KeyValueStateMachine extends RaftStateMachine {
       log.warn("Overwriting from {} ('{}') while other thread ({}) is in a critical function ({})", Thread.currentThread().getId(), Thread.currentThread().getName(), threadsInFunctions.keySet().iterator().next(), threadsInFunctions.values().iterator().next());
     }
     threadsInFunctions.put(Thread.currentThread().getId(), "overwriteWithSerializedImpl");
-
     try {
-      KeyValueStateMachineProto.KVStateMachine serializedStateMachine = KeyValueStateMachineProto.KVStateMachine.parseFrom(serialized);
-
-      // 1. Overwrite the values
-      this.values.clear();
-      for (int i = 0; i < serializedStateMachine.getValuesKeysCount(); ++i) {
-        ValueWithOptionalOwner value = ValueWithOptionalOwner.deserialize(serializedStateMachine.getValuesValues(i));
-        this.values.put(serializedStateMachine.getValuesKeys(i), value);
-      }
-
-      // 2. Overwrite the locks
-      Map<String, QueueLock> oldLocks = new HashMap<>(this.locks);
-      this.locks.clear();
-      for (int i = 0; i < serializedStateMachine.getLocksKeysCount(); ++i) {
-        // 2.1. Set the lock
-        String lockName = serializedStateMachine.getLocksKeys(i);
-        QueueLock lock = QueueLock.deserialize(serializedStateMachine.getLocksValues(i));
-        if (lock.holder != null) {
-          this.locks.put(lockName, lock);
-        } else {
-          log.warn("Deserialized an unheld lock: {}", lockName);
-        }
-        // 2.2. Execute futures on the lock's holder
-        executeFutures(lock.holder, lockName, pool, true);
-        // 2.3. Fail futures for anyone no longer waiting
-        Set<LockRequest> waiting = Optional.ofNullable(oldLocks.get(lockName)).map(x -> (Set<LockRequest>) new HashSet<>(x.waitingSet)).orElse(Collections.emptySet());
-        if (!waiting.isEmpty()) {
-          waiting.removeAll(lock.waitingSet);
-          if (lock.holder != null) {
-            waiting.remove(lock.holder);
-          }
-          for (LockRequest req : waiting) {
-            executeFutures(req, lockName, pool, false);
-          }
-        }
-      }
-    } catch (InvalidProtocolBufferException e) {
-      log.error("Attempting to deserialize an invalid snapshot! This is very bad. Leaving current state unchanged.", e);
+      overwriteWithSerializedBytes(serialized, pool);
     } finally {
       threadsInFunctions.remove(Thread.currentThread().getId());
     }
   }
+
 
   /**
    * This is responsible for applying a transition to the state machine. The transition is assumed to be coming in a

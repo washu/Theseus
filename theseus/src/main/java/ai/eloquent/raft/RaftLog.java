@@ -108,7 +108,7 @@ public class RaftLog {
   /**
    * The number of log entries to keep in the log before compacting into a snapshot.
    */
-  public static final int COMPACTION_LIMIT = 4096;
+  public static final int COMPACTION_LIMIT = 0x1 << 15; // 32k
 
   /**
    * A pool for completing commit futures.
@@ -585,14 +585,6 @@ public class RaftLog {
 
 
   /**
-   * @see #createCommitFuture(long, long)
-   */
-  public CompletableFuture<Boolean> createCommitFuture(RaftLogEntryLocation location) {
-    return createCommitFuture(location.index, location.term);
-  }
-
-
-  /**
    * If leaderCommit &gt; commitIndex, set commitIndex = min(leaderCommit, index of last new entry)
    *
    * @param leaderCommit the commit from the leader
@@ -608,23 +600,38 @@ public class RaftLog {
           lastIndex = Math.max(logEntries.peekLast().getIndex(), lastIndex);
         }
         long newCommitIndex = Math.min(leaderCommit, lastIndex);
-        assert (newCommitIndex > commitIndex);
+        assert newCommitIndex > commitIndex : "Cannot commit backwards";
 
         // 2. Commit the new entry transitions to the state machine
-        for (EloquentRaftProto.LogEntry entry : this.logEntries) {
+        // Reverse iterator, so we can early stop
+        Iterator<EloquentRaftProto.LogEntry> revEntryIter = this.logEntries.descendingIterator();
+        EloquentRaftProto.LogEntry lastEntry = null;  // for debugging only
+        // 2.1. Get entries to apply (reverse search)
+        Stack<EloquentRaftProto.LogEntry> toApply = new Stack<>();
+        while (revEntryIter.hasNext()) {
+          EloquentRaftProto.LogEntry entry = revEntryIter.next();
+          assert lastEntry == null || lastEntry.getIndex() > entry.getIndex() : "Log is not monotonic!";
+          lastEntry = entry;
           if (entry.getIndex() > commitIndex && entry.getIndex() <= newCommitIndex) {  // if it's a new entry
-            if (entry.getType() == EloquentRaftProto.LogEntryType.TRANSITION) {
-              stateMachine.applyTransition(
-                  entry.getTransition().isEmpty() ? Optional.empty() : Optional.of(entry.getTransition().toByteArray()),
-                  "".equals(entry.getNewHospiceMember()) ? Optional.empty() : Optional.of(entry.getNewHospiceMember()),
-                  now,
-                  pool);
-            } else if (entry.getType() == EloquentRaftProto.LogEntryType.CONFIGURATION) {
-              committedQuorumMembers.clear();
-              committedQuorumMembers.addAll(entry.getConfigurationList());
-            } else {
-              throw new IllegalStateException("Unrecognized entry type. This likely means we're very very out of date, and should now crash.");
-            }
+            toApply.push(entry);
+          } else if (entry.getIndex() <= commitIndex) {
+            break;  // entries are added monotonically to the log, so we can early stop
+          }
+        }
+        // 2.2. Apply the relevant entries (in the correct order)
+        while (!toApply.isEmpty()) {
+          EloquentRaftProto.LogEntry entry = toApply.pop();
+          if (entry.getType() == EloquentRaftProto.LogEntryType.TRANSITION) {
+            stateMachine.applyTransition(
+                entry.getTransition().isEmpty() ? Optional.empty() : Optional.of(entry.getTransition().toByteArray()),
+                "".equals(entry.getNewHospiceMember()) ? Optional.empty() : Optional.of(entry.getNewHospiceMember()),
+                now,
+                pool);
+          } else if (entry.getType() == EloquentRaftProto.LogEntryType.CONFIGURATION) {
+            committedQuorumMembers.clear();
+            committedQuorumMembers.addAll(entry.getConfigurationList());
+          } else {
+            throw new IllegalStateException("Unrecognized entry type. This likely means we're very very out of date, and should now crash.");
           }
         }
 
@@ -634,7 +641,9 @@ public class RaftLog {
 
         // 4. Complete any CommitFutures that are waiting for this commit
         Map<Long, Long> termForIndex = new HashMap<>();  // A cache to avoid too many calls to previousEntryTerm
-        for (CommitFuture commitFuture : new ArrayList<>(commitFutures)) {
+        Iterator<CommitFuture> commitFuturesIter = commitFutures.iterator();
+        while (commitFuturesIter.hasNext()) {
+          CommitFuture commitFuture = commitFuturesIter.next();
           if (commitIndex >= commitFuture.index) {  // we've committed past this future
             // 4.1. try to get the term from the log
             @Nullable Long termAtCommit = termForIndex.get(commitFuture.index);
@@ -661,7 +670,7 @@ public class RaftLog {
             }
             // 4.4. fire the future
             commitFuture.complete.accept(success);
-            commitFutures.remove(commitFuture);
+            commitFuturesIter.remove();
           }
         }
       }

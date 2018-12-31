@@ -135,6 +135,10 @@ dependencies {
   testCompile 'com.google.guava:guava:26.0-jre'
   // SLF4J Simple so we can actually log things
   testCompile group: 'org.slf4j', name: 'slf4j-simple',      version: '1.7.13'
+  // Java Microbenchmarking Harness
+  testCompile group: 'org.openjdk.jmh', name: 'jmh-core', version: '1.21'
+  testCompile group: 'org.openjdk.jmh', name: 'jmh-generator-annprocess', version: '1.21'
+
 
 }
   

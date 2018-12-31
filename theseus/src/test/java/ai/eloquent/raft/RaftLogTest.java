@@ -794,6 +794,7 @@ public class RaftLogTest {
     synchronized (log) {
       log.setCommitIndex((long) 1, TimerUtils.mockableNow().toEpochMilli());
     }
+    assertEquals("The first entry should be committed", 3, stateMachine.value);
     log.forceSnapshot();
 
     List<EloquentRaftProto.LogEntry> appendEntries2 = new ArrayList<>();
@@ -1136,7 +1137,8 @@ public class RaftLogTest {
     assertEquals("Nothing should be committed yet", -1, stateMachine.value);
 
     CompletableFuture<Boolean> commit1BadTerm = log.createCommitFuture(1, 0);
-    CompletableFuture<Boolean> commit1 = log.createCommitFuture(new RaftLogEntryLocation(1, 1));  // just to cover this variant of the function too
+    RaftLogEntryLocation location = new RaftLogEntryLocation(1, 1);
+    CompletableFuture<Boolean> commit1 = log.createCommitFuture(location.index, location.term);  // just to cover this variant of the function too
     CompletableFuture<Boolean> commit2BadTerm = log.createCommitFuture(2, 0);
     CompletableFuture<Boolean> commit2 = log.createCommitFuture(2, 1);
     CompletableFuture<Boolean> commit3BadTerm = log.createCommitFuture(3, 0);

@@ -150,9 +150,17 @@ public class UDPTransport implements Transport {
   private final Queue<Runnable> sendQueue = new ArrayDeque<>();
 
   /**
-   * Timing statistics for Raft.
+   * A histogram of timing for processing an incoming UDP message.
    */
-  Object summaryTimer = Prometheus.summaryBuild("udp_transport", "Statistics on the UDP Transport calls", "operation");
+  private static final Object inboundHandleTimeHistogram =
+      Prometheus.histogramBuild("udp_transport_proctime", "The time it takes to process a UDP packet, in seconds",
+      0, 0.1 / 1000.0, 0.5 / 1000.0, 1.0 / 1000.0, 5.0 / 1000.0, 10.0 / 1000.0, 50.0 / 1000.0, 100.0 / 1000.0, 200.0 / 1000.0, 300.0 / 1000.0, 1.0 / 2.0, 1.0, 10.0);
+
+  /**
+   * The number of listeners bound to this transport
+   */
+  private static final Object boundListenerCount =
+      Prometheus.gaugeBuild("udp_transport_listeners", "The number of listeners bound to this transport");
 
 
   /**
@@ -273,40 +281,48 @@ public class UDPTransport implements Transport {
               this.serverSocket = new DatagramSocket(udpListenPort);
             }
             serverSocket.receive(packet);
+            long startTime = System.nanoTime();
+            try {
 
-            Object prometheusBegin = Prometheus.startTimer(summaryTimer, "parse_upd_packet");
-            // 2. Parse the packet
-            byte[] datagram = new byte[packet.getLength()];
-            System.arraycopy(packet.getData(), packet.getOffset(), datagram, 0, datagram.length);
-            byte[] protoBytes;
-            if (this.zip) {
-              try {
-                protoBytes = ZipUtils.gunzip(datagram);
-              } catch (Throwable t) {
-                protoBytes = datagram;  // fall back on unzipped bytes
+              // 2. Parse the packet
+              byte[] datagram = new byte[packet.getLength()];
+              System.arraycopy(packet.getData(), packet.getOffset(), datagram, 0, datagram.length);
+              byte[] protoBytes;
+              if (this.zip) {
+                try {
+                  protoBytes = ZipUtils.gunzip(datagram);
+                } catch (Throwable t) {
+                  protoBytes = datagram;  // fall back on unzipped bytes
+                }
+              } else {
+                protoBytes = datagram;
               }
-            } else {
-              protoBytes = datagram;
-            }
-            UDPBroadcastProtos.UDPPacket proto = UDPBroadcastProtos.UDPPacket.parseFrom(protoBytes);
-            if (proto == null) {
-              continue;
-            }
-            Prometheus.observeDuration(prometheusBegin);
+              UDPBroadcastProtos.UDPPacket proto = UDPBroadcastProtos.UDPPacket.parseFrom(protoBytes);
+              if (proto == null) {
+                continue;
+              }
 
-            // 3. Notify listeners
-            if (proto.getType() == UDPBroadcastProtos.MessageType.PING) {
-              this.pingsReceived.put(proto.getContents().toByteArray(), System.currentTimeMillis());
-            } else if (!proto.getIsBroadcast() || !proto.getSender().equals(this.serverAddress)){
-              IdentityHashSet<Consumer<byte[]>> listeners;
-              synchronized (this.listeners) {
-                listeners = this.listeners.get(proto.getType());
-              }
-              if (listeners != null) {
-                for (Consumer<byte[]> listener : listeners) {
-                  doAction(async, "inbound message of type " + proto.getType(), () -> listener.accept(proto.getContents().toByteArray()));
+              // 3. Notify listeners
+              if (proto.getType() == UDPBroadcastProtos.MessageType.PING) {
+                this.pingsReceived.put(proto.getContents().toByteArray(), System.currentTimeMillis());
+              } else if (!proto.getIsBroadcast() || !proto.getSender().equals(this.serverAddress)) {
+                IdentityHashSet<Consumer<byte[]>> listeners;
+                synchronized (this.listeners) {
+                  listeners = this.listeners.get(proto.getType());
+                }
+                if (listeners != null) {
+                  for (Consumer<byte[]> listener : listeners) {
+                    doAction(async, "inbound message of type " + proto.getType(), () -> listener.accept(proto.getContents().toByteArray()));
+                  }
                 }
               }
+            } finally {
+              // Log the time it took to execute the request.
+              long finishTime = System.nanoTime();
+              if (finishTime - startTime > 100000000) {
+                log.warn("Took > 100ms to process an inbound UDP packet: {}", TimerUtils.formatTimeDifference((finishTime - startTime) / 1000000));
+              }
+              Prometheus.histogramObserve(inboundHandleTimeHistogram, ((double) (finishTime - startTime)) / 1000000000);
             }
 
           } catch (IOException e) {
@@ -351,17 +367,25 @@ public class UDPTransport implements Transport {
                     break;
                   }
 
-                  // 3. Notify listeners
-                  Object prometheusBegin = Prometheus.startTimer(summaryTimer, "parse_tcp_packet");
-                  IdentityHashSet<Consumer<byte[]>> listeners;
-                  synchronized (this.listeners) {
-                    listeners = new IdentityHashSet<>(this.listeners.get(proto.getType()));  // copy, to prevent concurrency bugs
-                  }
-                  final byte[] bytes = proto.getContents().toByteArray();
-                  Prometheus.observeDuration(prometheusBegin);
+                  long startTime = System.nanoTime();
+                  try {
+                    // 3. Notify listeners
+                    IdentityHashSet<Consumer<byte[]>> listeners;
+                    synchronized (this.listeners) {
+                      listeners = new IdentityHashSet<>(this.listeners.get(proto.getType()));  // copy, to prevent concurrency bugs
+                    }
+                    final byte[] bytes = proto.getContents().toByteArray();
 
-                  for (Consumer<byte[]> listener : listeners) {
-                    doAction(async, "inbound TCP message of type " + proto.getType(), () -> listener.accept(bytes));
+                    for (Consumer<byte[]> listener : listeners) {
+                      doAction(async, "inbound TCP message of type " + proto.getType(), () -> listener.accept(bytes));
+                    }
+                  } finally {
+                    // Log the time it took to execute the request.
+                    long finishTime = System.nanoTime();
+                    if (finishTime - startTime > 100000000) {
+                      log.warn("Took > 100ms to process an inbound TCP packet: {}", TimerUtils.formatTimeDifference((finishTime - startTime) / 1000000));
+                    }
+                    Prometheus.histogramObserve(inboundHandleTimeHistogram, ((double) (finishTime - startTime)) / 1000000000);
                   }
                 }
               } catch (IOException e) {
@@ -500,6 +524,7 @@ public class UDPTransport implements Transport {
       IdentityHashSet<Consumer<byte[]>> listenersOnChannel = this.listeners.computeIfAbsent(channel, k -> new IdentityHashSet<>());
       listenersOnChannel.add(listener);
     }
+    Prometheus.gaugeInc(boundListenerCount);
   }
 
 
@@ -548,7 +573,7 @@ public class UDPTransport implements Transport {
           this.socket.send(packet);
         } finally {
           long socketSendEnd = System.currentTimeMillis();
-          if (socketSendEnd > socketSendStart + 10) {
+          if (socketSendEnd > socketSendStart + 100) {
             log.warn("Sending a direct message on the UDP socket took {}", TimerUtils.formatTimeDifference(socketSendEnd - socketSendStart));
           }
         }

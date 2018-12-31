@@ -87,6 +87,19 @@ public class IdentityHashSet<E> extends AbstractSet<E> implements Cloneable, Ser
     }
   }
 
+
+  /**
+   * Add this element, without checking if it already exists.
+   * This clobbers the existing element, if any, but is substantially
+   * faster than the regular {@link #add(Object)} method.
+   *
+   * @param o The object we're adding to the set
+   */
+  public void forceAdd(E o) {
+    internalAdd(o);
+  }
+
+
   /** Removes all of the elements from this set.
    */
   @Override

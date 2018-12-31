@@ -1012,7 +1012,7 @@ public abstract class AbstractRaftAlgorithmTest {
   private void blockOnRpcResults(List<CompletableFuture<MembershipChangeStatus>> rpcResults) {
     rpcResults.forEach(future -> {
       try {
-        future.get(1, TimeUnit.SECONDS);
+        future.get(3, TimeUnit.SECONDS);
       } catch (InterruptedException e) {
         log.error("Got error waiting for future", e);
       } catch (ExecutionException ignored) {
@@ -1248,15 +1248,16 @@ public abstract class AbstractRaftAlgorithmTest {
       rpcResults.add(removeServer(nodes[1], "B"));
       // Block until the future completes
       blockOnRpcResults(rpcResults);
-      assertTrue(rpcResults.stream().allMatch(CompletableFuture::isCompletedExceptionally));
+      assertTrue("All calls should have completed exceptionally",
+          rpcResults.stream().allMatch(x -> x.isCompletedExceptionally() || x.getNow(null) == MembershipChangeStatus.NOT_LEADER));
     });  // call from another node
 
     // The tests
     assertTrue("Should still have a leader", closedNodes[0].isLeader());
     assertEquals("Should have gotten an RPC result", 1, rpcResults.size());
     try {
-      rpcResults.get(0).get(1, TimeUnit.SECONDS);
-      fail("Should not have been able to complete the RPC successfully");
+      MembershipChangeStatus result = rpcResults.get(0).get(1, TimeUnit.SECONDS);
+      assertEquals("Should not have been able to complete the RPC successfully", result, MembershipChangeStatus.NOT_LEADER);
     } catch (TimeoutException | ExecutionException ignored) {}
     assertEquals("Leader should see the old configuration", new HashSet<>(Arrays.asList("L", "A", "B")), closedNodes[0].log.getQuorumMembers());
     assertEquals("Followers should see the old configuration", new HashSet<>(Arrays.asList("L", "A", "B")), closedNodes[1].log.getQuorumMembers());

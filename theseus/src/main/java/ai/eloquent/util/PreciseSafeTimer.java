@@ -44,6 +44,25 @@ public class PreciseSafeTimer implements SafeTimer {
   }
 
 
+  /**
+   * Run a timer task directly on the given thread, but catch all the resulting exceptions.
+   *
+   * @param task The task to run.
+   *
+   * @return An exception-proof wrapped Runnable for the task.
+   */
+  private static Runnable catchExceptions(SafeTimerTask task) {
+    return () -> {
+      try {
+        // note[gabor]: the use of runUnsafe() is deliberate here -- the scheduler already schedules tasks on threads.
+        task.runUnsafe();
+      } catch (Throwable e) {
+        log.warn("SafeTimerTask caught a thrown exception.", e);
+      }
+    };
+  }
+
+
   /** {@inheritDoc} */
   @Override
   public long now() {
@@ -57,7 +76,7 @@ public class PreciseSafeTimer implements SafeTimer {
       log.warn("Timer is cancelled; not queuing task", new RuntimeException());
       return;
     }
-    this.service.schedule(task, delay, TimeUnit.MILLISECONDS);
+    this.service.schedule(catchExceptions(task), delay, TimeUnit.MILLISECONDS);
   }
 
   /** {@inheritDoc} */
@@ -67,7 +86,7 @@ public class PreciseSafeTimer implements SafeTimer {
       log.warn("Timer is cancelled; not queuing task", new RuntimeException());
       return;
     }
-    this.service.scheduleAtFixedRate(task, delay, period, TimeUnit.MILLISECONDS);
+    this.service.scheduleAtFixedRate(catchExceptions(task), delay, period, TimeUnit.MILLISECONDS);
   }
 
   /** {@inheritDoc} */
@@ -77,7 +96,7 @@ public class PreciseSafeTimer implements SafeTimer {
       log.warn("Timer is cancelled; not queuing task", new RuntimeException());
       return;
     }
-    this.service.scheduleAtFixedRate(task, delay, period, TimeUnit.MILLISECONDS);
+    this.service.scheduleAtFixedRate(catchExceptions(task), delay, period, TimeUnit.MILLISECONDS);
   }
 
   /** {@inheritDoc} */
@@ -87,7 +106,7 @@ public class PreciseSafeTimer implements SafeTimer {
       log.warn("Timer is cancelled; not queuing task", new RuntimeException());
       return;
     }
-    this.service.scheduleAtFixedRate(task, 0, period, TimeUnit.MILLISECONDS);
+    this.service.scheduleAtFixedRate(catchExceptions(task), 0, period, TimeUnit.MILLISECONDS);
   }
 
   /** {@inheritDoc} */

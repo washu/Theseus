@@ -1,9 +1,7 @@
 package ai.eloquent.raft;
 
-import ai.eloquent.util.IdentityHashSet;
-import ai.eloquent.util.RuntimeInterruptedException;
-import ai.eloquent.util.SafeTimerTask;
-import ai.eloquent.util.StackTrace;
+import ai.eloquent.monitoring.Prometheus;
+import ai.eloquent.util.*;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -29,9 +27,28 @@ public class SingleThreadedRaftAlgorithm implements RaftAlgorithm {
   private static final Logger log = LoggerFactory.getLogger(SingleThreadedRaftAlgorithm.class);
 
   /**
+   * The amount of time to wait if the buffer is full before trying again.
+   */
+  private static final long MAX_DELAY = 50;
+
+  /**
+   * The time, in seconds, that a task sits on the queue before being run.
+   */
+  private static final Object HISTOGRAM_QUEUE_TIME =
+      Prometheus.histogramBuild("single_threaded_raft_queuetime", "The time, in seconds, that a task sits on the queue before being run.",
+          0, 0.1 / 1000.0, 0.5 / 1000.0, 1.0 / 1000.0, 5.0 / 1000.0, 10.0 / 1000.0, 50.0 / 1000.0, 100.0 / 1000.0, 200.0 / 1000.0, 300.0 / 1000.0, 1.0 / 2.0, 1.0, 10.0);
+
+  /**
+   * The time, in seconds, that it takes to run a task on the raft algorithm
+   */
+  private static final Object HISTOGRAM_RUN_TIME =
+      Prometheus.histogramBuild("single_threaded_raft_runtime", "The time, in seconds, that it takes to run a task on the raft algorithm",
+          0, 0.1 / 1000.0, 0.5 / 1000.0, 1.0 / 1000.0, 5.0 / 1000.0, 10.0 / 1000.0, 50.0 / 1000.0, 100.0 / 1000.0, 200.0 / 1000.0, 300.0 / 1000.0, 1.0 / 2.0, 1.0, 10.0);
+
+  /**
    * An enum for a given task's priority
    */
-  private enum TaskPriority {
+  enum TaskPriority {
     CRITICAL,
     HIGH,
     LOW,
@@ -43,7 +60,7 @@ public class SingleThreadedRaftAlgorithm implements RaftAlgorithm {
    * A task that we're running synchronized on Raft. This is a runnable
    * and an exception handler.
    */
-  private static class RaftTask {
+  static class RaftTask {
     /** The runnable for the task */
     public final Runnable fn;
     /** The function to be called if we encounter an error */
@@ -52,13 +69,16 @@ public class SingleThreadedRaftAlgorithm implements RaftAlgorithm {
     public final TaskPriority priority;
     /** A human-readable name for this task. */
     public final String debugString;
+    /** The timestamp, in system nanos, when this task was queued. @see System#nanoTime() */
+    public final long queuedTimestamp;
 
     /** The straightforward constructor */
-    private RaftTask(String debugString, TaskPriority priority, Runnable fn, Consumer<Throwable> onError) {
+    RaftTask(String debugString, TaskPriority priority, Runnable fn, Consumer<Throwable> onError) {
       this.fn = fn;
       this.onError = onError;
       this.debugString = debugString;
       this.priority = priority;
+      this.queuedTimestamp = System.nanoTime();
     }
   }
 
@@ -67,7 +87,16 @@ public class SingleThreadedRaftAlgorithm implements RaftAlgorithm {
    * A Deque for {@linkplain RaftTask Raft Tasks} that handles different priorities
    * of messages.
    */
-  private static class RaftDeque implements Deque<RaftTask> {
+  static class RaftDeque implements Deque<RaftTask> {
+
+    /**
+     * The maximum number of tasks to keep in the queue.
+     * More than this, and we start blocking on adding new tasks.
+     * This should be large enough to not hold up the calling thread unnecessarily,
+     * but small enough that we can actually execute all of the tasks before
+     * they time out while in wait.
+     */
+    static final int MAX_SIZE = 64;
 
     /** Critical priority messages */
     private final ArrayDeque<RaftTask> criticalPriority = new ArrayDeque<>();
@@ -76,142 +105,208 @@ public class SingleThreadedRaftAlgorithm implements RaftAlgorithm {
     /** Low (normal) priority messages */
     private final ArrayDeque<RaftTask> lowPriority = new ArrayDeque<>();
 
-    @Override
-    public void addFirst(RaftTask raftTask) {
-      switch (raftTask.priority) {
-        case CRITICAL:
-          this.criticalPriority.addFirst(raftTask);
-          break;
-        case HIGH:
-          this.highPriority.addFirst(raftTask);
-          break;
-        case LOW:
-          this.lowPriority.addFirst(raftTask);
-          break;
-        default:
-          throw new IllegalArgumentException("Unhandled priority " + raftTask.priority + " for task " + raftTask.debugString);
+    /**
+     * Ensure that we actually have the capacity to add to the Deque
+     */
+    private synchronized void ensureCapacity(TaskPriority priority) {
+      while (! (this.size() < MAX_SIZE || (priority == TaskPriority.CRITICAL && criticalPriority.isEmpty())) ) {
+        try {
+          this.wait(MAX_DELAY);
+        } catch (InterruptedException e) {
+          throw new RuntimeInterruptedException(e);
+        }
       }
     }
 
+    /** {@inheritDoc} */
     @Override
-    public void addLast(RaftTask raftTask) {
-      switch (raftTask.priority) {
-        case CRITICAL:
-          this.criticalPriority.addLast(raftTask);
-          break;
-        case HIGH:
-          this.highPriority.addLast(raftTask);
-          break;
-        case LOW:
-          this.lowPriority.addLast(raftTask);
-          break;
-        default:
-          throw new IllegalArgumentException("Unhandled priority " + raftTask.priority + " for task " + raftTask.debugString);
+    public synchronized void addFirst(RaftTask raftTask) {
+      ensureCapacity(raftTask.priority);
+      try {
+        switch (raftTask.priority) {
+          case CRITICAL:
+            this.criticalPriority.addFirst(raftTask);
+            break;
+          case HIGH:
+            this.highPriority.addFirst(raftTask);
+            break;
+          case LOW:
+            this.lowPriority.addFirst(raftTask);
+            break;
+          default:
+            throw new IllegalArgumentException("Unhandled priority " + raftTask.priority + " for task " + raftTask.debugString);
+        }
+      } finally {
+        this.notifyAll();
       }
     }
 
+    /** {@inheritDoc} */
     @Override
-    public boolean offerFirst(RaftTask raftTask) {
-      switch (raftTask.priority) {
-        case CRITICAL:
-          return this.criticalPriority.offerFirst(raftTask);
-        case HIGH:
-          return this.highPriority.offerFirst(raftTask);
-        case LOW:
-          if (this.lowPriority.size() > 10000) {
-            return false;
-          }
-          return this.lowPriority.offerFirst(raftTask);
-        default:
-          throw new IllegalArgumentException("Unhandled priority " + raftTask.priority + " for task " + raftTask.debugString);
+    public synchronized void addLast(RaftTask raftTask) {
+      ensureCapacity(raftTask.priority);
+      try {
+        switch (raftTask.priority) {
+          case CRITICAL:
+            this.criticalPriority.addLast(raftTask);
+            break;
+          case HIGH:
+            this.highPriority.addLast(raftTask);
+            break;
+          case LOW:
+            this.lowPriority.addLast(raftTask);
+            break;
+          default:
+            throw new IllegalArgumentException("Unhandled priority " + raftTask.priority + " for task " + raftTask.debugString);
+        }
+      } finally {
+        this.notifyAll();
       }
     }
 
+    /** {@inheritDoc} */
     @Override
-    public boolean offerLast(RaftTask raftTask) {
-      switch (raftTask.priority) {
-        case CRITICAL:
-          return this.criticalPriority.offerLast(raftTask);
-        case HIGH:
-          return this.highPriority.offerLast(raftTask);
-        case LOW:
-          if (this.lowPriority.size() > 10000) {
-            return false;
-          }
-          return this.lowPriority.offerLast(raftTask);
-        default:
-          throw new IllegalArgumentException("Unhandled priority " + raftTask.priority + " for task " + raftTask.debugString);
+    public synchronized boolean offerFirst(RaftTask raftTask) {
+      if (! (this.size() < MAX_SIZE || (raftTask.priority == TaskPriority.CRITICAL && criticalPriority.isEmpty())) ) {
+        return false;
+      }
+      try {
+        switch (raftTask.priority) {
+          case CRITICAL:
+            return this.criticalPriority.offerFirst(raftTask);
+          case HIGH:
+            return this.highPriority.offerFirst(raftTask);
+          case LOW:
+            return this.lowPriority.offerFirst(raftTask);
+          default:
+            throw new IllegalArgumentException("Unhandled priority " + raftTask.priority + " for task " + raftTask.debugString);
+        }
+      } finally {
+        this.notifyAll();
       }
     }
 
+    /** {@inheritDoc} */
     @Override
-    public RaftTask removeFirst() {
-      if (criticalPriority.peekFirst() != null) {
-        return criticalPriority.removeFirst();
-      } else if (highPriority.peekFirst() != null) {
-        return highPriority.removeFirst();
-      } else {
-        return lowPriority.removeFirst();
+    public synchronized boolean offerLast(RaftTask raftTask) {
+      if (! (this.size() < MAX_SIZE || (raftTask.priority == TaskPriority.CRITICAL && criticalPriority.isEmpty())) ) {
+        return false;
+      }
+      try {
+        switch (raftTask.priority) {
+          case CRITICAL:
+            return this.criticalPriority.offerLast(raftTask);
+          case HIGH:
+            return this.highPriority.offerLast(raftTask);
+          case LOW:
+            return this.lowPriority.offerLast(raftTask);
+          default:
+            throw new IllegalArgumentException("Unhandled priority " + raftTask.priority + " for task " + raftTask.debugString);
+        }
+      } finally {
+        this.notifyAll();
       }
     }
 
+    /** {@inheritDoc} */
     @Override
-    public RaftTask removeLast() {
-      if (criticalPriority.peekLast() != null) {
-        return criticalPriority.removeLast();
-      } else if (highPriority.peekLast() != null) {
-        return highPriority.removeLast();
-      } else {
-        return lowPriority.removeLast();
+    public synchronized RaftTask removeFirst() {
+      try {
+        if (criticalPriority.peekFirst() != null) {
+          return criticalPriority.removeFirst();
+        } else if (highPriority.peekFirst() != null) {
+          return highPriority.removeFirst();
+        } else {
+          return lowPriority.removeFirst();
+        }
+      } finally {
+        this.notifyAll();
       }
     }
 
+    /** {@inheritDoc} */
+    @Override
+    public synchronized RaftTask removeLast() {
+      try {
+        if (criticalPriority.peekLast() != null) {
+          return criticalPriority.removeLast();
+        } else if (highPriority.peekLast() != null) {
+          return highPriority.removeLast();
+        } else {
+          return lowPriority.removeLast();
+        }
+      } finally {
+        this.notifyAll();
+      }
+    }
+
+    /** {@inheritDoc} */
     @Nullable
     @Override
-    public RaftTask pollFirst() {
-      if (criticalPriority.peekFirst() != null) {
-        return criticalPriority.pollFirst();
-      } else if (highPriority.peekFirst() != null) {
-        return highPriority.pollFirst();
-      } else {
-        return lowPriority.pollFirst();
+    public synchronized RaftTask pollFirst() {
+      try {
+        if (criticalPriority.peekFirst() != null) {
+          return criticalPriority.pollFirst();
+        } else if (highPriority.peekFirst() != null) {
+          return highPriority.pollFirst();
+        } else {
+          return lowPriority.pollFirst();
+        }
+      } finally {
+        this.notifyAll();
       }
     }
 
+    /** {@inheritDoc} */
     @Nullable
     @Override
-    public RaftTask pollLast() {
-      if (criticalPriority.peekLast() != null) {
-        return criticalPriority.pollLast();
-      } else if (highPriority.peekLast() != null) {
-        return highPriority.pollLast();
-      } else {
-        return lowPriority.pollLast();
+    public synchronized RaftTask pollLast() {
+      try {
+        if (criticalPriority.peekLast() != null) {
+          return criticalPriority.pollLast();
+        } else if (highPriority.peekLast() != null) {
+          return highPriority.pollLast();
+        } else {
+          return lowPriority.pollLast();
+        }
+      } finally {
+        this.notifyAll();
       }
     }
 
+    /** {@inheritDoc} */
     @Override
-    public RaftTask getFirst() {
-      if (criticalPriority.peekFirst() != null) {
-        return criticalPriority.getFirst();
-      } else if (highPriority.peekFirst() != null) {
-        return highPriority.getFirst();
-      } else {
-        return lowPriority.getFirst();
+    public synchronized RaftTask getFirst() {
+      try {
+        if (criticalPriority.peekFirst() != null) {
+          return criticalPriority.getFirst();
+        } else if (highPriority.peekFirst() != null) {
+          return highPriority.getFirst();
+        } else {
+          return lowPriority.getFirst();
+        }
+      } finally {
+        this.notifyAll();
       }
     }
 
+    /** {@inheritDoc} */
     @Override
-    public RaftTask getLast() {
-      if (criticalPriority.peekLast() != null) {
-        return criticalPriority.getLast();
-      } else if (highPriority.peekLast() != null) {
-        return highPriority.getLast();
-      } else {
-        return lowPriority.getLast();
+    public synchronized RaftTask getLast() {
+      try {
+        if (criticalPriority.peekLast() != null) {
+          return criticalPriority.getLast();
+        } else if (highPriority.peekLast() != null) {
+          return highPriority.getLast();
+        } else {
+          return lowPriority.getLast();
+        }
+      } finally {
+        this.notifyAll();
       }
     }
 
+    /** {@inheritDoc} */
     @Override
     public RaftTask peekFirst() {
       if (criticalPriority.peekFirst() != null) {
@@ -223,6 +318,7 @@ public class SingleThreadedRaftAlgorithm implements RaftAlgorithm {
       }
     }
 
+    /** {@inheritDoc} */
     @Override
     public RaftTask peekLast() {
       if (criticalPriority.peekLast() != null) {
@@ -234,71 +330,92 @@ public class SingleThreadedRaftAlgorithm implements RaftAlgorithm {
       }
     }
 
+    /** {@inheritDoc} */
     @Override
-    public boolean removeFirstOccurrence(Object o) {
-      return criticalPriority.removeFirstOccurrence(o) ||
-          highPriority.removeFirstOccurrence(o) ||
-          lowPriority.removeFirstOccurrence(o);
+    public synchronized boolean removeFirstOccurrence(Object o) {
+      try {
+        return criticalPriority.removeFirstOccurrence(o) ||
+            highPriority.removeFirstOccurrence(o) ||
+            lowPriority.removeFirstOccurrence(o);
+      } finally {
+        this.notifyAll();
+      }
     }
 
+    /** {@inheritDoc} */
     @Override
-    public boolean removeLastOccurrence(Object o) {
-      return lowPriority.removeLastOccurrence(o) ||
-          highPriority.removeLastOccurrence(o) ||
-          criticalPriority.removeLastOccurrence(o);
+    public synchronized boolean removeLastOccurrence(Object o) {
+      try {
+        return lowPriority.removeLastOccurrence(o) ||
+            highPriority.removeLastOccurrence(o) ||
+            criticalPriority.removeLastOccurrence(o);
+      } finally {
+        this.notifyAll();
+      }
     }
 
+    /** {@inheritDoc} */
     @Override
     public boolean add(RaftTask raftTask) {
       this.addLast(raftTask);
       return true;
     }
 
+    /** {@inheritDoc} */
     @Override
     public boolean offer(RaftTask raftTask) {
       return this.offerLast(raftTask);
     }
 
+    /** {@inheritDoc} */
     @Override
     public RaftTask remove() {
       return this.removeFirst();
     }
 
+    /** {@inheritDoc} */
     @Override
     public RaftTask poll() {
       return this.pollFirst();
     }
 
+    /** {@inheritDoc} */
     @Override
     public RaftTask element() {
       return this.getFirst();
     }
 
+    /** {@inheritDoc} */
     @Override
     public RaftTask peek() {
       return this.peekFirst();
     }
 
+    /** {@inheritDoc} */
     @Override
     public void push(RaftTask raftTask) {
       this.addFirst(raftTask);
     }
 
+    /** {@inheritDoc} */
     @Override
     public RaftTask pop() {
       return this.removeFirst();
     }
 
+    /** {@inheritDoc} */
     @Override
     public boolean remove(Object o) {
       return this.removeFirstOccurrence(o);
     }
 
+    /** {@inheritDoc} */
     @Override
     public boolean containsAll(@Nonnull Collection<?> c) {
       throw new UnsupportedOperationException();
     }
 
+    /** {@inheritDoc} */
     @Override
     public boolean addAll(@Nonnull Collection<? extends RaftTask> c) {
       for (RaftTask t : c) {
@@ -307,6 +424,7 @@ public class SingleThreadedRaftAlgorithm implements RaftAlgorithm {
       return true;
     }
 
+    /** {@inheritDoc} */
     @Override
     public boolean removeAll(@Nonnull Collection<?> c) {
       for (Object t : c) {
@@ -315,19 +433,25 @@ public class SingleThreadedRaftAlgorithm implements RaftAlgorithm {
       return true;
     }
 
+    /** {@inheritDoc} */
     @Override
     public boolean retainAll(@Nonnull Collection<?> c) {
       throw new UnsupportedOperationException();
     }
 
+    /** {@inheritDoc} */
     @Override
-    public void clear() {
-      this.criticalPriority.clear();
-      this.highPriority.clear();
-      this.lowPriority.clear();
-
+    public synchronized void clear() {
+      try {
+        this.criticalPriority.clear();
+        this.highPriority.clear();
+        this.lowPriority.clear();
+      } finally {
+        this.notifyAll();
+      }
     }
 
+    /** {@inheritDoc} */
     @Override
     public boolean contains(Object o) {
       return this.criticalPriority.contains(o) ||
@@ -335,6 +459,7 @@ public class SingleThreadedRaftAlgorithm implements RaftAlgorithm {
           this.lowPriority.contains(o);
     }
 
+    /** {@inheritDoc} */
     @Override
     public int size() {
       return this.criticalPriority.size() +
@@ -342,6 +467,7 @@ public class SingleThreadedRaftAlgorithm implements RaftAlgorithm {
           this.lowPriority.size();
     }
 
+    /** {@inheritDoc} */
     @Override
     public boolean isEmpty() {
       return this.criticalPriority.isEmpty() &&
@@ -349,31 +475,50 @@ public class SingleThreadedRaftAlgorithm implements RaftAlgorithm {
           this.lowPriority.isEmpty();
     }
 
+    /** {@inheritDoc} */
     @Nonnull
     @Override
-    public Iterator<RaftTask> iterator() {
+    public synchronized Iterator<RaftTask> iterator() {
       Deque<RaftTask> all = new ArrayDeque<>(this.criticalPriority);
       all.addAll(this.highPriority);
       all.addAll(this.lowPriority);
       return all.iterator();
     }
 
+    /** {@inheritDoc} */
     @Nonnull
     @Override
-    public Object[] toArray() {
-      throw new UnsupportedOperationException();
+    public synchronized Object[] toArray() {
+      RaftTask[] arr = new RaftTask[this.size()];
+      int i = 0;
+      for (RaftTask task : criticalPriority) {
+        arr[i++] = task;
+      }
+      for (RaftTask task : highPriority) {
+        arr[i++] = task;
+      }
+      for (RaftTask task : lowPriority) {
+        arr[i++] = task;
+      }
+      return arr;
     }
 
+    /** {@inheritDoc} */
     @Nonnull
     @Override
     public <T> T[] toArray(@Nonnull T[] a) {
-      throw new UnsupportedOperationException();
+      //noinspection unchecked
+      return (T[]) toArray();
     }
 
+    /** {@inheritDoc} */
     @Nonnull
     @Override
     public Iterator<RaftTask> descendingIterator() {
-      throw new UnsupportedOperationException();
+      Deque<RaftTask> all = new ArrayDeque<>(this.criticalPriority);
+      all.addAll(this.highPriority);
+      all.addAll(this.lowPriority);
+      return all.descendingIterator();
     }
   }
 
@@ -411,7 +556,7 @@ public class SingleThreadedRaftAlgorithm implements RaftAlgorithm {
   /**
    * The count of futures that we're still waiting on
    */
-  private final Set<CompletableFuture> waitingForFutures = new IdentityHashSet<>();
+  private final IdentityHashSet<CompletableFuture> waitingForFutures = new IdentityHashSet<>();
 
   /**
    * The pool that'll be used to run any Future that can see into the outside world.
@@ -435,7 +580,7 @@ public class SingleThreadedRaftAlgorithm implements RaftAlgorithm {
   /**
    * Create a single-thread driven Raft algorithm from an implementing instance.
    *
-   * @param impl The implemeting algorithm. See {@link #impl}.
+   * @param impl The implementing algorithm. See {@link #impl}.
    * @param boundaryPool The boundary pool. See {@link #boundaryPool}.
    */
   public SingleThreadedRaftAlgorithm(RaftAlgorithm impl, ExecutorService boundaryPool) {
@@ -443,12 +588,9 @@ public class SingleThreadedRaftAlgorithm implements RaftAlgorithm {
     this.threadsCanBlock = impl.getTransport().threadsCanBlock();
     this.raftThread = new Thread( () -> {
       if (impl instanceof EloquentRaftAlgorithm) {
-        ((EloquentRaftAlgorithm) impl).setDrivingThread(r -> {
-          synchronized (raftTasks) {
-            raftTasks.offer(new RaftTask("EloquentRaftAlgorithm Callback", TaskPriority.CRITICAL, r, e -> log.warn("Error in queued task", e)));
-            raftTasks.notifyAll();
-          }
-        });
+        ((EloquentRaftAlgorithm) impl).setDrivingThread(r ->
+          raftTasks.push(new RaftTask("EloquentRaftAlgorithm Callback", TaskPriority.CRITICAL, r, e -> log.warn("Error in queued task", e)))
+        );
       }
       try {
         while (alive) {
@@ -458,7 +600,7 @@ public class SingleThreadedRaftAlgorithm implements RaftAlgorithm {
               taskRunning = Optional.empty();
               raftTasks.notifyAll();
               while (raftTasks.isEmpty()) {
-                raftTasks.wait(1000);
+                raftTasks.wait(MAX_DELAY);
                 if (!alive) {
                   return;
                 }
@@ -466,26 +608,38 @@ public class SingleThreadedRaftAlgorithm implements RaftAlgorithm {
               task = raftTasks.poll();
               taskRunning = Optional.of(task.debugString);
             }
+            long dequeueTime = System.nanoTime();
+            Prometheus.histogramObserve(HISTOGRAM_QUEUE_TIME, ((double) (dequeueTime - task.queuedTimestamp)) / 1000000000.);
             try {
-              task.fn.run();
+              task.fn.run();  // RUN THE TASK
             } catch (Throwable t) {
               task.onError.accept(t);
+            } finally {
+              long finishTime = System.nanoTime();
+              Prometheus.histogramObserve(HISTOGRAM_RUN_TIME, ((double) (finishTime - dequeueTime)) / 1000000000.);
+              if (finishTime - dequeueTime > 100000000) {
+                log.warn("Task took >100ms to run: {}; time={}", task.debugString, TimerUtils.formatTimeDifference((finishTime - dequeueTime) / 1000000));
+              }
             }
           } catch (Throwable t) {
             log.warn("Caught exception ", t);
           }
         }
       } finally {
+        List<RaftTask> tasks;
         synchronized (raftTasks) {
           // Clean up any leftovers
-          raftTasks.forEach(t -> t.onError.accept(new RuntimeException("SingleThreadedRaftAlgorithm main thread killed from killMainThread(), so this will never complete")));
-          raftTasks.clear();
+          tasks = new ArrayList<>(this.raftTasks);
+        }
+        tasks.forEach(t -> t.onError.accept(new RuntimeException("SingleThreadedRaftAlgorithm main thread killed from killMainThread(), so this will never complete")));
+        raftTasks.clear();
+        synchronized (waitingForFutures) {
           waitingForFutures.forEach(completableFuture -> completableFuture.completeExceptionally(new RuntimeException("SingleThreadedRaftAlgorithm main thread killed from killMainThread(), so this will never complete")));
           waitingForFutures.clear();
         }
       }
     });
-    this.raftThread.setPriority(Math.max(Thread.MIN_PRIORITY, Thread.MAX_PRIORITY - 2));
+    this.raftThread.setPriority(Math.max(Thread.NORM_PRIORITY, Thread.MAX_PRIORITY - 2));
     this.raftThread.setDaemon(false);
     this.raftThread.setName("raft-control-" + impl.serverName());
     this.raftThread.setUncaughtExceptionHandler((t, e) -> log.warn("Caught exception on {}:", t.getName(), e));
@@ -508,9 +662,7 @@ public class SingleThreadedRaftAlgorithm implements RaftAlgorithm {
    * Return the number of tasks we have queued to be executed by Raft.
    */
   public int queuedTaskCount() {
-    synchronized (this.raftTasks) {
-      return this.raftTasks.size();
-    }
+    return this.raftTasks.size();
   }
 
 
@@ -532,16 +684,21 @@ public class SingleThreadedRaftAlgorithm implements RaftAlgorithm {
     if (Thread.currentThread() == raftThread) {  // don't queue if we're on the raft thread
       return CompletableFuture.completedFuture(fn.apply(this.impl));
     }
-    if (!alive) {
-      throw new IllegalStateException("Node is dead -- failing the future");
-    }
     CompletableFuture<E> future = new CompletableFuture<>();
-    Runnable task = () -> future.complete(fn.apply(this.impl));
-    Consumer<Throwable> onError = future::completeExceptionally;
-    synchronized (raftTasks) {
-      raftTasks.offer(new RaftTask(debugName, priority, task, onError));
-      raftTasks.notifyAll();
+    if (!alive) {
+      future.completeExceptionally(new IllegalStateException("Node is dead -- failing the future"));
+      return future;
     }
+    Runnable task = () -> {
+      try {
+        E result = fn.apply(this.impl);
+        future.complete(result);
+      } catch (Throwable t) {
+        future.completeExceptionally(t);
+      }
+    };
+    Consumer<Throwable> onError = future::completeExceptionally;
+    raftTasks.push(new RaftTask(debugName, priority, task, onError));
     return future;
   }
 
@@ -572,6 +729,7 @@ public class SingleThreadedRaftAlgorithm implements RaftAlgorithm {
 
     // 2. Define the timeout for the future
     CompletableFuture<CompletableFuture<E>> futureOfFuture = execute(debugName, priority, fn);
+    /*
     final SafeTimerTask timeoutResult = new SafeTimerTask() {
       @Override
       public void runUnsafe() {
@@ -585,100 +743,108 @@ public class SingleThreadedRaftAlgorithm implements RaftAlgorithm {
         }
       }
     };
+    */
 
-    synchronized (raftTasks) {
-      waitingForFutures.add(futureOfFuture);
+    synchronized (waitingForFutures) {
+      waitingForFutures.forceAdd(futureOfFuture);
     }
-    futureOfFuture.whenComplete((CompletableFuture<E> result, Throwable t) ->
-      execute(debugName, priority, raft -> {  // ensure that we're on the controller thread
-        // note: this must be running on the Raft control thread
-        if (Thread.currentThread().getId() != raftThread.getId()) {
-          log.warn("Future of future should be completing on the Raft control thread; running on {} instead", Thread.currentThread());
-        }
-        // 3. Check our future
-        // 3.1. Check that we got our future OK from the Raft main thread
-        if (t != null) {
-          boundaryPoolThreadsWaiting.incrementAndGet();  // see canonical deadlock below -- we need to handle it here as well
-          boundaryPool.submit(() -> {
-            try {
-              future.completeExceptionally(t);
-            } finally {
-              boundaryPoolThreadsWaiting.decrementAndGet();
-            }
-          });
-          return;
-        }
-        // 3.2. Register our future appropriately
-        synchronized (raftTasks) {
-          waitingForFutures.remove(futureOfFuture);
-          waitingForFutures.add(result);
-        }
+    futureOfFuture.whenComplete((CompletableFuture<E> result, Throwable t) -> {
+          if (t != null) {
+            // Case: we encountered an exception -- immediately fail
+            boundaryPoolThreadsWaiting.incrementAndGet();  // see canonical deadlock below -- we need to handle it here as well
+            boundaryPool.submit(() -> {
+              try {
+                future.completeExceptionally(t);
+              } finally {
+                boundaryPoolThreadsWaiting.decrementAndGet();
+              }
+            });
+          } else {
+            // Case: regular execute
+            execute(debugName, priority, raft -> {  // ensure that we're on the controller thread
+              // note: this must be running on the Raft control thread
+              if (Thread.currentThread().getId() != raftThread.getId()) {
+                log.warn("Future of future should be completing on the Raft control thread; running on {} instead", Thread.currentThread());
+              }
+              // 3. Check our future
+              // 3.1. Check that we got our future OK from the Raft main thread
+              // 3.2. Register our future appropriately
+              synchronized (waitingForFutures) {
+                waitingForFutures.remove(futureOfFuture);
+                waitingForFutures.forceAdd(result);
+              }
 
 
-        // 4. Register the completion on the boundary pool
-        result.whenComplete((E r, Throwable t2) -> {
-          // note: this is likely running on the Raft control thread
-          if (t2 == null && Thread.currentThread().getId() != raftThread.getId()) {  // ok to fail on timer thread -- we defer to boundary thread below
-            log.warn("Future of future's implementation should be completing on the Raft control thread; running on {} instead", Thread.currentThread().getId());
+              // 4. Register the completion on the boundary pool
+              result.whenComplete((E r, Throwable t2) -> {
+                // note: this is likely running on the Raft control thread
+                if (t2 == null && Thread.currentThread().getId() != raftThread.getId()) {  // ok to fail on timer thread -- we defer to boundary thread below
+                  log.warn("Future of future's implementation should be completing on the Raft control thread; running on {} instead", Thread.currentThread().getId());
+                }
+                // 4.1. Cancel the timeout
+                /*
+                synchronized (timeoutResult) {
+                  timeoutResult.cancel();
+                }
+                */
+                // JUST FOR TESTS: this helps resolve a deadlock detailed below
+                boundaryPoolThreadsWaiting.incrementAndGet();
+                // There's a race condition here that's tricky and hard to remove - and only shows up in the tests
+                // The time between the above line ^ and the below line v must be 0 for the tests, but of course can't be.
+                //
+                // EXAMPLE: If we make an RPC call from a follower to the leader, all the network messages can propagate around
+                // synchronously, and we'll still end up timing out the RPC call because time can slip before the boundary pool
+                // task wakes up.
+                //
+                // The solution is to have LocalTransport's timekeeper thread spin till SingleThreadedRaftAlgorithm.boundaryPoolThreadsWaiting is 0.
+                //
+                // 4.2. Define the function to complete the future
+                Runnable completeFuture = () -> {  // make sure the future is run from the boundary pool
+                  try {
+                    if (r != null) {
+                      future.complete(r);
+                    } else if (t2 != null) {
+                      future.completeExceptionally(t2);
+                    } else {
+                      log.warn("whenComplete() called with a null result and a null exception, this should be impossible!");
+                      future.completeExceptionally(new RuntimeException("This should be impossible!"));
+                    }
+                  } finally {
+                    synchronized (waitingForFutures) {
+                      waitingForFutures.remove(result);
+                    }
+                    boundaryPoolThreadsWaiting.decrementAndGet();
+                  }
+                };
+                // 4.3. Schedule the completion on the pool
+                try {
+                  boundaryPool.submit(completeFuture);
+                } catch (Throwable boundaryPoolError) {
+                  log.error("We got an exception submitting a task to the boundary pool from SingleThreadedRaftAlgorithm. Falling back to a daemon thread.", boundaryPoolError);
+                  Thread thread = new Thread(completeFuture);
+                  thread.setDaemon(true);
+                  thread.setName("boundary-pool-fallback");
+                  thread.setPriority(Thread.NORM_PRIORITY);
+                  thread.start();
+                }
+              });
+            });
           }
-          // 4.1. Cancel the timeout
-          synchronized (timeoutResult) {
-            timeoutResult.cancel();
-          }
-          // JUST FOR TESTS: this helps resolve a deadlock detailed below
-          boundaryPoolThreadsWaiting.incrementAndGet();
-          // There's a race condition here that's tricky and hard to remove - and only shows up in the tests
-          // The time between the above line ^ and the below line v must be 0 for the tests, but of course can't be.
-          //
-          // EXAMPLE: If we make an RPC call from a follower to the leader, all the network messages can propagate around
-          // synchronously, and we'll still end up timing out the RPC call because time can slip before the boundary pool
-          // task wakes up.
-          //
-          // The solution is to have LocalTransport's timekeeper thread spin till SingleThreadedRaftAlgorithm.boundaryPoolThreadsWaiting is 0.
-          //
-          // 4.2. Define the function to complete the future
-          Runnable completeFuture = () -> {  // make sure the future is run from the boundary pool
-            try {
-              if (r != null) {
-                future.complete(r);
-              } else if (t2 != null) {
-                future.completeExceptionally(t2);
-              } else {
-                log.warn("whenComplete() called with a null result and a null exception, this should be impossible!");
-                future.completeExceptionally(new RuntimeException("This should be impossible!"));
-              }
-            } finally {
-              synchronized (raftTasks) {
-                waitingForFutures.remove(result);
-              }
-              boundaryPoolThreadsWaiting.decrementAndGet();
-            }
-          };
-          // 4.3. Schedule the completion on the pool
-          try {
-            boundaryPool.submit(completeFuture);
-          } catch (Throwable boundaryPoolError) {
-            log.error("We got an exception submitting a task to the boundary pool from SingleThreadedRaftAlgorithm. Falling back to a daemon thread.", boundaryPoolError);
-            Thread thread = new Thread(completeFuture);
-            thread.setDaemon(true);
-            thread.setName("boundary-pool-fallback");
-            thread.setPriority(Thread.NORM_PRIORITY);
-            thread.start();
-          }
-        });
-      })
+        }
     );
 
+    /*
     // 5. Schedule the timeout
     try {
       synchronized (timeoutResult) {
         if (!timeoutResult.cancelled) {
-          getTransport().schedule(timeoutResult, impl.electionTimeoutMillisRange().end + 100);
+          getTransport().schedule(timeoutResult, impl.electionTimeoutMillisRange().end * 2);
         }
       }
     } catch (Throwable timeoutError) {
       log.warn("Could not schedule timeout future: ", timeoutError);
     }
+    */
 
     // 6. Return
     return future;
@@ -705,7 +871,7 @@ public class SingleThreadedRaftAlgorithm implements RaftAlgorithm {
         log.debug("Node is dead -- ignoring any messages to it");
         return;
       }
-      if (!raftTasks.offer(new RaftTask(debugName, priority,
+      raftTasks.push(new RaftTask(debugName, priority,
           () -> {
             try {
               fn.accept(this.impl);
@@ -722,10 +888,7 @@ public class SingleThreadedRaftAlgorithm implements RaftAlgorithm {
               done.set(true);
               done.notifyAll();
             }
-          }))) {
-        log.warn("Dropping task {} due to size constraints (queue size={})", debugName, raftTasks.size());
-      }
-      raftTasks.notifyAll();
+          }));
     }
 
     if (this.threadsCanBlock) {
@@ -892,7 +1055,9 @@ public class SingleThreadedRaftAlgorithm implements RaftAlgorithm {
       this.boundaryPool.shutdown();
       // Wake up the main thread so it can die
       this.raftTasks.notifyAll();
-      this.waitingForFutures.forEach(completableFuture -> completableFuture.completeExceptionally(new RuntimeException("killMainThread() killed this future")));
+      synchronized (waitingForFutures) {
+        this.waitingForFutures.forEach(completableFuture -> completableFuture.completeExceptionally(new RuntimeException("killMainThread() killed this future")));
+      }
     }
   }
 
@@ -917,7 +1082,7 @@ public class SingleThreadedRaftAlgorithm implements RaftAlgorithm {
       haveHeartbeat = this.raftTasks.criticalPriority.size() > 100 || this.raftTasks.criticalPriority.stream().anyMatch(x -> "heartbeat".equals(x.debugString));
     }
     if (haveHeartbeat) {
-      log.warn("Skipping heartbeat; either prior heartbeat is still on the queue, or >100 critical tasks are on the queue");
+      log.warn("Skipping heartbeat ({} tasks queued; {} critical)", this.raftTasks.size(), this.raftTasks.criticalPriority.size());
     } else {
       execute("heartbeat", TaskPriority.CRITICAL, RaftAlgorithm::heartbeat);
     }
@@ -1004,10 +1169,7 @@ public class SingleThreadedRaftAlgorithm implements RaftAlgorithm {
       CompletableFuture<List<String>> future = new CompletableFuture<>();
       Runnable task = () -> future.complete(((EloquentRaftAlgorithm) this.impl).errors());
       Consumer<Throwable> onError = future::completeExceptionally;
-      synchronized (raftTasks) {
-        raftTasks.offer(new RaftTask("errors", TaskPriority.LOW, task, onError));
-        raftTasks.notifyAll();
-      }
+      raftTasks.push(new RaftTask("errors", TaskPriority.LOW, task, onError));
       try {
         errors.addAll(future.get(10, TimeUnit.SECONDS));
       } catch (InterruptedException | ExecutionException | TimeoutException e) {
