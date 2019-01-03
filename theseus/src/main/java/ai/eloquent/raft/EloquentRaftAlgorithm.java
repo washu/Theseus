@@ -19,7 +19,6 @@ import java.util.*;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.TimeoutException;
-import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.BiFunction;
 import java.util.function.Consumer;
 
@@ -47,13 +46,13 @@ public class EloquentRaftAlgorithm implements RaftAlgorithm {
    */
   public static final long MACHINE_DOWN_TIMEOUT = Duration.ofMinutes(5).toMillis();  // 5 minutes
 
+
   /**
-   * The number of broadcasts that can happen within a heartbeat interval before
-   * we start dropping them.
-   * For example, setting this to 5 means that 5 broadcasts can happen every 50ms.
-   * Setting this to 10 means that 10 broadcasts can happen every 50ms.
+   * The minimum number of milliseconds between broadcasts.
+   * This is to ensure a tradeoff between quick commits (a low number)
+   * and not killing the transport (a high number).
    */
-  private static int LEAKY_BUCKET_SIZE = 10;
+  public static final long BROADCAST_PERIOD = 10;
 
 
   /**
@@ -88,15 +87,10 @@ public class EloquentRaftAlgorithm implements RaftAlgorithm {
   private volatile long lastClusterMembershipChange;
 
   /**
-   * The last times we broadcast our heartbeat.
-   * Useful for rate-limiting our messages.
+   * The last time we broadcast a message.
+   * Useful for rate-limiting.
    */
-  private final long[] lastBroadcastTimes = new long[LEAKY_BUCKET_SIZE + 1];
-
-  /**
-   * The pointer for the next index in {@link #lastBroadcastTimes}.
-   */
-  private volatile AtomicInteger lastBroadcastNextIndex = new AtomicInteger(0);
+  private long lastBroadcastTime = -1000L;
 
   /**
    * This is the lifecycle that this algorithm is associated with. This is only for mocks to use.
@@ -524,19 +518,13 @@ public class EloquentRaftAlgorithm implements RaftAlgorithm {
     AppendEntriesRequest appendEntriesRequest;  // The request we're sending. This does not need to be sent in a lock
 
     // 1. Rate Limit
-    if (!force) {
-      int broadcastsSinceLastHeartbeat = 0;
-      for (long broadcastTime : lastBroadcastTimes) {
-        if (broadcastTime > 0 && transport.now() >= broadcastTime && (transport.now() - broadcastTime) < this.heartbeatMillis()) {  // note[gabor] broadcastTime > 0 so that unit tests grounded at 0 can pass
-          broadcastsSinceLastHeartbeat += 1;
-        }
-      }
-      if (broadcastsSinceLastHeartbeat > LEAKY_BUCKET_SIZE) {
-//        log.info("{} - {}; Rate limiting broadcasts: {}; now={}", state.serverName, methodName, Arrays.toString(lastBroadcastTimes), now);
-        return;
-      }
+    long now = transport.now();
+    if (!force && (now - lastBroadcastTime) < BROADCAST_PERIOD) {
+      log.trace("{} - {}; rate limiting broadcast. Last broadcast={}; now={}",
+          state.serverName, methodName, lastBroadcastTime, now);
+//      return;  // TODO(gabor) enable me to rate-limit, but SingleThreadedRaftAlgorithm should rate limit itself now
     }
-    lastBroadcastTimes[lastBroadcastNextIndex.getAndIncrement() % lastBroadcastTimes.length] = transport.now();
+    lastBroadcastTime = now;
 
     // 2. Preconditions
     if (!this.state.isLeader()) {  // in case we lost leadership in between
@@ -1565,10 +1553,6 @@ public class EloquentRaftAlgorithm implements RaftAlgorithm {
     }
     if (state.electionTimeoutCheckpoint < 0) {
       errors.add("No election timeout present (perhaps means heartbeats are not propagating?): " + Instant.ofEpochMilli(state.electionTimeoutCheckpoint));
-    }
-    long timeSinceBroadcast = transport.now() - (Arrays.stream(lastBroadcastTimes).max().orElse(0));
-    if (state.isLeader() && timeSinceBroadcast > this.heartbeatMillis() * 10) {
-      errors.add("Last broadcast was " + TimerUtils.formatTimeDifference(timeSinceBroadcast) + " ago");
     }
     return errors;
   }

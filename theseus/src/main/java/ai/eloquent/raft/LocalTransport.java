@@ -810,7 +810,7 @@ public class LocalTransport implements RaftTransport {
     synchronized (slept) {
       while (!slept.get() && isAlive) {
         try {
-          slept.wait(1000);
+          slept.wait(100);
         } catch (InterruptedException ignored) {}
       }
     }

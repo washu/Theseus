@@ -63,7 +63,7 @@ public interface Transport {
   @SuppressWarnings("unused")
   default void doAction(boolean async, String description, Runnable action) {
     if (async && !POOL.isShutdown()) {
-      POOL.submit(action);
+      POOL.execute(action);
     } else {
       action.run();
     }

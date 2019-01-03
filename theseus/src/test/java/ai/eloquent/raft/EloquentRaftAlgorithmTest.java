@@ -151,8 +151,10 @@ public class EloquentRaftAlgorithmTest {
       return transportMockTimer.now();
     }
 
-    public void advanceTimeOneMs() {
-      SafeTimerMock.advanceTime(1);
+    @Override
+    public void sleep(long millis, int nanos) {
+      SafeTimerMock.advanceTime(millis);
+
     }
 
     @Override
@@ -185,7 +187,7 @@ public class EloquentRaftAlgorithmTest {
       state.elect(0);
 
       for (long i = 0; i < EloquentRaftAlgorithm.MACHINE_DOWN_TIMEOUT * 2; i++) {
-        transport.advanceTimeOneMs();
+        transport.sleep(1);
         state.observeLifeFrom("new_server", i);
         algorithm.heartbeat();
 
@@ -285,6 +287,7 @@ public class EloquentRaftAlgorithmTest {
       raftState.nextIndex.get().put("server3", 1L);
 
       transport.broadcastCalls.clear();
+      transport.sleep(EloquentRaftAlgorithm.BROADCAST_PERIOD + 1);
       algorithm.broadcastAppendEntries();
       assertEquals(1, transport.broadcastCalls.size());
 
@@ -300,6 +303,7 @@ public class EloquentRaftAlgorithmTest {
       raftState.nextIndex.get().put("server3", 3L);
 
       transport.broadcastCalls.clear();
+      transport.sleep(EloquentRaftAlgorithm.BROADCAST_PERIOD + 1);
       algorithm.broadcastAppendEntries();
       assertEquals(1, transport.broadcastCalls.size());
 
@@ -319,6 +323,7 @@ public class EloquentRaftAlgorithmTest {
       raftState.nextIndex.get().put("server3", 5L);
 
       transport.broadcastCalls.clear();
+      transport.sleep(EloquentRaftAlgorithm.BROADCAST_PERIOD + 1);
       algorithm.broadcastAppendEntries();
       assertEquals(1, transport.broadcastCalls.size());
 
@@ -338,6 +343,7 @@ public class EloquentRaftAlgorithmTest {
       raftState.nextIndex.get().put("server3", 6L);
 
       transport.broadcastCalls.clear();
+      transport.sleep(EloquentRaftAlgorithm.BROADCAST_PERIOD + 1);
       algorithm.broadcastAppendEntries();
       assertEquals(1, transport.broadcastCalls.size());
 
@@ -355,6 +361,7 @@ public class EloquentRaftAlgorithmTest {
       raftState.nextIndex.get().put("server3", 6L);
 
       transport.broadcastCalls.clear();
+      transport.sleep(EloquentRaftAlgorithm.BROADCAST_PERIOD + 1);
       algorithm.broadcastAppendEntries();
       assertEquals(1, transport.broadcastCalls.size());
 
@@ -363,6 +370,7 @@ public class EloquentRaftAlgorithmTest {
       assertEquals(2, transport.broadcastCalls.get(0).message.getAppendEntries().getPrevLogTerm());
       assertEquals(5, transport.broadcastCalls.get(0).message.getAppendEntries().getPrevLogIndex());
     } finally {
+      transport.sleep(EloquentRaftAlgorithm.BROADCAST_PERIOD + 1);
       algorithm.stop(true);
       transport.stop();
     }

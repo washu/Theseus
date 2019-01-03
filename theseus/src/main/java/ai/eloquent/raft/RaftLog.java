@@ -108,7 +108,7 @@ public class RaftLog {
   /**
    * The number of log entries to keep in the log before compacting into a snapshot.
    */
-  public static final int COMPACTION_LIMIT = 0x1 << 15; // 32k
+  public static final int COMPACTION_LIMIT = 0x1 << 14; // 16k
 
   /**
    * A pool for completing commit futures.

@@ -1,7 +1,5 @@
 package ai.eloquent.util;
 
-import ai.eloquent.util.RuntimeInterruptedException;
-
 import java.time.Duration;
 
 /**
@@ -18,21 +16,34 @@ public class Uninterruptably {
    *
    * @param millis The amount of time to sleep for.
    */
-  public static void sleep(long millis) {
-    if (millis <= 0) {
-      return;
-    }
-    long sleepTill = System.currentTimeMillis() + millis;
-    while (System.currentTimeMillis() < sleepTill) {
+  public static void sleep(long millis, int nanos) {
+    if (millis == 0 && nanos != 0) {
       try {
-        long sleepTime = sleepTill - System.currentTimeMillis();
-        if (sleepTime > 0) {
-          Thread.sleep(sleepTime);
-        }
+        Thread.sleep(0, nanos);
       } catch (InterruptedException e) {
         throw new RuntimeInterruptedException(e);  // we still want to be able to interrupt, we just don't care if it's a real exception.
       }
+    } else if (millis > 0) {
+      long sleepTill = System.nanoTime() + millis * 1000000 + nanos;
+      while (System.nanoTime() < sleepTill) {
+        try {
+          long sleepTime = sleepTill - System.nanoTime();
+          if (sleepTime > 0) {
+            Thread.sleep(sleepTime / 1000000, (int) (sleepTill % 1000000));
+          }
+        } catch (InterruptedException e) {
+          throw new RuntimeInterruptedException(e);  // we still want to be able to interrupt, we just don't care if it's a real exception.
+        }
+      }
     }
+  }
+
+
+  /**
+   * @see #sleep(long, int)
+   */
+  public static void sleep(long millis) {
+    sleep(millis, 0);
   }
 
 
@@ -40,7 +51,8 @@ public class Uninterruptably {
    * A helper for {@link #sleep(long)}
    */
   public static void sleep(Duration duration) {
-    sleep(duration.toMillis());
+    long nanos = duration.toNanos();
+    sleep(nanos / 1000000, (int) (nanos % 1000000));
   }
 
 

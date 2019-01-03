@@ -1005,7 +1005,7 @@ public class KeyValueStateMachine extends RaftStateMachine {
                   locks.remove(entry.getKey());
                 }
               } else {
-                log.warn("Received bulk release lock on unregistered lock: '{}'", entry.getKey());
+                log.debug("Received bulk release lock on unregistered lock: '{}'", entry.getKey());
               }
 
             }
@@ -1034,7 +1034,7 @@ public class KeyValueStateMachine extends RaftStateMachine {
               locks.remove(serializedReleaseLock.getLock());
             }
           } else {
-            log.warn("Received release lock on unregistered lock: '{}' (server={}  hash={})",
+            log.debug("Received release lock on unregistered lock: '{}' (server={}  hash={})",
                 serializedReleaseLock.getLock(), serializedReleaseLock.getRequester(), serializedReleaseLock.getUniqueHash());
           }
           break;

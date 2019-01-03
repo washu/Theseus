@@ -245,15 +245,6 @@ public interface RaftTransport {
   }
 
 
-
-  /** @see #rpcTransport(String, String, EloquentRaftProto.RaftMessage, Consumer, Runnable, long) */
-  default <E> CompletableFuture<E> rpcTransportAsFuture(String sender, String destination, Object message,
-                                                        BiFunction<RaftMessage, Throwable, E> onResponseReceived,
-                                                        Consumer<Runnable> runMethod
-  ) {
-    return rpcTransportAsFuture(sender, destination, message, onResponseReceived, runMethod, 10000L);
-  }
-
   /**
    * Create an RPC request to send over the transport.
    * This is tagged as an RPC, and then the appropriate request is populated in the resulting object.

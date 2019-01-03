@@ -408,7 +408,7 @@ public class Theseus implements HasRaftLifecycle {
               }
             } else {
               // 3.B. Failure: signal failure
-              log.warn("Could not release {} locks; retrying later.", unreleasedLocksCopy.length);
+              log.debug("Could not release {} locks; retrying later.", unreleasedLocksCopy.length);
             }
           }
         } catch (Throwable t) {
@@ -782,7 +782,7 @@ public class Theseus implements HasRaftLifecycle {
   void queueFailedLock(byte[] releaseLockTransition) {
     synchronized (unreleasedLocks) {
       if (unreleasedLocks.size() < (0x1<<20)) {  // 1M locks
-        log.warn("Could not release lock! Queueing for later deletion.");
+        log.debug("Could not release lock! Queueing for later deletion.");
         boolean isDuplicate = false;
         for (byte[] lock : unreleasedLocks) {
           if (Arrays.equals(lock, releaseLockTransition)) {
@@ -806,8 +806,13 @@ public class Theseus implements HasRaftLifecycle {
   private void handleReleaseLockResult(Boolean success, Throwable error, byte[] releaseLockTransition) {
     if (error != null || success == null || !success) {  // note[gabor] pass the boolean as an object to prevent possible null pointer
       if (error != null &&
+          // Timeouts are semi-common
           !(error instanceof TimeoutException) &&
-          !(error instanceof CompletionException && error.getCause() != null && error.getCause() instanceof TimeoutException)) {
+          !(error instanceof CompletionException && error.getCause() != null && error.getCause() instanceof TimeoutException) &&
+          // Rejected executions are common under load
+          !(error instanceof RejectedExecutionException) &&
+          !(error instanceof CompletionException && error.getCause() != null && error.getCause() instanceof RejectedExecutionException)
+      ) {
         log.warn("Release lock encountered an unexpected error: ", error);
       }
       queueFailedLock(releaseLockTransition);
@@ -847,7 +852,7 @@ public class Theseus implements HasRaftLifecycle {
     BiFunction<String, Throwable, CompletableFuture<Boolean>> releaseLockWithoutChange = (error, exception) -> {
       if (error != null) {
         Prometheus.counterInc(COUNTER_FAILED_LOCKS);
-        log.warn("Releasing lock '{}' on error: {}", elementName, error, exception);
+        log.debug("Releasing lock '{}' on error: {}", elementName, error, exception);
       }
       return exceptionProof(node.submitTransition(releaseLockTransition)  // note[gabor]: let failsafe retry -- same reasoning as above.
           .whenComplete((s, e) -> {  // note[gabor]: this is not exception-proof; `e` may not be null.
@@ -1256,7 +1261,10 @@ public class Theseus implements HasRaftLifecycle {
         if (t != null || success == null) {
           if (t instanceof TimeoutException ||
               (t instanceof CompletionException && t.getCause() != null && t.getCause() instanceof TimeoutException)) {
-            log.debug("Caught a timeout exception exception proof wrapper");
+            log.debug("Caught a timeout exception");
+          } else if (t instanceof RejectedExecutionException ||
+                (t instanceof CompletionException && t.getCause() != null && t.getCause() instanceof RejectedExecutionException)) {
+            log.debug("Caught a rejected execution exception");
           } else {
             log.warn("Caught an exception in exception proof wrapper", t);
           }
@@ -1297,7 +1305,7 @@ public class Theseus implements HasRaftLifecycle {
         log.debug("Retrying a failed transition @ {} ({}ms left). This is fine, but should be rare", node.transport.now(), remainingTime);
         // B.2. Check if there's still time on the timeout, and we haven't shut down the node yet
         if (remainingTime < 0 || !node.isAlive()) {
-          log.info("Failed transition @ {} after {}ms (timeout of {}); not retrying further.", node.transport.now(), elapsed, timeout.toMillis());
+          log.warn("Failed transition @ {} after {}ms (timeout of {}); not retrying further.", node.transport.now(), elapsed, timeout.toMillis());
           return CompletableFuture.completedFuture(false);
         }
         // B.3. Retry if there's still time

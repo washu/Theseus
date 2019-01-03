@@ -247,7 +247,8 @@ public abstract class AbstractRaftAlgorithmTest {
     // 2.1. Create a state
     RaftState leaderState = new RaftState(
         "L",
-        new RaftLog(new SingleByteStateMachine(), quorumNames, MoreExecutors.newDirectExecutorService()));
+        new RaftLog(new SingleByteStateMachine(), quorumNames, MoreExecutors.newDirectExecutorService()),
+        quorumCount);
     assertFalse(leaderState.isLeader());
     // 2.2. Win an election by default
     if (electLeader) {
@@ -263,7 +264,9 @@ public abstract class AbstractRaftAlgorithmTest {
       // 3.1. Create a state
       RaftState followerState = new RaftState(
           nodeNames.get(i),
-          new RaftLog(new SingleByteStateMachine(), quorumNames, MoreExecutors.newDirectExecutorService()));
+          new RaftLog(new SingleByteStateMachine(), quorumNames, MoreExecutors.newDirectExecutorService()),
+          quorumCount
+      );
       if (electLeader) {
         followerState.leader = Optional.of("L");
       }
@@ -491,11 +494,12 @@ public abstract class AbstractRaftAlgorithmTest {
    * @return The future for whether the transition was successful.
    */
   private CompletableFuture<Boolean> transition(RaftAlgorithm node, int data) {
-    return node.receiveRPC(RaftTransport.mkRaftRPC(node.serverName(),
+    CompletableFuture<Boolean> rtn = node.receiveRPC(RaftTransport.mkRaftRPC(node.serverName(),
         EloquentRaftProto.ApplyTransitionRequest.newBuilder()
             .setTransition(ByteString.copyFrom(new byte[]{(byte) data}))
             .build())
     ).thenApply(reply -> reply.getApplyTransitionReply().getSuccess());
+    return rtn;
   }
 
 
@@ -513,7 +517,7 @@ public abstract class AbstractRaftAlgorithmTest {
   private Optional<Integer> transitionAndWait(RaftAlgorithm node, RaftState state, int data, Runnable beforeReturn) {
     Assume.assumeTrue(state.log.stateMachine instanceof SingleByteStateMachine);
     try {
-      Boolean success = transition(node, data).get(1, TimeUnit.SECONDS);
+      Boolean success = transition(node, data).get(5, TimeUnit.SECONDS);
       if (success) {
         beforeReturn.run();
         return Optional.of((int) ((SingleByteStateMachine) state.log.stateMachine).value);
@@ -1475,7 +1479,8 @@ public abstract class AbstractRaftAlgorithmTest {
   @Test
   public void testSubmitTransitionFromLeader() {
     Assume.assumeTrue(isStableTransport());  // requires a stable transport
-    RaftState[] closedNodes = bootstrap((nodes, states) -> assertEquals("Commit should have been successful", Optional.of(42), transitionAndWait(nodes[0], states[0], 42, () -> {})));
+    RaftState[] closedNodes = bootstrap((nodes, states) ->
+        assertEquals("Commit should have been successful", Optional.of(42), transitionAndWait(nodes[0], states[0], 42, () -> {})));
     basicSuccessTests(closedNodes);
   }
 
@@ -1623,7 +1628,10 @@ public abstract class AbstractRaftAlgorithmTest {
   @Test
   public void testSubmitTransitionWithOddNodeCount() {
     Assume.assumeTrue(isStableTransport());  // requires a stable transport
-    RaftState[] closedNodes = bootstrap(this::create, 4, 0, true, (nodes, states) -> assertEquals("Commit should have been successful", Optional.of(42), transitionAndWait(nodes[0], states[0], 42, () -> {})));
+    RaftState[] closedNodes = bootstrap(this::create, 4, 0, true, (nodes, states) ->  {
+        assertEquals("Commit should have been successful", Optional.of(42), transitionAndWait(nodes[0], states[0], 42, () -> {}));
+        waitForSilence(nodes);
+    });
 
     assertEquals("There should be exactly one leader", 1, Arrays.stream(closedNodes).filter(RaftState::isLeader).count());
     assertTrue("The node 'L' should be leader", closedNodes[0].isLeader());

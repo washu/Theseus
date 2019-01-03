@@ -377,7 +377,7 @@ public class RaftLifecycle {
 
   // Stuff to shut down elegantly
   /** The set of shutdown hooks we should run on shutdown, once we are no longer receiving traffic */
-  protected final IdentityHashSet<Runnable> shutdownHooks = new IdentityHashSet<>();
+  protected final Set<Runnable> shutdownHooks = Collections.newSetFromMap(new IdentityHashMap<>());
 
   /** The indicator for whether our web server is accepting new requests. */
   public final AtomicBoolean IS_READY = new AtomicBoolean(false);

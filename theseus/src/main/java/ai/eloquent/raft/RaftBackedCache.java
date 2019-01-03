@@ -279,7 +279,7 @@ public abstract class RaftBackedCache<V> implements Iterable<Map.Entry<String,V>
           localChangeListeners = new ArrayList<>(changeListeners);
         }
         for (ChangeListener<V> changeListener : localChangeListeners) {
-          pool.submit(() -> changeListener.onChange(finalKey, lazyValue, value));
+          pool.execute(() -> changeListener.onChange(finalKey, lazyValue, value));
         }
       }
     };
