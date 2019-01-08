@@ -714,7 +714,7 @@ public class KeyValueStateMachine extends RaftStateMachine {
   /**
    * This is where we keep all the lock acquired futures that we need to check for
    */
-  final Map<NamedLockRequest, Queue<CompletableFuture<Boolean>>> lockAcquiredFutures = new ConcurrentHashMap<>();
+  final Map<NamedLockRequest, Queue<CompletableFuture<Boolean>>> lockAcquiredFutures = new HashMap<>();
 
   /**
    * This is where we keep all of the listeners that fire whenever the current state changes
@@ -1334,7 +1334,10 @@ public class KeyValueStateMachine extends RaftStateMachine {
     if (holder == null) {
       return;
     }
-    Queue<CompletableFuture<Boolean>> futures = lockAcquiredFutures.remove(new NamedLockRequest(lockName, holder.server, holder.uniqueHash));
+    Queue<CompletableFuture<Boolean>> futures;
+    synchronized (lockAcquiredFutures) {
+      futures = lockAcquiredFutures.remove(new NamedLockRequest(lockName, holder.server, holder.uniqueHash));
+    }
     if (futures != null) {
       futures.forEach(future -> pool.execute(() -> {
         if (!future.isDone()) {
@@ -1385,38 +1388,49 @@ public class KeyValueStateMachine extends RaftStateMachine {
    * @return a Future that completes when the lock is acquired by requester.
    */
   CompletableFuture<Boolean> createLockAcquiredFuture(String lock, String requester, String uniqueHash) {
-    // 1. Register the future
-    // note[gabor] even if it's already completed, we want to register it here now in case
-    // something changes before we check. We'll remove it later.
-    // This relies on the fact that double-completing a future is harmless.
-    //
-    // In more detail, we can argue in cases:
-    //   1. If at this point the lock is not held yet, then there is some future point when it will be
-    //      acquired and the future will fire then.
-    //   2. If at this point the lock is held, we'll pick it up below.
-    //   3. DISALLOWED: if the lock releases before we get the lock, we have an error, but then
-    //      we shouldn't fire the future anyways because we don't have the lock.
     CompletableFuture<Boolean> lockAcquiredFuture = new CompletableFuture<>();
     NamedLockRequest request = new NamedLockRequest(lock, requester, uniqueHash);
-    this.lockAcquiredFutures.computeIfAbsent(request, k -> new ConcurrentLinkedQueue<>()).add(lockAcquiredFuture);
+    boolean shouldCompleteTrue = false;
+    synchronized (this.lockAcquiredFutures) {
+      // 1. Register the future
+      // note[gabor] even if it's already completed, we want to register it here now in case
+      // something changes before we check. We'll remove it later.
+      // This relies on the fact that double-completing a future is harmless.
+      //
+      // In more detail, we can argue in cases:
+      //   1. If at this point the lock is not held yet, then there is some future point when it will be
+      //      acquired and the future will fire then.
+      //   2. If at this point the lock is held, we'll pick it up below.
+      //   3. DISALLOWED: if the lock releases before we get the lock, we have an error, but then
+      //      we shouldn't fire the future anyways because we don't have the lock.
+      this.lockAcquiredFutures.computeIfAbsent(request, k -> new ConcurrentLinkedQueue<>()).add(lockAcquiredFuture);
 
-    // 2. Check for immediate completion
-    QueueLock lockObj = locks.get(lock);
-    if (lockObj != null) {
-      LockRequest holder = lockObj.holder;
-      if (holder != null) {
-        if (Objects.equals(requester, holder.server) && Objects.equals(uniqueHash, holder.uniqueHash)) {
-          // 3. If we just completed the future, remove it from the waitlist
-          Queue<CompletableFuture<Boolean>> futures = this.lockAcquiredFutures.get(request);
-          if (futures != null) {
-            futures.remove(lockAcquiredFuture);
+      // 2. Check for immediate completion
+      QueueLock lockObj = locks.get(lock);
+      if (lockObj != null) {
+        LockRequest holder = lockObj.holder;
+        if (holder != null) {
+          if (Objects.equals(requester, holder.server) && Objects.equals(uniqueHash, holder.uniqueHash)) {
+            // 3. If we just completed the future, remove it from the waitlist
+            Queue<CompletableFuture<Boolean>> futures = this.lockAcquiredFutures.get(request);
+            // 3.1. Remove the future from the queue
+            if (futures != null) {
+              futures.remove(lockAcquiredFuture);
+              // 3.2. Remove the future from the map, if applicable
+              if (futures.isEmpty()) {
+                this.lockAcquiredFutures.remove(request);
+              }
+            }
+            // 3.3. Mark for completion
+            shouldCompleteTrue = true;
           }
-          if (!lockAcquiredFuture.isDone()) {
-            lockAcquiredFuture.complete(true);
-          }
-
         }
       }
+    }
+
+    // 3. Complete the future
+    if (shouldCompleteTrue && !lockAcquiredFuture.isDone()) {
+      lockAcquiredFuture.complete(true);
     }
 
     // 4. Return

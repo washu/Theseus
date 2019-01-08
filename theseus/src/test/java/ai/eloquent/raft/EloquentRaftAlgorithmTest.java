@@ -701,7 +701,8 @@ public class EloquentRaftAlgorithmTest {
     return node.receiveRPC(RaftTransport.mkRaftRPC(node.serverName(),
         EloquentRaftProto.ApplyTransitionRequest.newBuilder()
             .setTransition(ByteString.copyFrom(transition))
-            .build())
+            .build()),
+        false
     ).thenApply(reply -> reply.getApplyTransitionReply().getSuccess());
   }
 

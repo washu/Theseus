@@ -15,7 +15,6 @@ import java.util.function.Consumer;
 import java.util.function.Supplier;
 
 import ai.eloquent.raft.EloquentRaftProto.*;
-import ai.eloquent.util.Uninterruptably;
 import org.slf4j.Logger;
 
 /**
@@ -202,6 +201,7 @@ public interface RaftTransport {
 
 
   /** Get a future. This is just a mockable alias for {@link CompletableFuture#get(long, TimeUnit)}. */
+  @SuppressWarnings("unused")
   default <E> E getFuture(CompletableFuture<E> future, Duration timeout) throws InterruptedException, ExecutionException, TimeoutException {
     return future.get(timeout.toMillis(), TimeUnit.MILLISECONDS);
   }

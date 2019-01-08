@@ -36,10 +36,14 @@ public interface RaftAlgorithm {
    *
    * @param messageProto The {@link ai.eloquent.raft.EloquentRaftProto.RaftMessage} we have received.
    * @param replySender A callback for sending a message to the sender on the underlying transport.
+   * @param fromTransport If true, this is an RPC received from the transport itself. That is, it's an RPC from one
+   *                      Raft node to another.
+   *                      Otherwise, it's received from user-space (i.e., called by a user function).
    */
   @SuppressWarnings("Duplicates")
   default void receiveMessage(EloquentRaftProto.RaftMessage messageProto,
-                              Consumer<EloquentRaftProto.RaftMessage> replySender) {
+                              Consumer<EloquentRaftProto.RaftMessage> replySender,
+                              boolean fromTransport) {
 
     if (!messageProto.getAppendEntries().equals(AppendEntriesRequest.getDefaultInstance())) {
       // Append Entries
@@ -113,7 +117,7 @@ public interface RaftAlgorithm {
     } else if (!messageProto.getApplyTransition().equals(ApplyTransitionRequest.getDefaultInstance())) {
       // Apply Transition
       Object timerStart = Prometheus.startTimer(summaryTiming,"apply_transition");
-      CompletableFuture<RaftMessage> future = receiveApplyTransitionRPC(messageProto.getApplyTransition());
+      CompletableFuture<RaftMessage> future = receiveApplyTransitionRPC(messageProto.getApplyTransition(), fromTransport);
       future.whenComplete( (reply, exception) -> {
         Prometheus.observeDuration(timerStart);
         if (exception != null && reply != null) {
@@ -133,10 +137,13 @@ public interface RaftAlgorithm {
    * This function will return a {@link CompletableFuture} that is completed when the RPC completes.
    *
    * @param messageProto The {@link ai.eloquent.raft.EloquentRaftProto.RaftMessage} we have received.
+   * @param fromTransport If true, this is an RPC received from the transport itself. That is, it's an RPC from one
+   *                      Raft node to another.
+   *                      Otherwise, it's received from user-space (i.e., called by a user function).
    *
    * @return A {@link CompletableFuture} that completes when the RPC completes.
    */
-  default CompletableFuture<EloquentRaftProto.RaftMessage> receiveRPC(EloquentRaftProto.RaftMessage messageProto) {
+  default CompletableFuture<EloquentRaftProto.RaftMessage> receiveRPC(EloquentRaftProto.RaftMessage messageProto, boolean fromTransport) {
     Object timerStart = null;
     CompletableFuture<EloquentRaftProto.RaftMessage> future = new CompletableFuture<>();
     try {
@@ -163,7 +170,7 @@ public interface RaftAlgorithm {
       } else if (messageProto.getApplyTransition() != ApplyTransitionRequest.getDefaultInstance()) {
         // Apply Transition
         timerStart = Prometheus.startTimer(summaryTiming, "transition_rpc");
-        future = receiveApplyTransitionRPC(messageProto.getApplyTransition());
+        future = receiveApplyTransitionRPC(messageProto.getApplyTransition(), fromTransport);
       } else {
         timerStart = Prometheus.startTimer(summaryTiming, "unknown_rpc");
         future.completeExceptionally(new IllegalStateException("Message type not implemented: " + messageProto));
@@ -381,8 +388,13 @@ public interface RaftAlgorithm {
    * Apply a transition to Raft.
    *
    * @param transition The transition to apply
+   * @param fromTransport If true, this RPC came from another Raft node via an RPC. Therefore, it's potentially
+   *                      blocking the transport thread if we block (therefore, we shouldn't block!).
+   *                      This is different from if this is coming from user-space, where it's often preferable
+   *                      to block the user thread rather than flood Raft with requests.
    */
-  CompletableFuture<RaftMessage> receiveApplyTransitionRPC(EloquentRaftProto.ApplyTransitionRequest transition);
+  CompletableFuture<RaftMessage> receiveApplyTransitionRPC(EloquentRaftProto.ApplyTransitionRequest transition,
+                                                           boolean fromTransport);
 
 
   /**
@@ -485,7 +497,7 @@ public interface RaftAlgorithm {
         // 1.1. Try to add ourselves to the hospice
         RaftMessage response = raft.receiveApplyTransitionRPC(ApplyTransitionRequest.newBuilder()
                 .setNewHospiceMember(raft.serverName())
-                .build()).get(raft.electionTimeoutMillisRange().end + 1000, TimeUnit.MILLISECONDS);
+                .build(), false).get(raft.electionTimeoutMillisRange().end + 1000, TimeUnit.MILLISECONDS);
         inHospice = response.getApplyTransitionReply().getSuccess();
       } catch (InterruptedException | ExecutionException | TimeoutException e) {
         log.info("{} - [{}] Could not apply hospice transition: ", raft.mutableState().serverName, transport.now(), e);

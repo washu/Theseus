@@ -228,7 +228,8 @@ public class EloquentRaftNode implements HasRaftLifecycle {
         EloquentRaftProto.ApplyTransitionRequest.newBuilder()
             .setTransition(ByteString.copyFrom(transition))
             .setTerm(algorithm.term())
-            .build())
+            .build()),
+        false
     ).thenApply(reply -> reply.getApplyTransitionReply().getSuccess());
   }
 

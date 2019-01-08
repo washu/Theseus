@@ -497,7 +497,8 @@ public abstract class AbstractRaftAlgorithmTest {
     CompletableFuture<Boolean> rtn = node.receiveRPC(RaftTransport.mkRaftRPC(node.serverName(),
         EloquentRaftProto.ApplyTransitionRequest.newBuilder()
             .setTransition(ByteString.copyFrom(new byte[]{(byte) data}))
-            .build())
+            .build()),
+        false
     ).thenApply(reply -> reply.getApplyTransitionReply().getSuccess());
     return rtn;
   }
@@ -543,7 +544,8 @@ public abstract class AbstractRaftAlgorithmTest {
     return node.receiveRPC(RaftTransport.mkRaftRPC(node.serverName(),
         EloquentRaftProto.AddServerRequest.newBuilder()
             .setNewServer(serverName)
-            .build())
+            .build()),
+        false
     ).thenApply(reply -> reply.getAddServerReply().getStatus());
   }
 
@@ -560,7 +562,8 @@ public abstract class AbstractRaftAlgorithmTest {
     return node.receiveRPC(RaftTransport.mkRaftRPC(node.serverName(),
         EloquentRaftProto.RemoveServerRequest.newBuilder()
             .setOldServer(serverName)
-            .build())
+            .build()),
+        false
     ).thenApply(reply -> reply.getRemoveServerReply().getStatus());
   }
 

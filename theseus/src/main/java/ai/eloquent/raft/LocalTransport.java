@@ -599,7 +599,7 @@ public class LocalTransport implements RaftTransport {
   @Override
   public void broadcastTransport(String sender, EloquentRaftProto.RaftMessage message) {
     assert ConcurrencyUtils.ensureNoLocksHeld();
-    assert this.boundAlgorithms().stream().allMatch(x -> x.getClass().getName().contains("RecordingRaft")) || this.boundAlgorithms().stream().filter(x -> x.serverName().equals(sender)).findFirst().map(x -> x.state().leadership != RaftState.LeadershipStatus.OTHER).orElse(false)
+    assert this.boundAlgorithms().stream().allMatch(x -> x.getClass().getName().contains("RecordingRaft")) || this.boundAlgorithms().stream().filter(x -> x.serverName().equals(sender)).findFirst().map(x -> x.mutableState().leadership != RaftState.LeadershipStatus.OTHER).orElse(false)
         : "A follower / shadow should not be broadcasting on the transport!";
     Lock nodesReadLock = this.nodesLock.readLock();
     try {
@@ -1021,7 +1021,7 @@ public class LocalTransport implements RaftTransport {
             }
             if (request.getIsRPC()) {
               // 2.2.1. Case: this is a blocking RPC
-              CompletableFuture<EloquentRaftProto.RaftMessage> response = node.receiveRPC(request);
+              CompletableFuture<EloquentRaftProto.RaftMessage> response = node.receiveRPC(request, true);
               if (response == null) {
                 NullPointerException exception = new NullPointerException();
                 log.warn("Got null response from RPC: ", exception);
@@ -1042,7 +1042,7 @@ public class LocalTransport implements RaftTransport {
               });
             } else {
               // 2.2.2. Case: this is a non-blocking message
-              node.receiveMessage(request, (proto) -> sendTransport(message.target, message.sender, proto));
+              node.receiveMessage(request, (proto) -> sendTransport(message.target, message.sender, proto), true);
             }
           });
     } catch (Throwable t) {

@@ -40,7 +40,7 @@ public class InstantTransport implements RaftTransport {
   @Override
   public void rpcTransport(String sender, String destination, EloquentRaftProto.RaftMessage message, Consumer<EloquentRaftProto.RaftMessage> onResponseReceived, Runnable onTimeout, long timeout) {
     try {
-      EloquentRaftProto.RaftMessage reply = bound.get(destination).receiveRPC(message).get();
+      EloquentRaftProto.RaftMessage reply = bound.get(destination).receiveRPC(message, true).get();
       onResponseReceived.accept(reply);
     } catch (InterruptedException | ExecutionException e) {
       e.printStackTrace();
@@ -49,7 +49,7 @@ public class InstantTransport implements RaftTransport {
 
   @Override
   public void sendTransport(String sender, String destination, EloquentRaftProto.RaftMessage message) {
-    bound.get(destination).receiveMessage(message, (reply) -> sendTransport(destination, sender, reply));
+    bound.get(destination).receiveMessage(message, (reply) -> sendTransport(destination, sender, reply), true);
   }
 
   @Override
@@ -57,7 +57,7 @@ public class InstantTransport implements RaftTransport {
     for (RaftAlgorithm algorithm : bound.values()) {
       if (!algorithm.serverName().equals(sender)) {
         try {
-          EloquentRaftProto.RaftMessage reply = algorithm.receiveRPC(message).get();
+          EloquentRaftProto.RaftMessage reply = algorithm.receiveRPC(message, true).get();
           sendTransport(algorithm.serverName(), sender, reply);
         } catch (InterruptedException | ExecutionException e) {
           e.printStackTrace();

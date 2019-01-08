@@ -48,7 +48,7 @@ public class EloquentRaftBenchmark {
       L.algorithm.receiveApplyTransitionRPC(EloquentRaftProto.ApplyTransitionRequest.newBuilder()
           .setTerm(0)
           .setTransition(ByteString.copyFrom(KeyValueStateMachine.createSetValueTransition("key_"+(i % 50), new byte[]{10})))
-          .build());
+          .build(), false);
     }
 
     System.out.println("************* DONE "+ TimerUtils.formatTimeSince(startTime)+" ("+((double)(System.currentTimeMillis() - startTime) / numIterations)+"ms / transition) **************");
@@ -70,7 +70,7 @@ public class EloquentRaftBenchmark {
       L.algorithm.receiveApplyTransitionRPC(EloquentRaftProto.ApplyTransitionRequest.newBuilder()
           .setTerm(0)
           .setTransition(ByteString.copyFrom(KeyValueStateMachine.createSetValueTransition("key_"+(i % 50), new byte[]{10})))
-          .build());
+          .build(), false);
     }
 
     System.out.println("************* DONE "+ TimerUtils.formatTimeSince(startTime)+" ("+((double)(System.currentTimeMillis() - startTime) / numIterations)+"ms / transition) **************");

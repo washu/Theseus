@@ -2,12 +2,9 @@ package ai.eloquent.raft;
 
 import static org.junit.Assert.*;
 
-import ai.eloquent.test.SlowTests;
-import ai.eloquent.util.Uninterruptably;
 import org.junit.Test;
 
 import ai.eloquent.raft.SingleThreadedRaftAlgorithm.RaftDeque;
-import org.junit.experimental.categories.Category;
 
 import static ai.eloquent.raft.SingleThreadedRaftAlgorithm.TaskPriority.*;
 
@@ -26,17 +23,6 @@ import java.util.function.Consumer;
 public class SingleThreadedRaftAlgorithmTest {
 
 
-  // --------------------------------------------------------------------------
-  // RaftDeque
-  // Standard Tests
-  // These are adapted from https://gist.github.com/aybabtme/3462387
-  // --------------------------------------------------------------------------
-
-
-  /** The actual Raft deque */
-  private RaftDeque deque = new RaftDeque();
-
-
   /** Create a new RaftTask */
   private static SingleThreadedRaftAlgorithm.RaftTask task(String name, SingleThreadedRaftAlgorithm.TaskPriority priority) {
     return new SingleThreadedRaftAlgorithm.RaftTask(
@@ -53,6 +39,28 @@ public class SingleThreadedRaftAlgorithmTest {
   }
 
 
+  // --------------------------------------------------------------------------
+  // RaftTask
+  // --------------------------------------------------------------------------
+
+  /**
+   * Test that {@link ai.eloquent.raft.SingleThreadedRaftAlgorithm.RaftTask} has a {@link Object#toString()}.
+   */
+  @Test
+  public void raftTaskToString() {
+    assertEquals("foo", task("foo").toString());
+  }
+
+
+  // --------------------------------------------------------------------------
+  // RaftDeque
+  // Standard Tests
+  // These are adapted from https://gist.github.com/aybabtme/3462387
+  // --------------------------------------------------------------------------
+
+
+  /** The actual Raft deque */
+  private RaftDeque deque = new RaftDeque();
 
   @Test
   public void dequeDeque() {
@@ -440,6 +448,167 @@ public class SingleThreadedRaftAlgorithmTest {
 
   // --------------------------------------------------------------------------
   // RaftDeque
+  // Stack Interface Tests
+  // --------------------------------------------------------------------------
+
+  /**
+   * Test that push() and pop() are Stack-like
+   */
+  @Test
+  public void dequePushPop(){
+    SingleThreadedRaftAlgorithm.RaftTask t1 = task("1", LOW);
+    SingleThreadedRaftAlgorithm.RaftTask t2 = task("2", LOW);
+    SingleThreadedRaftAlgorithm.RaftTask t3 = task("3", LOW);
+    deque.push(t1);
+    deque.push(t2);
+    deque.push(t3);
+    assertEquals(t3, deque.pop());
+    assertEquals(t2, deque.pop());
+    assertEquals(t1, deque.pop());
+    assertTrue(deque.isEmpty());
+  }
+
+
+  /**
+   * Test that push() and peek() are Stack-like
+   */
+  @Test
+  public void dequePushPeek(){
+    SingleThreadedRaftAlgorithm.RaftTask t1 = task("1", LOW);
+    SingleThreadedRaftAlgorithm.RaftTask t2 = task("2", LOW);
+    SingleThreadedRaftAlgorithm.RaftTask t3 = task("3", LOW);
+    deque.push(t1);
+    deque.push(t2);
+    deque.push(t3);
+    assertEquals(t3, deque.peek());
+    assertEquals(3, deque.size());
+  }
+
+
+  // --------------------------------------------------------------------------
+  // RaftDeque
+  // Queue Interface Tests
+  // --------------------------------------------------------------------------
+
+  /**
+   * Test that add() and poll() are Queue-like
+   */
+  @Test
+  public void dequeAddPoll(){
+    SingleThreadedRaftAlgorithm.RaftTask t1 = task("1", LOW);
+    SingleThreadedRaftAlgorithm.RaftTask t2 = task("2", LOW);
+    SingleThreadedRaftAlgorithm.RaftTask t3 = task("3", LOW);
+    deque.add(t1);
+    deque.add(t2);
+    deque.add(t3);
+    assertEquals(t1, deque.poll());
+    assertEquals(t2, deque.poll());
+    assertEquals(t3, deque.poll());
+    assertTrue(deque.isEmpty());
+    assertNull(deque.poll());
+  }
+
+
+  /**
+   * Test that forceAdd() and poll() are Queue-like
+   */
+  @Test
+  public void dequeForceAddPoll(){
+    SingleThreadedRaftAlgorithm.RaftTask t1 = task("1", LOW);
+    SingleThreadedRaftAlgorithm.RaftTask t2 = task("2", LOW);
+    SingleThreadedRaftAlgorithm.RaftTask t3 = task("3", LOW);
+    deque.forceAdd(t1);
+    deque.forceAdd(t2);
+    deque.forceAdd(t3);
+    assertEquals(t1, deque.poll());
+    assertEquals(t2, deque.poll());
+    assertEquals(t3, deque.poll());
+    assertTrue(deque.isEmpty());
+    assertNull(deque.poll());
+  }
+
+
+  /**
+   * Test that add() and peek() are Queue-like
+   */
+  @Test
+  public void dequeAddPeek(){
+    SingleThreadedRaftAlgorithm.RaftTask t1 = task("1", LOW);
+    SingleThreadedRaftAlgorithm.RaftTask t2 = task("2", LOW);
+    SingleThreadedRaftAlgorithm.RaftTask t3 = task("3", LOW);
+    deque.add(t1);
+    deque.add(t2);
+    deque.add(t3);
+    assertEquals(t1, deque.peek());
+    assertEquals(3, deque.size());
+  }
+
+
+  /**
+   * Test that add() and remove() are Queue-like
+   */
+  @Test
+  public void dequeAddRemove(){
+    SingleThreadedRaftAlgorithm.RaftTask t1 = task("1", LOW);
+    SingleThreadedRaftAlgorithm.RaftTask t2 = task("2", LOW);
+    SingleThreadedRaftAlgorithm.RaftTask t3 = task("3", LOW);
+    deque.add(t1);
+    deque.add(t2);
+    deque.add(t3);
+    assertEquals(t1, deque.remove());
+    assertEquals(t2, deque.remove());
+    assertEquals(t3, deque.remove());
+    assertTrue(deque.isEmpty());
+    try {
+      deque.remove();
+      fail("remove() should not be defined on empty queues");
+    } catch (NoSuchElementException ignored) {}
+  }
+
+
+
+  /**
+   * Test that offer() and poll() are Stack-like
+   */
+  @Test
+  public void dequeOfferPoll(){
+    SingleThreadedRaftAlgorithm.RaftTask t1 = task("1", LOW);
+    SingleThreadedRaftAlgorithm.RaftTask t2 = task("2", LOW);
+    SingleThreadedRaftAlgorithm.RaftTask t3 = task("3", LOW);
+    deque.offer(t1);
+    deque.offer(t2);
+    deque.offer(t3);
+    assertEquals(t1, deque.poll());
+    assertEquals(t2, deque.poll());
+    assertEquals(t3, deque.poll());
+    assertTrue(deque.isEmpty());
+    assertNull(deque.poll());
+  }
+
+
+  /**
+   * Test that add() and element() are Queue-like
+   */
+  @Test
+  public void dequeAddElement(){
+    SingleThreadedRaftAlgorithm.RaftTask t1 = task("task 1", LOW);
+    SingleThreadedRaftAlgorithm.RaftTask t2 = task("task 2", LOW);
+    SingleThreadedRaftAlgorithm.RaftTask t3 = task("task 3", LOW);
+    try {
+      //noinspection ResultOfMethodCallIgnored
+      deque.element();
+      fail("element() should throw an exception on an empty queue");
+    } catch (NoSuchElementException ignored) {}
+    deque.add(t1);
+    deque.add(t2);
+    deque.add(t3);
+    assertEquals(t1, deque.element());
+    assertEquals(3, deque.size());
+  }
+
+
+  // --------------------------------------------------------------------------
+  // RaftDeque
   // Priority Tests
   // --------------------------------------------------------------------------
 
@@ -530,7 +699,9 @@ public class SingleThreadedRaftAlgorithmTest {
     }
     AtomicBoolean havePopped = new AtomicBoolean(false);
     Thread consumer = new Thread(() -> {
-      Uninterruptably.sleep(100);
+      for (int i = 0; i < 100; ++i) {
+        Thread.yield();
+      }
       havePopped.set(true);
       pop.accept(deque);
     });
@@ -553,11 +724,10 @@ public class SingleThreadedRaftAlgorithmTest {
   /**
    * @see #dequeBlockWriteGeneralized(BiConsumer, Consumer)
    */
-  @Category(SlowTests.class)
   @Test
   public void dequeBlockWriteCrossProduct(){
     for (BiConsumer<RaftDeque, SingleThreadedRaftAlgorithm.RaftTask> push : Arrays.asList((BiConsumer<RaftDeque, SingleThreadedRaftAlgorithm.RaftTask>)
-        RaftDeque::push, RaftDeque::addFirst, RaftDeque::addLast
+        RaftDeque::push, RaftDeque::add, RaftDeque::addFirst, RaftDeque::addLast
     )) {
       for (Consumer<RaftDeque> pop : Arrays.asList((Consumer<RaftDeque>)
           RaftDeque::pop,

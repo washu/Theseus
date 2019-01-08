@@ -480,6 +480,36 @@ public class KeyValueStateMachineTest {
 
 
   /**
+   * Test that if we register a future, then take a lock, the future (1) completes and (2) is no longer kept in memory
+   */
+  @Test
+  public void testLockFutureCleanupOnCompletion() {
+    KeyValueStateMachine stateMachine = new KeyValueStateMachine("name");
+    CompletableFuture<Boolean> future = stateMachine.createLockAcquiredFuture("test", "host", "hash1");
+    stateMachine.applyTransition(
+        KeyValueStateMachine.createRequestLockTransition("test", "host", "hash1"), TimerUtils.mockableNow().toEpochMilli(), MoreExecutors.newDirectExecutorService());
+    assertTrue("Our future should have immediately completed", future.isDone());
+    assertTrue("Our future should not be queued any longer", stateMachine.lockAcquiredFutures.isEmpty());
+  }
+
+
+  /**
+   * Test that if we take a lock and THEN register a future, the future (1) completes and (2) is no longer kept in memory.
+   *
+   * @see #testLockFutureCleanupOnCompletion()
+   */
+  @Test
+  public void testLockFutureCleanupOnImmediateCompletion() {
+    KeyValueStateMachine stateMachine = new KeyValueStateMachine("name");
+    stateMachine.applyTransition(
+        KeyValueStateMachine.createRequestLockTransition("test", "host", "hash1"), TimerUtils.mockableNow().toEpochMilli(), MoreExecutors.newDirectExecutorService());
+    CompletableFuture<Boolean> future = stateMachine.createLockAcquiredFuture("test", "host", "hash1");
+    assertTrue("Our future should have immediately completed", future.isDone());
+    assertTrue("Our future should not be queued any longer", stateMachine.lockAcquiredFutures.isEmpty());
+  }
+
+
+  /**
    * Make sure transient values clear when we go offline.
    */
   @Test

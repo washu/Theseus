@@ -1238,7 +1238,7 @@ public class EloquentRaftAlgorithm implements RaftAlgorithm {
 
   /** {@inheritDoc} */
   @Override
-  public CompletableFuture<RaftMessage> receiveApplyTransitionRPC(ApplyTransitionRequest transition) {
+  public CompletableFuture<RaftMessage> receiveApplyTransitionRPC(ApplyTransitionRequest transition, boolean fromTransport) {
     assert drivingThreadId < 0 || drivingThreadId == Thread.currentThread().getId() : "Eloquent Raft Algorithm should only be run from the driving thread (" + drivingThreadId + ") but is being driven by " + Thread.currentThread();
     String methodName = "ReceiveApplyTransition";
     log.trace("{} - [{}] {}; is_leader={}", state.serverName, transport.now(), methodName, this.state.isLeader());
@@ -1392,7 +1392,8 @@ public class EloquentRaftAlgorithm implements RaftAlgorithm {
               this.receiveRPC(RaftTransport.mkRaftRPC(state.serverName,
                   EloquentRaftProto.RemoveServerRequest.newBuilder()
                       .setOldServer(maybeServer.get())
-                      .build())
+                      .build()),
+                  true  // we don't want to block on this call
               );
               assert checkDuration("remove server", sectionBegin, transport.now());
             } else if ((maybeServer = state.serverToAdd(transport.now(), electionTimeoutMillisRange().begin)).isPresent()) {  // note: add timeout is different from remove timeout. Much more strict to add than to remove
@@ -1402,7 +1403,8 @@ public class EloquentRaftAlgorithm implements RaftAlgorithm {
               this.receiveRPC(RaftTransport.mkRaftRPC(state.serverName,
                   EloquentRaftProto.AddServerRequest.newBuilder()
                       .setNewServer(maybeServer.get())
-                      .build())
+                      .build()),
+                  true  // we don't want to block on this call
               );
               assert checkDuration("add server", sectionBegin, transport.now());
             }
@@ -1424,7 +1426,8 @@ public class EloquentRaftAlgorithm implements RaftAlgorithm {
               log.info("{} - Clearing transient data for node {}", state.serverName, deadNode);
               return receiveApplyTransitionRPC(ApplyTransitionRequest.newBuilder()
                   .setTransition(ByteString.copyFrom(KeyValueStateMachine.createClearTransition(deadNode)))
-                  .build())
+                  .build(),
+                  true)  // don't block on this call!
                   .handle((response, exception) -> {
                     if (exception != null || response == null || !response.getApplyTransitionReply().getSuccess()) {
                       state.revive(deadNode);
