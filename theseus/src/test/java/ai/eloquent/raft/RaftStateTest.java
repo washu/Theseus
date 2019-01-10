@@ -15,7 +15,6 @@ import static org.junit.Assert.*;
  *
  * @author <a href="mailto:gabor@eloquent.ai">Gabor Angeli</a>
  */
-@SuppressWarnings("ConstantConditions")
 public class RaftStateTest {
 
 
@@ -241,7 +240,7 @@ public class RaftStateTest {
     assertEquals(expectedKeys, state.lastMessageTimestamp.get().keySet());
 
     // Step down
-    state.stepDownFromElection();
+    state.stepDownFromElection(0L);
     assertFalse(state.nextIndex.isPresent());
     assertFalse(state.matchIndex.isPresent());
     assertFalse(state.lastMessageTimestamp.isPresent());
@@ -268,7 +267,7 @@ public class RaftStateTest {
     state.elect(0L);
     state.commitUpTo(state.transition(new byte[]{42}).index, 0L);
     state.commitUpTo(state.transition(new byte[]{43}).index, 0L);
-    state.stepDownFromElection();
+    state.stepDownFromElection(0L);
 
     // Elect
     state.elect(1L);
@@ -279,7 +278,7 @@ public class RaftStateTest {
 
 
   /**
-   * Test {@link RaftState#stepDownFromElection()}
+   * Test {@link RaftState#stepDownFromElection(long)}
    */
   @Test
   public void stepDownFromElection() {
@@ -291,7 +290,7 @@ public class RaftStateTest {
     state.receiveVoteFrom("name");
     assertEquals("Should be able to vote for self (if this fails, another test should also be failing)", Collections.singleton("name"), state.votesReceived);
     // 2. Step down
-    state.stepDownFromElection();
+    state.stepDownFromElection(0L);
     // 3. Check the resulting state
     assertEquals(RaftState.LeadershipStatus.OTHER, state.leadership);
     assertEquals(Optional.empty(), state.nextIndex);
@@ -302,14 +301,14 @@ public class RaftStateTest {
 
 
   /**
-   * Test {@link RaftState#becomeCandidate()}
+   * Test {@link RaftState#becomeCandidate(long)}
    */
   @Test
   public void becomeCandidate() {
     RaftState state = new RaftState("name", new KeyValueStateMachine("name"), MoreExecutors.newDirectExecutorService());
     // 1. Become a candidate
-    state.becomeCandidate();
-    assertException(state::becomeCandidate, AssertionError.class);  // cannot become a candidate twice
+    state.becomeCandidate(0L);
+    state.becomeCandidate(0L);  // note: can double become candidate
     assertTrue("Should have become a candidate", state.isCandidate());
     assertEquals("Should not have any votes yet", Collections.emptySet(), state.votesReceived);
     assertFalse("Should not yet keep track of leader state (nextIndex)", state.nextIndex.isPresent());
@@ -319,25 +318,25 @@ public class RaftStateTest {
 
 
   /**
-   * Test that {@link RaftState#becomeCandidate()} should not work if we've voted for someone
+   * Test that {@link RaftState#becomeCandidate(long)} should not work if we've voted for someone
    */
   @Test
   public void becomeCandidateShouldAssertErrorIfVotesExist() {
     RaftState state = new RaftState("name", new KeyValueStateMachine("name"), MoreExecutors.newDirectExecutorService());
     state.votesReceived.add("name");
-    assertException(state::becomeCandidate, AssertionError.class);
+    assertException(() -> state.becomeCandidate(0L), AssertionError.class);
   }
 
 
 
   /**
-   * Test that {@link RaftState#becomeCandidate()} doesn't work if we're not in the quorum
+   * Test that {@link RaftState#becomeCandidate(long)} doesn't work if we're not in the quorum
    */
   @Test
   public void becomeCandidateShouldAssertErrorIfShadow() {
     RaftLog log = new RaftLog(new KeyValueStateMachine("name"), Arrays.asList("A", "B"), MoreExecutors.newDirectExecutorService());
     RaftState state = new RaftState("name", log, 3);
-    assertException(state::becomeCandidate, AssertionError.class);
+    assertException(() -> state.becomeCandidate(0L), AssertionError.class);
   }
 
   /**
@@ -347,22 +346,22 @@ public class RaftStateTest {
   public void stateTransitions() {
     RaftState state = new RaftState("name", new KeyValueStateMachine("name"), MoreExecutors.newDirectExecutorService());
     // x : candidate -> candidate
-    state.becomeCandidate();
-    assertException(state::becomeCandidate, AssertionError.class);  // cannot become a candidate twice
+    state.becomeCandidate(0L);
+    state.becomeCandidate(0L);  // note: can double become candidate
     // ok: candidate -> leader
     state.elect(0L);
     // x : leader -> leader
     assertException(() -> state.elect(1L), AssertionError.class);  // cannot become a candidate twice
     // x : leader -> candidate
-    assertException(state::becomeCandidate, AssertionError.class);  // can't become a candidate from leadership
+    assertException(() -> state.becomeCandidate(1L), AssertionError.class);  // can't become a candidate from leadership
     // ok: leader -> other
-    state.stepDownFromElection();  // can step down from election
+    state.stepDownFromElection(0L);  // can step down from election
     // ok: other -> leader
     state.elect(0L);  // can elect immediately
     // ok: candidate -> other
-    state.stepDownFromElection();
-    state.becomeCandidate();
-    state.stepDownFromElection();
+    state.stepDownFromElection(0L);
+    state.becomeCandidate(0L);
+    state.stepDownFromElection(0L);
   }
 
 
@@ -502,7 +501,7 @@ public class RaftStateTest {
     assertTrue("Triggering elections is idempotent", state.shouldTriggerElection(1101, timeout));
     assertTrue("Triggering elections is idempotent", state.shouldTriggerElection(1102, timeout));
     // Reset timer
-    state.resetElectionTimeout(1100, Optional.empty());
+    state.resetElectionTimeout(1100, "new_leader");
     assertFalse("Should not longer trigger elections after reset", state.shouldTriggerElection(1102, timeout));
   }
 

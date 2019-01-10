@@ -583,9 +583,16 @@ public class TheseusTest extends WithLocalTransport {
     Theseus follower = new Theseus("A", transport, new HashSet<>(Arrays.asList("L", "A")), RaftLifecycle.newBuilder().mockTime().build());
     withNodes(transport, nodes -> {
       nodes[1].setElementAsync("element", new byte[]{42}, true, Duration.ofMinutes(1)).get();
-      Optional<byte[]> elem = nodes[0].getElement("element");
-      assertTrue("Element committed to a node should be available on another node", elem.isPresent());
-      assertArrayEquals("Should have been able to retrieve the set element", new byte[]{42}, elem.get());
+      Optional<byte[]> elemOn1 = nodes[1].getElement("element");
+      // sleep to give the actual commit time to propagate
+      // note[gabor]: we reply back with success as soon as the log is *replicated* and we've committed,
+      //              which is marginally before the entry is committed on the other node. So, we sleep.
+      transport.sleep(nodes[0].node.algorithm.heartbeatMillis() * 2);
+      Optional<byte[]> elemOn0 = nodes[0].getElement("element");
+      assertTrue("Element committed to a node should be available on the calling node", elemOn1.isPresent());
+      assertTrue("Element committed to a node should be available on another node", elemOn0.isPresent());
+      assertArrayEquals("Should have been able to retrieve the set element on the calling node", new byte[]{42}, elemOn1.get());
+      assertArrayEquals("Should have been able to retrieve the set element on another node", new byte[]{42}, elemOn0.get());
     }, leader, follower);
     transport.stop();
   }
@@ -617,12 +624,18 @@ public class TheseusTest extends WithLocalTransport {
     withNodes(transport, nodes -> {
       // Set an element
       nodes[1].setElementAsync("element", new byte[]{42}, true, Duration.ofMinutes(1)).get();
+      // sleep to give the actual commit time to propagate
+      // note[gabor]: we reply back with success as soon as the log is *replicated* and we've committed,
+      //              which is marginally before the entry is committed on the other node. So, we sleep.
+      transport.sleep(nodes[0].node.algorithm.heartbeatMillis() * 2);
       Optional<byte[]> elem = nodes[0].getElement("element");
       assertTrue("Element committed to a node should be available on another node", elem.isPresent());
       assertArrayEquals("Should have been able to retrieve the set element", new byte[]{42}, elem.get());
 
       // Remove the element
       nodes[1].removeElementAsync("element", Duration.ofMinutes(1)).get();
+      // sleep again; see above
+      transport.sleep(nodes[0].node.algorithm.heartbeatMillis() * 2);
 
       // Element should not exist (on other server)
       Optional<byte[]> reread = nodes[0].getElement("element");
@@ -647,6 +660,10 @@ public class TheseusTest extends WithLocalTransport {
         keys.add("element"+i);
       }
 
+      // sleep to give the actual commit time to propagate
+      // note[gabor]: we reply back with success as soon as the log is *replicated* and we've committed,
+      //              which is marginally before the entry is committed on the other node. So, we sleep.
+      transport.sleep(nodes[0].node.algorithm.heartbeatMillis() * 2);
       for (int i = 0; i < 10; i++) {
         Optional<byte[]> elem = nodes[0].getElement("element"+i);
         assertTrue("Element "+i+" committed to a node should be available on another node", elem.isPresent());
@@ -657,6 +674,10 @@ public class TheseusTest extends WithLocalTransport {
       nodes[1].removeElementsAsync(keys, Duration.ofMinutes(1)).get();
 
       // Element should not exist (on other server)
+      // sleep to give the actual commit time to propagate
+      // note[gabor]: we reply back with success as soon as the log is *replicated* and we've committed,
+      //              which is marginally before the entry is committed on the other node. So, we sleep.
+      transport.sleep(nodes[0].node.algorithm.heartbeatMillis() * 2);
       for (int i = 0; i < 10; i++) {
         Optional<byte[]> reread = nodes[0].getElement("element"+i);
         assertEquals("Element "+i+" should no longer be in the state machine", Optional.empty(), reread);
@@ -676,6 +697,10 @@ public class TheseusTest extends WithLocalTransport {
     withNodes(transport, nodes -> {
       // Set an element
       nodes[1].setElementAsync("element", new byte[]{42}, true, Duration.ofMinutes(1)).get();
+      // sleep to give the actual commit time to propagate
+      // note[gabor]: we reply back with success as soon as the log is *replicated* and we've committed,
+      //              which is marginally before the entry is committed on the other node. So, we sleep.
+      transport.sleep(nodes[0].node.algorithm.heartbeatMillis() * 2);
       Map<String, byte[]> map = nodes[0].getMap();
       assertEquals("Leader should see the set element", 1, map.size());
       assertArrayEquals("Leader should see the correct set element", new byte[]{42}, map.get("element"));
@@ -700,6 +725,10 @@ public class TheseusTest extends WithLocalTransport {
       nodes[0].addChangeListener(changeListener);
       // Set an element
       nodes[1].setElementAsync("element", new byte[]{42}, true, Duration.ofMinutes(1)).get();
+      // sleep to give the actual commit time to propagate
+      // note[gabor]: we reply back with success as soon as the log is *replicated* and we've committed,
+      //              which is marginally before the entry is committed on the other node. So, we sleep.
+      transport.sleep(nodes[0].node.algorithm.heartbeatMillis() * 2);
       nodes[0].removeChangeListener(changeListener);
       nodes[1].setElementAsync("element", new byte[]{43}, true, Duration.ofMinutes(1)).get();
     }, leader, follower);
@@ -736,16 +765,27 @@ public class TheseusTest extends WithLocalTransport {
         transport.sleep(1000);  // wait for the submitter to join
       }
       submitter.setElementAsync("transient", new byte[]{42}, permanent, Duration.ofSeconds(5)).get();
+      // sleep to give the actual commit time to propagate
+      // note[gabor]: we reply back with success as soon as the log is *replicated* and we've committed,
+      //              which is marginally before the entry is committed on the other node. So, we sleep.
+      transport.sleep(nodes[0].node.algorithm.heartbeatMillis() * 2);
+      assertArrayEquals("Item should be submitted on same node", new byte[]{42}, submitter.getElement("transient").orElse(null));
+      assertArrayEquals("Item should be submitted on other node", new byte[]{42}, L.getElement("transient").orElse(null));
       killMethod.accept(submitter);
+      log.info("Waiting for election (in case our submitter was the leader)");
+      awaitElection(transport, L, B);
       log.info("Waiting for machine to be removed");
       transport.sleep(EloquentRaftAlgorithm.MACHINE_DOWN_TIMEOUT + L.node.algorithm.heartbeatMillis() * 2);
-      log.info("Waiting for election");
+      log.info("Waiting for election (again)");
       awaitElection(transport, L, B);
       log.info("Checking permanence");
+      // As above, sleep enough for the removal transitions to propagate
       if (permanent) {
-        assertArrayEquals("Permanent item should still be present", new byte[]{42}, L.getElement("transient").orElse(null));
+        assertArrayEquals("Permanent item should still be present (on B; leader=" + B.node.algorithm.mutableState().isLeader() + ")", new byte[]{42}, B.getElement("transient").orElse(null));
+        assertArrayEquals("Permanent item should still be present (on L; leader=" + L.node.algorithm.mutableState().isLeader() + ")", new byte[]{42}, L.getElement("transient").orElse(null));
       } else {
-        assertEquals("Transient item should no longer be present", Optional.empty(), L.getElement("transient").map(Arrays::toString));
+        assertEquals("Transient item should no longer be present (on B; leader=" + B.node.algorithm.mutableState().isLeader() + ")", Optional.empty(), B.getElement("transient").map(Arrays::toString));
+        assertEquals("Transient item should no longer be present (on L; leader=" + L.node.algorithm.mutableState().isLeader() + ")", Optional.empty(), L.getElement("transient").map(Arrays::toString));
       }
     }, L, A, B);
     transport.stop();

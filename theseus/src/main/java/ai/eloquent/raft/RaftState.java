@@ -327,6 +327,7 @@ public class RaftState {
       assert log.getQuorumMembers().contains(this.serverName) : "Cannot be elected leader if we're not in quorum";
       if (this.leadership != LeadershipStatus.LEADER) {  // don't double-elect
         this.leadership = LeadershipStatus.LEADER;
+        this.leader = Optional.of(serverName);
         HashMap<String, Long> nextIndex = new HashMap<>(5);
         HashMap<String, Long> matchIndex = new HashMap<>(5);
         HashMap<String, Long> lastMessageTimestamp = new HashMap<>(5);
@@ -347,7 +348,6 @@ public class RaftState {
         this.matchIndex = Optional.of(matchIndex);
         this.lastMessageTimestamp = Optional.of(lastMessageTimestamp);
         this.alreadyKilled = Optional.of(new HashSet<>());
-        this.leader = Optional.of(serverName);
       }
     } finally {
       log.assertConsistency();
@@ -356,11 +356,11 @@ public class RaftState {
 
 
   /** Step down from an election -- become a simple follower. */
-  public void stepDownFromElection() {
+  public void stepDownFromElection(long now) {
     log.assertConsistency();
     try {
       this.leadership = LeadershipStatus.OTHER;
-      if (this.leader.map(x -> x.equals(serverName)).orElse(false)) {
+      if (this.leader.map(x -> x.equals(this.serverName)).orElse(false)) {
         this.leader = Optional.empty();
       }
       this.nextIndex = Optional.empty();
@@ -368,7 +368,7 @@ public class RaftState {
       this.alreadyKilled = Optional.empty();
       this.matchIndex = Optional.empty();
       // Reset follower state
-      this.electionTimeoutCheckpoint = -1;
+      this.electionTimeoutCheckpoint = now;
       this.votesReceived.clear();
     } finally {
       log.assertConsistency();
@@ -379,15 +379,16 @@ public class RaftState {
   /**
    * Trigger a new election, and become a candidate.
    */
-  public void becomeCandidate() {
+  public void becomeCandidate(long now) {
     log.assertConsistency();
     try {
       // Error checks
-      assert this.leadership == LeadershipStatus.OTHER : "Can only become a candidate from a non-candidate, non-leader state";
+      assert this.leadership != LeadershipStatus.LEADER : "Can only become a candidate from being a leader";
       assert this.log.getQuorumMembers().contains(this.serverName) : "Cannot become a candidate if we are not in the quorum";
+      // Step down from the election
       if (this.leadership != LeadershipStatus.OTHER) {
-        this.stepDownFromElection();
-      } // just in case
+        this.stepDownFromElection(now);
+      }
       // Become a candidate
       if (this.leadership == LeadershipStatus.OTHER) {
         this.leadership = LeadershipStatus.CANDIDATE;
@@ -407,38 +408,23 @@ public class RaftState {
    *
    * @param now The current timestamp. Should be {@link System#currentTimeMillis()} unless we're in a mock
    */
-  public void resetElectionTimeout(long now, Optional<String> leader) {
+  public void resetElectionTimeout(long now, String leader) {
     log.assertConsistency();
     try {
       // This is possible, just because the clock takes a while to process functions
       if (this.electionTimeoutCheckpoint < 0 || this.electionTimeoutCheckpoint <= now) {
         // 1. Step down from any elections
         //    This must come first
-        if (this.leadership == LeadershipStatus.CANDIDATE && leader.isPresent() && !leader.get().equals(this.serverName)) {
-          this.stepDownFromElection();  // just in case we were a candidate
+        if (this.leadership == LeadershipStatus.CANDIDATE) {
+          assert !leader.equals(this.leader.orElse(null)) : "We seem to have re-elected ourselves?";
+          this.stepDownFromElection(now);  // just in case we were a candidate
         }
         // 2. Reset the election timeout
         this.electionTimeoutCheckpoint = now;
         // 3. Set the leader pointer
-        assert !leader.isPresent() || !leader.get().equals(this.serverName) || this.isLeader() || this.isCandidate() : "Can only set the leader to ourselves if we're a leader or candidate";
-        if (!this.leader.equals(leader)) {
-          // Set the leader
-          this.leader = leader;
-        }
+        assert !leader.equals(this.serverName) || this.isLeader() || this.isCandidate() : "Can only set the leader to ourselves if we're a leader or candidate";
+        this.leader = Optional.of(leader);
       }
-    } finally {
-      log.assertConsistency();
-    }
-  }
-
-
-  /**
-   * @see #resetElectionTimeout(long, Optional)
-   */
-  public void resetElectionTimeout(long now, String leader) {
-    log.assertConsistency();
-    try {
-      resetElectionTimeout(now, Optional.ofNullable(leader));
     } finally {
       log.assertConsistency();
     }
@@ -466,12 +452,12 @@ public class RaftState {
       if (!log.getQuorumMembers().contains(this.serverName)) {
         // Case: we're a shadow node -- never elect ourselves
         return false;
-      } else if (isLeader()) {
+      } else if (this.isLeader()) {
         return false;  // never trigger an election if we're the leader
       } else {
         // Case: check if we should trigger a timeout
-        long seed = this.serverName.hashCode() ^ (new Random(this.currentTerm).nextLong());
-        long electionTimeoutMillis = new SplittableRandom(seed).nextLong(electionTimeoutMillisRange.begin, electionTimeoutMillisRange.end);
+        long electionTimeoutMillis = new Random((this.currentTerm << 32) | this.serverName.hashCode())  // note[gabor]: non-random seed ensures the same timeout each call
+            .nextInt((int) (electionTimeoutMillisRange.end - electionTimeoutMillisRange.begin)) + electionTimeoutMillisRange.begin;
         return now - this.electionTimeoutCheckpoint > electionTimeoutMillis;
       }
     } finally {
@@ -801,7 +787,7 @@ public class RaftState {
       return lastMessageTimestamp.flatMap(lastMessageTimestamp ->
           alreadyKilled.map(alreadyKilled -> {
             Set<String> rtn = new HashSet<>();
-            if (now > cachedOwnersTimestamp + 1000) {
+            if (now > cachedOwnersTimestamp + 1000) {  // note[gabor]: This introduces a <=1s lag, but avoids hitting the expensive owners() function too often.
               cachedOwners = log.stateMachine.owners();
               cachedOwnersTimestamp = now;
             }

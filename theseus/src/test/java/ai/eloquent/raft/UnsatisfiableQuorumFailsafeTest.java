@@ -77,7 +77,7 @@ public class UnsatisfiableQuorumFailsafeTest {
   @Test
   public void failsafeDoesntTriggersIfCandidate() {
     RaftAlgorithm algorithm = deadlockedAlgorithm(false, true, "deadlocked_leader");
-    algorithm.mutableState().becomeCandidate();
+    algorithm.mutableState().becomeCandidate(System.currentTimeMillis());
     UnsatisfiableQuorumFailsafe deadlock = new UnsatisfiableQuorumFailsafe(() -> new String[] {"deadlocked_leader"}, Duration.ofSeconds(45));
     deadlock.heartbeat(algorithm, Duration.ofSeconds(46).toMillis());
     assertTrue("We should be a candidate", algorithm.state().isCandidate());

@@ -579,7 +579,7 @@ public class LocalTransport implements RaftTransport {
           }
         }
         if (doTimeout) {
-          log.info("Timing out RPC for message {} from {} -> {}", m.id, sender, destination);
+          log.debug("Timing out RPC for message {} from {} -> {}", m.id, sender, destination);
           onTimeout.run();
         }
       }
@@ -1042,7 +1042,9 @@ public class LocalTransport implements RaftTransport {
               });
             } else {
               // 2.2.2. Case: this is a non-blocking message
-              node.receiveMessage(request, (proto) -> sendTransport(message.target, message.sender, proto), true);
+              if (!(node instanceof SingleThreadedRaftAlgorithm) || ((SingleThreadedRaftAlgorithm) node).alive) {  // don't receive the message if the node is dead. This avoids a lot of otherwise spammy exceptions
+                node.receiveMessage(request, (proto) -> sendTransport(message.target, message.sender, proto), true);
+              }
             }
           });
     } catch (Throwable t) {

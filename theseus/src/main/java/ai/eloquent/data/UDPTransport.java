@@ -11,6 +11,7 @@ import org.slf4j.LoggerFactory;
 import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.net.*;
+import java.nio.ByteBuffer;
 import java.time.Duration;
 import java.util.*;
 import java.util.concurrent.CompletableFuture;
@@ -285,19 +286,24 @@ public class UDPTransport implements Transport {
             try {
 
               // 2. Parse the packet
-              byte[] datagram = new byte[packet.getLength()];
-              System.arraycopy(packet.getData(), packet.getOffset(), datagram, 0, datagram.length);
               byte[] protoBytes;
+              int offset;
               if (this.zip) {
+                // 2.A. Copy + unzip the bytes
+                byte[] datagram = new byte[packet.getLength()];
+                System.arraycopy(packet.getData(), packet.getOffset(), datagram, 0, datagram.length);
                 try {
                   protoBytes = ZipUtils.gunzip(datagram);
                 } catch (Throwable t) {
                   protoBytes = datagram;  // fall back on unzipped bytes
                 }
+                offset = 0;
               } else {
-                protoBytes = datagram;
+                // 2.B. Use the raw datagram bytes
+                protoBytes = packet.getData();
+                offset = packet.getOffset();
               }
-              UDPBroadcastProtos.UDPPacket proto = UDPBroadcastProtos.UDPPacket.parseFrom(protoBytes);
+              UDPBroadcastProtos.UDPPacket proto = UDPBroadcastProtos.UDPPacket.parseFrom(ByteBuffer.wrap(protoBytes, offset, packet.getLength()));
               if (proto == null) {
                 continue;
               }

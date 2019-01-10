@@ -226,10 +226,13 @@ public class EloquentRaftAlgorithm implements RaftAlgorithm {
     } else {
 
       // Valid heartbeat: Reset the election timeout
-      Optional<String> leader = state.leader;
+      // note[gabor]: this is last because the function above may actually take enough time
+      //              to otherwise trigger an election timeout in rare cases.
+      Optional<String> oldLeader = state.leader;
       state.resetElectionTimeout(transport.now(), heartbeat.getLeaderName());
-      if (!leader.equals(state.leader)) {
-        log.info("{} - {}; registered new leader={}  old leader={}  time={}", state.serverName, methodName, state.leader.orElse("<none>"), leader.orElse("<none>"), transport.now());
+      if (!oldLeader.equals(state.leader)) {
+        log.info("{} - {}; registered new leader={} (via heartbeat)  old leader={}  time={}",
+            state.serverName, methodName, state.leader.orElse("<none>"), oldLeader.orElse("<none>"), transport.now());
       }
 
       // Step 2-4:
@@ -258,7 +261,7 @@ public class EloquentRaftAlgorithm implements RaftAlgorithm {
         // (step down from any elections)
         if (state.leadership == RaftState.LeadershipStatus.LEADER) {
           log.warn("{} - {} Raft got an inbound heartbeat as a leader -- this is a possible split-brain. Stepping down from leadership so we can sort it out democratically.", state.serverName, methodName);
-          state.stepDownFromElection();
+          state.stepDownFromElection(this.transport.now());
         }
         // (reply)
         if (heartbeat.getEntriesCount() > 0) log.trace("{} - {} replying success;  term={}  nextIndex={}  commitIndex={}", state.serverName, methodName, state.currentTerm, state.log.getLastEntryIndex() + 1, state.commitIndex());
@@ -522,7 +525,7 @@ public class EloquentRaftAlgorithm implements RaftAlgorithm {
     if (!force && (now - lastBroadcastTime) < BROADCAST_PERIOD) {
       log.trace("{} - {}; rate limiting broadcast. Last broadcast={}; now={}",
           state.serverName, methodName, lastBroadcastTime, now);
-//      return;  // TODO(gabor) enable me to rate-limit, but SingleThreadedRaftAlgorithm should rate limit itself now
+//      return;  // note[gabor] enable me to rate-limit, but SingleThreadedRaftAlgorithm should rate limit itself now
     }
     lastBroadcastTime = now;
 
@@ -796,9 +799,7 @@ public class EloquentRaftAlgorithm implements RaftAlgorithm {
     RequestVoteRequest voteRequest;
 
     // 1. Become a candidate, if not already one
-    if (!this.state.isCandidate()) {
-      state.becomeCandidate();
-    }
+    state.becomeCandidate(this.transport.now());
     assert this.state.isCandidate() : "Should not be requesting votes if we're not a candidate";
     long originalTerm = state.currentTerm;
 
@@ -808,18 +809,6 @@ public class EloquentRaftAlgorithm implements RaftAlgorithm {
     log.info("{} - Raft triggered an election with term {} -> {} (time={} chkpt={} cluster={} leader={})", state.serverName, originalTerm, state.currentTerm, transport.now(), state.electionTimeoutCheckpoint, state.log.getQuorumMembers(), state.leader.orElse("<unknown>"));
     // 2.2. Vote for self
     state.voteFor(state.serverName, transport.now());  // resets election timer
-    // 2.3. Reset election timer
-    Optional<String> leader = state.leader;
-    state.resetElectionTimeout(transport.now(), state.serverName);  // propose ourselves as the leader
-    if (!leader.equals(state.leader)) {
-      log.info("{} - {}; registered new leader={}  old leader={}  time={}", state.serverName, methodName, state.leader.orElse("<none>"), leader.orElse("<none>"), transport.now());
-    }
-    voteRequest = RequestVoteRequest.newBuilder()
-        .setTerm(state.currentTerm)
-        .setCandidateName(state.serverName)
-        .setLastLogIndex(state.log.getLastEntryIndex())
-        .setLastLogTerm(state.log.getLastEntryTerm())
-        .build();
 
     // 3. Check if we won the election by default (i.e., we're the only node)
     if (state.votesReceived.size() > state.log.getQuorumMembers().size() / 2) {
@@ -833,8 +822,14 @@ public class EloquentRaftAlgorithm implements RaftAlgorithm {
     }
 
     // 4. Send the broadcast
-    // 4.1. (log the broadcast while in a lock)
-    log.trace("{} - Broadcasting requestVote", state.serverName);
+    voteRequest = RequestVoteRequest.newBuilder()
+        .setTerm(state.currentTerm)
+        .setCandidateName(state.serverName)
+        .setLastLogIndex(state.log.getLastEntryIndex())
+        .setLastLogTerm(state.log.getLastEntryTerm())
+        .build();
+    // 4.1. (log the broadcast)
+    log.trace("{} - {}; Broadcasting requestVote", state.serverName, methodName);
     // 4.2. (send the broadcast)
     transport.broadcastTransport(this.state.serverName, voteRequest);
   }
@@ -1179,7 +1174,7 @@ public class EloquentRaftAlgorithm implements RaftAlgorithm {
         if (result != null) {
           // If we've removed ourselves, step down from leadership.
           if (removeServerRequest.getOldServer().equals(state.serverName) && result.getRemoveServerReply().getStatus() == MembershipChangeStatus.OK) {
-            state.stepDownFromElection();
+            state.stepDownFromElection(this.transport.now());
           }
           // Then, return
           rtn.complete(result);
@@ -1419,22 +1414,19 @@ public class EloquentRaftAlgorithm implements RaftAlgorithm {
         sectionBegin = transport.now();
         if (state.log.stateMachine instanceof KeyValueStateMachine) {
           Set<String> toKillSet = state.killNodes(transport.now(), MACHINE_DOWN_TIMEOUT);
-          CompletableFuture<RaftMessage> future = CompletableFuture.completedFuture(null);
           for (String deadNode : toKillSet) {
-            future = future.thenCompose(lastSuccess -> {
-              assert drivingThreadId < 0 || drivingThreadId == Thread.currentThread().getId() : "Eloquent Raft Algorithm should only be run from the driving thread (" + drivingThreadId + ") but is being driven by " + Thread.currentThread();
-              log.info("{} - Clearing transient data for node {}", state.serverName, deadNode);
-              return receiveApplyTransitionRPC(ApplyTransitionRequest.newBuilder()
-                  .setTransition(ByteString.copyFrom(KeyValueStateMachine.createClearTransition(deadNode)))
-                  .build(),
-                  true)  // don't block on this call!
-                  .handle((response, exception) -> {
-                    if (exception != null || response == null || !response.getApplyTransitionReply().getSuccess()) {
-                      state.revive(deadNode);
-                    }
-                    return null;
-                  });
-            });
+            assert drivingThreadId < 0 || drivingThreadId == Thread.currentThread().getId() : "Eloquent Raft Algorithm should only be run from the driving thread (" + drivingThreadId + ") but is being driven by " + Thread.currentThread();
+            log.info("{} - Clearing transient data for node {}", state.serverName, deadNode);
+            receiveApplyTransitionRPC(ApplyTransitionRequest.newBuilder()
+                    .setTransition(ByteString.copyFrom(KeyValueStateMachine.createClearTransition(deadNode)))
+                    .build(),
+                true)  // don't block on this call!
+                .whenComplete((response, exception) -> {
+                  assert drivingThreadId < 0 || drivingThreadId == Thread.currentThread().getId() : "Eloquent Raft Algorithm should only be run from the driving thread (" + drivingThreadId + ") but is being driven by " + Thread.currentThread();
+                  if (exception != null || response == null || !response.getApplyTransitionReply().getSuccess()) {
+                    state.revive(deadNode);
+                  }
+                });
           }
         }
         assert checkDuration("offline check", sectionBegin, transport.now());
@@ -1587,7 +1579,7 @@ public class EloquentRaftAlgorithm implements RaftAlgorithm {
     } else if (remoteTermNumber > state.currentTerm) {
       // Someone is broadcasting with a newer term -- defer to them
       log.trace("{} - {} detected remoteTerm={} > currentTerm={} -- forced into follower state but otherwise continuing", state.serverName, rpcName, remoteTermNumber, state.currentTerm);
-      state.stepDownFromElection();
+      state.stepDownFromElection(this.transport.now());
       state.setCurrentTerm(remoteTermNumber);
       assert state.leadership == RaftState.LeadershipStatus.OTHER;
       return true;
@@ -1649,7 +1641,7 @@ public class EloquentRaftAlgorithm implements RaftAlgorithm {
     } else if (remoteTerm > state.currentTerm) {
       // Someone is broadcasting with a newer term -- defer to them
       log.trace("{} - detected remoteTerm={} > currentTerm={} -- forced into follower state", state.serverName, remoteTerm, state.currentTerm);
-      state.stepDownFromElection();
+      state.stepDownFromElection(this.transport.now());
       state.setCurrentTerm(remoteTerm);
       assert state.leadership == RaftState.LeadershipStatus.OTHER;
       return false;

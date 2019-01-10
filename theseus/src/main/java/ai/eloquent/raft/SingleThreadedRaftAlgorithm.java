@@ -45,6 +45,19 @@ public class SingleThreadedRaftAlgorithm implements RaftAlgorithm {
       Prometheus.histogramBuild("single_threaded_raft_runtime", "The time, in seconds, that it takes to run a task on the raft algorithm",
           0, 0.1 / 1000.0, 0.5 / 1000.0, 1.0 / 1000.0, 5.0 / 1000.0, 10.0 / 1000.0, 50.0 / 1000.0, 100.0 / 1000.0, 200.0 / 1000.0, 300.0 / 1000.0, 1.0 / 2.0, 1.0, 10.0);
 
+
+  /**
+   * The priority for queueing a task.
+   */
+  private enum OfferPolicy {
+    /** Forces this task on the queue, regardless of the length of the queue. */
+    FORCE,
+    /** Blocks until the queue is sufficiently short that we can add it without overflowing the queue length. */
+    BLOCK,
+    /** Offers to the queue, discarding the task if the queue is too long. */
+    OPTIONAL
+  }
+
   /**
    * An enum for a given task's priority
    */
@@ -98,11 +111,9 @@ public class SingleThreadedRaftAlgorithm implements RaftAlgorithm {
     /**
      * The maximum number of tasks to keep in the queue.
      * More than this, and we start blocking on adding new tasks.
-     * This should be large enough to not hold up the calling thread unnecessarily,
-     * but small enough that we can actually execute all of the tasks before
-     * they time out while in wait.
+     * This should, roughly, be the number of concurrent transitions we want to support.
      */
-    static final int MAX_SIZE = 1024;
+    static final int MAX_SIZE = 32;
 
     /** Critical priority messages */
     private final ArrayDeque<RaftTask> criticalPriority = new ArrayDeque<>();
@@ -603,7 +614,7 @@ public class SingleThreadedRaftAlgorithm implements RaftAlgorithm {
   /**
    * The marker for whether the raft algorithm is alive.
    */
-  private boolean alive = true;
+  boolean alive = true;
 
   /**
    * The queue of tasks for Raft to pick up on.
@@ -650,7 +661,6 @@ public class SingleThreadedRaftAlgorithm implements RaftAlgorithm {
           try {
             synchronized (raftTasks) {
               taskRunning = Optional.empty();
-              raftTasks.notifyAll();
               while (raftTasks.isEmpty()) {
                 raftTasks.wait(MAX_DELAY);
                 if (!alive) {
@@ -659,6 +669,7 @@ public class SingleThreadedRaftAlgorithm implements RaftAlgorithm {
               }
               task = raftTasks.poll();
               taskRunning = Optional.of(task.debugString);
+              raftTasks.notifyAll();
             }
             long dequeueTime = System.nanoTime();
             Prometheus.histogramObserve(HISTOGRAM_QUEUE_TIME, ((double) (dequeueTime - task.queuedTimestamp)) / 1000000000.);
@@ -721,14 +732,8 @@ public class SingleThreadedRaftAlgorithm implements RaftAlgorithm {
    *
    * @param debugName A debug name for this task.
    * @param priority The priority for this task
+   * @param offerPolicy The mode in which to offer this task to the queue.
    * @param fn The function we are running. Typically, a {@link RaftAlgorithm} method.
-   * @param optional If true, allow this future to fail if we have too many elements already
-   *                 in the raft queue.
-   * @param forceQueue If true, ignore the queue capacity and add this task anyways.
-   *                   This should only be used if we're causing either (1) a memory leak elsewhere if we
-   *                   don't queue it (e.g., it's coming from the transport), and/or (2) if this is not optional
-   *                   and blocking could back up core Raft operations (e.g., if it's coming from the transport).
-   *                   There's a theme here...
    * @param <E> The return type of our function.
    *
    * @return A future for tracking when we actually have finished scheduling and running
@@ -737,16 +742,15 @@ public class SingleThreadedRaftAlgorithm implements RaftAlgorithm {
   private <E> CompletableFuture<E> execute(
       String debugName,
       TaskPriority priority,
-      Function<RaftAlgorithm, E> fn,
-      boolean optional,
-      boolean forceQueue) {
+      OfferPolicy offerPolicy,
+      Function<RaftAlgorithm, E> fn) {
     log.trace("{} - [{}] Executing as Future {}", this.serverName(), getTransport().now(), debugName);
     if (Thread.currentThread() == raftThread) {  // don't queue if we're on the raft thread
       return CompletableFuture.completedFuture(fn.apply(this.impl));
     }
     CompletableFuture<E> future = new CompletableFuture<>();
     if (!alive) {
-      future.completeExceptionally(new IllegalStateException("Node is dead -- failing the future"));
+      future.completeExceptionally(new RejectedExecutionException("Node is dead -- failing the future"));
       return future;
     }
     Runnable task = () -> {
@@ -758,14 +762,19 @@ public class SingleThreadedRaftAlgorithm implements RaftAlgorithm {
       }
     };
     Consumer<Throwable> onError = future::completeExceptionally;
-    if (optional) {
-      if (!raftTasks.offer(new RaftTask(debugName, priority, task, onError))) {
-        onError.accept(new RejectedExecutionException("Rejected " + debugName + " since queue is full"));
-      }
-    } else if (forceQueue) {
-      raftTasks.forceAdd(new RaftTask(debugName, priority, task, onError));
-    } else {
-      raftTasks.add(new RaftTask(debugName, priority, task, onError));
+    switch (offerPolicy) {
+      default:
+      case FORCE:
+        raftTasks.forceAdd(new RaftTask(debugName, priority, task, onError));
+        break;
+      case BLOCK:
+        raftTasks.add(new RaftTask(debugName, priority, task, onError));
+        break;
+      case OPTIONAL:
+        if (!raftTasks.offer(new RaftTask(debugName, priority, task, onError))) {
+          onError.accept(new RejectedExecutionException("Rejected " + debugName + " since queue is full"));
+        }
+        break;
     }
     return future;
   }
@@ -773,17 +782,13 @@ public class SingleThreadedRaftAlgorithm implements RaftAlgorithm {
 
   /**
    * Run a given function, returning a completable future for when this function is complete.
-   * Unlike {@link #execute(String, TaskPriority, Function, boolean, boolean)}, this returns a <b>safe future to be show to the
+   * Unlike {@link #execute(String, TaskPriority, OfferPolicy, Function)}, this returns a <b>safe future to be show to the
    * outside world</b>.
    *
    * @param debugName A debug name for this task.
    * @param priority The priority for this task
+   * @param offerPolicy The mode in which to offer this task to the queue.
    * @param fn The function we are running. Typically, a {@link RaftAlgorithm} method.
-   * @param forceQueue If true, ignore the queue capacity and add this task anyways.
-   *                   This should only be used if we're causing either (1) a memory leak elsewhere if we
-   *                   don't queue it (e.g., it's coming from the transport), and/or (2) if this is not optional
-   *                   and blocking could back up core Raft operations (e.g., if it's coming from the transport).
-   *                   There's a theme here...
    * @param <E> The return type of our function.
    *
    * @return A future for tracking when we actually have finished scheduling and running
@@ -792,12 +797,12 @@ public class SingleThreadedRaftAlgorithm implements RaftAlgorithm {
   private <E> CompletableFuture<E> executeFuture(
       String debugName,
       TaskPriority priority,
-      Function<RaftAlgorithm, CompletableFuture<E>> fn,
-      boolean forceQueue) {
+      OfferPolicy offerPolicy,
+      Function<RaftAlgorithm, CompletableFuture<E>> fn) {
     // 1. Check if we should execute directly
     log.trace("{} - [{}] Executing as Composite Future {}", this.serverName(), getTransport().now(), debugName);
     if (!alive) {
-      throw new IllegalStateException("Node is dead -- failing the future");
+      throw new RejectedExecutionException("Node is dead -- failing the future for " + debugName);
     }
     if (Thread.currentThread().getId() == raftThread.getId()) {  // don't queue if we're on the raft thread
       return fn.apply(this.impl);
@@ -805,7 +810,7 @@ public class SingleThreadedRaftAlgorithm implements RaftAlgorithm {
     CompletableFuture<E> future = new CompletableFuture<>();
 
     // 2. Define the timeout for the future
-    CompletableFuture<CompletableFuture<E>> futureOfFuture = execute(debugName, priority, fn, false, forceQueue);
+    CompletableFuture<CompletableFuture<E>> futureOfFuture = execute(debugName, priority, offerPolicy, fn);
 
     futureOfFuture.whenComplete((CompletableFuture<E> result, Throwable t) -> {
           if (t != null) {
@@ -874,16 +879,15 @@ public class SingleThreadedRaftAlgorithm implements RaftAlgorithm {
    *
    * @param debugName A debug name for this task.
    * @param priority The priority for this task
+   * @param offerPolicy The mode in which to offer this task to the queue.
    * @param fn The function we are running. Typically, a {@link RaftAlgorithm} method.
    * @param onError A function to call if something went wrong queuing the task
-   * @param optional If true, allow this future to fail if we have too many elements already
-   *                 in the raft queue.
    */
   private void execute(String debugName,
                        TaskPriority priority,
+                       OfferPolicy offerPolicy,
                        Consumer<RaftAlgorithm> fn,
-                       Consumer<Throwable> onError,
-                       boolean optional) {
+                       Consumer<Throwable> onError) {
     log.trace("{} - [{}] Executing {}", this.serverName(), getTransport().now(), debugName);
 
     // 1. Short circuit if we're on the control thread
@@ -898,7 +902,7 @@ public class SingleThreadedRaftAlgorithm implements RaftAlgorithm {
       // 2.1. Immediately fail if we're dead
       if (!alive) {
         log.debug("Node is dead -- ignoring any messages to it");
-        onError.accept(new RejectedExecutionException("Node is dead"));
+        onError.accept(new RejectedExecutionException("Node is dead when executing task " + debugName));
         return;
       }
       // 2.2. Define the Raft task
@@ -921,12 +925,19 @@ public class SingleThreadedRaftAlgorithm implements RaftAlgorithm {
             onError.accept(e);
           });
       // 2.3. Run the task
-      if (optional) {
-        if (!raftTasks.offer(task)) {
-          task.onError.accept(new RejectedExecutionException("Rejected " + debugName + " since queue is full"));
-        }
-      } else {
-        raftTasks.add(task);
+      switch (offerPolicy) {
+        default:
+        case FORCE:
+          raftTasks.forceAdd(task);
+          break;
+        case BLOCK:
+          raftTasks.add(task);
+          break;
+        case OPTIONAL:
+          if (!raftTasks.offer(task)) {
+            onError.accept(new RejectedExecutionException("Rejected " + debugName + " since queue is full"));
+          }
+          break;
       }
     }
 
@@ -946,13 +957,13 @@ public class SingleThreadedRaftAlgorithm implements RaftAlgorithm {
 
 
   /**
-   * @see #execute(String, TaskPriority, Consumer, boolean)
+   * @see #execute(String, TaskPriority, OfferPolicy, Consumer, Consumer)
    */
   private void execute(String debugName,
                        TaskPriority priority,
-                       Consumer<RaftAlgorithm> fn,
-                       boolean optional) {
-    this.execute(debugName, priority, fn, t -> log.warn("Got exception running Raft method {}", debugName, t), optional);
+                       OfferPolicy offerPolicy,
+                       Consumer<RaftAlgorithm> fn) {
+    this.execute(debugName, priority, offerPolicy, fn, t -> log.warn("Got exception running Raft method {}", debugName, t));
   }
 
 
@@ -961,10 +972,10 @@ public class SingleThreadedRaftAlgorithm implements RaftAlgorithm {
   @Override
   public RaftState state() {
     try {
-      return execute("state", TaskPriority.LOW, RaftAlgorithm::state, true, false).get(30, TimeUnit.SECONDS);
+      return execute("state", TaskPriority.LOW, OfferPolicy.OPTIONAL, RaftAlgorithm::state).get(30, TimeUnit.SECONDS);
     } catch (InterruptedException | ExecutionException | TimeoutException e) {
       log.warn("Could not get RaftState -- returning unlocked version as a failsafe");
-      return impl.state();
+      return impl.mutableState();
     }
   }
 
@@ -1000,21 +1011,21 @@ public class SingleThreadedRaftAlgorithm implements RaftAlgorithm {
   /** {@inheritDoc} */
   @Override
   public void broadcastAppendEntries() {
-    execute("broadcastAppendEntries", TaskPriority.HIGH, RaftAlgorithm::broadcastAppendEntries, false);
+    execute("broadcastAppendEntries", TaskPriority.HIGH, OfferPolicy.FORCE, RaftAlgorithm::broadcastAppendEntries);
   }
 
 
   /** {@inheritDoc} */
   @Override
   public void sendAppendEntries(String target, long nextIndex) {
-    execute("sendAppendEntries", TaskPriority.HIGH, x -> x.sendAppendEntries(target, nextIndex), false);
+    execute("sendAppendEntries", TaskPriority.HIGH, OfferPolicy.FORCE, (Consumer<RaftAlgorithm>) x -> x.sendAppendEntries(target, nextIndex));
   }
 
 
   /** {@inheritDoc} */
   @Override
   public void receiveAppendEntriesRPC(EloquentRaftProto.AppendEntriesRequest heartbeat, Consumer<EloquentRaftProto.RaftMessage> replyLeader) {
-    execute("receiveAppendEntriesRPC", TaskPriority.HIGH, x -> x.receiveAppendEntriesRPC(heartbeat, replyLeader), false);
+    execute("receiveAppendEntriesRPC", TaskPriority.HIGH, OfferPolicy.FORCE, (Consumer<RaftAlgorithm>) x -> x.receiveAppendEntriesRPC(heartbeat, replyLeader));
 
   }
 
@@ -1022,56 +1033,58 @@ public class SingleThreadedRaftAlgorithm implements RaftAlgorithm {
   /** {@inheritDoc} */
   @Override
   public void receiveAppendEntriesReply(EloquentRaftProto.AppendEntriesReply reply) {
-    execute("receiveAppendEntriesReply", TaskPriority.HIGH, x -> x.receiveAppendEntriesReply(reply), false);
+    execute("receiveAppendEntriesReply", TaskPriority.HIGH, OfferPolicy.FORCE, (Consumer<RaftAlgorithm>) x -> x.receiveAppendEntriesReply(reply));
   }
 
 
   /** {@inheritDoc} */
   @Override
   public void receiveInstallSnapshotRPC(EloquentRaftProto.InstallSnapshotRequest snapshot, Consumer<EloquentRaftProto.RaftMessage> replyLeader) {
-    execute("receiveInstallSnapshotRPC", TaskPriority.HIGH, x -> x.receiveInstallSnapshotRPC(snapshot, replyLeader), false);
+    execute("receiveInstallSnapshotRPC", TaskPriority.HIGH, OfferPolicy.FORCE, (Consumer<RaftAlgorithm>) x -> x.receiveInstallSnapshotRPC(snapshot, replyLeader));
   }
 
 
   /** {@inheritDoc} */
   @Override
   public void receiveInstallSnapshotReply(EloquentRaftProto.InstallSnapshotReply reply) {
-    execute("receiveInstallSnapshotReply", TaskPriority.HIGH, x -> x.receiveInstallSnapshotReply(reply), false);
+    execute("receiveInstallSnapshotReply", TaskPriority.HIGH, OfferPolicy.FORCE, (Consumer<RaftAlgorithm>) x -> x.receiveInstallSnapshotReply(reply));
   }
 
 
   /** {@inheritDoc} */
   @Override
   public void triggerElection() {
-    execute("triggerElection", TaskPriority.LOW, RaftAlgorithm::triggerElection, true);
+    execute("triggerElection", TaskPriority.LOW, OfferPolicy.OPTIONAL, RaftAlgorithm::triggerElection);
   }
 
 
   /** {@inheritDoc} */
   @Override
   public void receiveRequestVoteRPC(EloquentRaftProto.RequestVoteRequest voteRequest, Consumer<EloquentRaftProto.RaftMessage> replyLeader) {
-    execute("receiveRequestVoteRPC", TaskPriority.HIGH, x -> x.receiveRequestVoteRPC(voteRequest, replyLeader), false);
+    execute("receiveRequestVoteRPC", TaskPriority.HIGH, OfferPolicy.FORCE, (Consumer<RaftAlgorithm>) x -> x.receiveRequestVoteRPC(voteRequest, replyLeader));
   }
 
 
   /** {@inheritDoc} */
   @Override
   public void receiveRequestVotesReply(EloquentRaftProto.RequestVoteReply reply) {
-    execute("receiveRequestVotesReply", TaskPriority.HIGH, x -> x.receiveRequestVotesReply(reply), false);
+    execute("receiveRequestVotesReply", TaskPriority.HIGH, OfferPolicy.FORCE, (Consumer<RaftAlgorithm>) x -> x.receiveRequestVotesReply(reply));
   }
 
 
   /** {@inheritDoc} */
   @Override
   public CompletableFuture<EloquentRaftProto.RaftMessage> receiveAddServerRPC(EloquentRaftProto.AddServerRequest addServerRequest) {
-    return executeFuture("receiveAddServerRPC", TaskPriority.LOW, x -> x.receiveAddServerRPC(addServerRequest), true);
+    // TODO(gabor) there are only some cases where we want to force this. E.g., we should maybe drop user requests for reconfigures
+    return executeFuture("receiveAddServerRPC", TaskPriority.LOW, OfferPolicy.FORCE, x -> x.receiveAddServerRPC(addServerRequest));
   }
 
 
   /** {@inheritDoc} */
   @Override
   public CompletableFuture<EloquentRaftProto.RaftMessage> receiveRemoveServerRPC(EloquentRaftProto.RemoveServerRequest removeServerRequest) {
-    return executeFuture("receciveRemoveServerRPC", TaskPriority.HIGH, x -> x.receiveRemoveServerRPC(removeServerRequest), true);
+    // TODO(gabor) there are only some cases where we want to force this. E.g., we should maybe drop user requests for reconfigures
+    return executeFuture("receciveRemoveServerRPC", TaskPriority.HIGH, OfferPolicy.FORCE, x -> x.receiveRemoveServerRPC(removeServerRequest));
   }
 
 
@@ -1081,8 +1094,8 @@ public class SingleThreadedRaftAlgorithm implements RaftAlgorithm {
     return executeFuture(
         "receiveApplyTransitionRPC",
         TaskPriority.LOW,
-        x -> x.receiveApplyTransitionRPC(transition, fromTransport),
-        fromTransport
+        fromTransport ? OfferPolicy.FORCE : OfferPolicy.BLOCK,
+        x -> x.receiveApplyTransitionRPC(transition, fromTransport)
     );
   }
 
@@ -1091,7 +1104,7 @@ public class SingleThreadedRaftAlgorithm implements RaftAlgorithm {
   @Override
   public boolean bootstrap(boolean force) {
     try {
-      return execute("bootstrap", TaskPriority.HIGH, x -> x.bootstrap(force), false, false).get(30, TimeUnit.SECONDS);
+      return execute("bootstrap", TaskPriority.HIGH, OfferPolicy.BLOCK, (Function<RaftAlgorithm, Boolean>) x -> x.bootstrap(force)).get(30, TimeUnit.SECONDS);
     } catch (InterruptedException | ExecutionException | TimeoutException e) {
       log.warn("Could not bootstrap -- returning unlocked version as a failsafe");
       return impl.bootstrap(force);
@@ -1103,7 +1116,7 @@ public class SingleThreadedRaftAlgorithm implements RaftAlgorithm {
   @Override
   public void stop(boolean kill) {
     // Call the implementing algorithm's stop
-    execute("stop", TaskPriority.LOW, x -> x.stop(kill), false);
+    execute("stop", TaskPriority.LOW, OfferPolicy.BLOCK, (Consumer<RaftAlgorithm>) x -> x.stop(kill));
     flush(() -> {});
 
     // Stop our thread
@@ -1125,7 +1138,7 @@ public class SingleThreadedRaftAlgorithm implements RaftAlgorithm {
   @Override
   public boolean isRunning() {
     try {
-      return execute("isRunning", TaskPriority.LOW, RaftAlgorithm::isRunning, true, false).get(30, TimeUnit.SECONDS);
+      return execute("isRunning", TaskPriority.LOW, OfferPolicy.BLOCK, RaftAlgorithm::isRunning).get(30, TimeUnit.SECONDS);
     } catch (InterruptedException | ExecutionException | TimeoutException e) {
       log.warn("Could not check if Raft is running -- returning unlocked version as a failsafe");
       return impl.isRunning();
@@ -1139,16 +1152,15 @@ public class SingleThreadedRaftAlgorithm implements RaftAlgorithm {
     // note[gabor]: it's initially strange that the heartbeat is optional, but this is a convenient
     // way to ensure that we don't queue up tons of heartbeats. If there's already a heartbeat
     // in the queue, we simply drop this one
-    execute("heartbeat", TaskPriority.CRITICAL, RaftAlgorithm::heartbeat,
-        t -> log.debug("Skipping heartbeat since queue is full"),
-        true);
+    execute("heartbeat", TaskPriority.CRITICAL, OfferPolicy.OPTIONAL, RaftAlgorithm::heartbeat,
+        t -> log.debug("Skipping heartbeat since queue is full"));
   }
 
 
   /** {@inheritDoc} */
   @Override
   public void receiveBadRequest(EloquentRaftProto.RaftMessage message) {
-    execute("receiveBadRequest", TaskPriority.LOW, x -> x.receiveBadRequest(message), true);
+    execute("receiveBadRequest", TaskPriority.LOW, OfferPolicy.OPTIONAL, (Consumer<RaftAlgorithm>) x -> x.receiveBadRequest(message));
   }
 
 

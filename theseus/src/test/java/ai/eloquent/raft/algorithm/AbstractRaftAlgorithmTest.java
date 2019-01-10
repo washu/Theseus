@@ -1961,7 +1961,7 @@ public abstract class AbstractRaftAlgorithmTest {
               node.heartbeat();
             }
             if (k < 100 && rand.nextDouble() < 0.1) {  // 10% of heartbeat pings, introduce a network partition
-              partitionOff(now, now + node.electionTimeoutMillisRange().end + 1000, state.serverName, states[rand.nextInt(states.length)].serverName);
+              partitionOff(now, now + node.electionTimeoutMillisRange().end, state.serverName, states[rand.nextInt(states.length)].serverName);
 
             }
           });
