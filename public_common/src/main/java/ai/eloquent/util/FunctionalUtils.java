@@ -5,6 +5,8 @@ import org.slf4j.LoggerFactory;
 
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.Function;
+import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 /**
@@ -115,6 +117,34 @@ public class FunctionalUtils {
    */
   public static <E> Stream<E> streamFromOptional(Optional<E> opt) {
     return opt.map(Stream::of).orElseGet(Stream::empty);
+  }
+
+  public static <K, V> Map<K, V> toMap(Stream<Pair<K, V>> pairs) {
+    Map<K, V> ret = new HashMap<>();
+    pairs.forEach(pair -> ret.put(pair.first, pair.second));
+    return ret;
+  }
+  public static <K, V> Map<K, V> toMap(Collection<Pair<K, V>> pairs) {
+    return toMap(pairs.stream());
+  }
+  public static <K, V> Map<K, V> toMap(List<Pair<K, V>> pairs) {
+    return toMap(pairs.stream());
+  }
+
+  public static <K, V, T> Map<K, T> map(Map<K, V> map, Function<V, T> valueMapper) {
+    return map.entrySet().stream()
+        .collect(Collectors.toMap(
+            Map.Entry::getKey,
+            e -> valueMapper.apply(e.getValue())
+        ));
+  }
+
+  public static <K, V, T, U> Map<T, U> map(Map<K, V> map, Function<K, T> keyMapper, Function<V, U> valueMapper) {
+    return map.entrySet().stream()
+        .collect(Collectors.toMap(
+            e -> keyMapper.apply(e.getKey()),
+            e -> valueMapper.apply(e.getValue())
+        ));
   }
 
 }
