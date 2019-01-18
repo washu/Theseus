@@ -733,9 +733,14 @@ public class KeyValueStateMachine extends RaftStateMachine {
    */
   public final Optional<String> serverName;
 
-
   /** For debugging -- the threads currently in a given function. This is a concurrent hash set.*/
   private final ConcurrentHashMap<Long, String> threadsInFunctions = new ConcurrentHashMap<>();
+
+  /** The servers that own values or locks on this state machine. See {@link #owners(long)}. */
+  private final Set<String> cachedOwners = new HashSet<>();
+
+  /** The last tiem we recomputed {@link #cachedOwners} as a timestamp milliseconds. */
+  private long cachedOwnersTime = -6000000L;
 
 
   /** Create a new state machine, with knowledge of what node it's running on */
@@ -1281,21 +1286,40 @@ public class KeyValueStateMachine extends RaftStateMachine {
 
   /** {@inheritDoc} */
   @Override
-  public Set<String> owners() {
-    Set<String> seen = new HashSet<>();
-    locks.forEach((key, lock) -> {
-      if (lock.holder != null) {
-        String holder = lock.holder.server;
-        seen.add(holder);
+  public Set<String> owners(long now) {
+    Runnable computeOwnersFn = () -> {
+      Set<String> seen = new HashSet<>();
+      locks.forEach((key, lock) -> {
+        if (lock.holder != null) {
+          String holder = lock.holder.server;
+          seen.add(holder);
+        }
+      });
+      values.forEach((key, value) -> {
+        if (value.owner.isPresent()) {
+          String holder = value.owner.get();
+          seen.add(holder);
+        }
+      });
+      synchronized (cachedOwners) {
+        cachedOwners.clear();
+        cachedOwners.addAll(seen);
       }
-    });
-    values.forEach((key, value) -> {
-      if (value.owner.isPresent()) {
-        String holder = value.owner.get();
-        seen.add(holder);
-      }
-    });
-    return seen;
+    };
+    if (locks.size() < 100 && values.size() < 100) {
+      cachedOwnersTime = now;
+      computeOwnersFn.run();
+    } else if (now - cachedOwnersTime > 5000) {
+      cachedOwnersTime = now;
+      Thread computeOwners = new Thread(computeOwnersFn);
+      computeOwners.setName("compute-state-machine-owners");
+      computeOwners.setPriority(Thread.MIN_PRIORITY);
+      computeOwners.setDaemon(true);
+      computeOwners.start();
+    }
+    synchronized (this.cachedOwners) {
+      return new HashSet<>(this.cachedOwners);
+    }
   }
 
 

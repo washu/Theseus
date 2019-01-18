@@ -38,7 +38,7 @@ public class PreciseSafeTimer implements SafeTimer {
         .setNameFormat("precise-scheduler-%d")
         .setDaemon(true)
         .setUncaughtExceptionHandler((t, e) -> log.warn("Uncaught exception on thread " + t.getName(), e))
-        .setPriority(Thread.MAX_PRIORITY)
+        .setPriority(Math.max(Thread.NORM_PRIORITY, Thread.MAX_PRIORITY - 1))
         .build(),
         (r, executor) -> log.warn("Could not execute runnable {} on executor", r));
   }

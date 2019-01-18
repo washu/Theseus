@@ -713,8 +713,10 @@ public class RaftLog {
       }
       assert (entries.stream().noneMatch(entry -> this.getEntryAtIndex(entry.getIndex()).map(savedEntry -> savedEntry.getTerm() > entry.getTerm()).orElse(false))) : "We should never overwrite an entry with a lower term";
       if (!allowEntry) {
-        log.trace("Rejecting log transition: prevLogIndex={}  prevEntry.getTerm()={}  prevLogTerm={}  commitIndex={}",
-            prevLogIndex, prevEntry.map(EloquentRaftProto.LogEntry::getTerm).orElse(-1L), prevLogTerm, commitIndex);
+        if (!entries.isEmpty()) {
+          log.info("Rejecting log transition: prevLogIndex={}  prevEntry.getTerm()={}  prevLogTerm={}  commitIndex={}",
+              prevLogIndex, prevEntry.map(EloquentRaftProto.LogEntry::getTerm).orElse(-1L), prevLogTerm, commitIndex);
+        }
         return false;
       }
 

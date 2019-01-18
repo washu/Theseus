@@ -307,7 +307,6 @@ public class Prometheus {
         timerMetric = new TimerMock(null, labels);
       // If we are mocking Prometheus and calling startTimer on something other than a SummaryMock
       } else {
-        //noinspection ConstantConditions
         timerMetric = new TimerMock((SummaryMock) summary, labels);
       }
     }

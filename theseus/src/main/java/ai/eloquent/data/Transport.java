@@ -45,6 +45,24 @@ public interface Transport {
    */
   boolean broadcastTransport(UDPBroadcastProtos.MessageType messageType, byte[] message);
 
+
+  /**
+   * <p>
+   *   If true, this transport has been receiving more messages than it should reasonably be handling.
+   *   This means that messages queued on it may be backed up on the OS queue.
+   * </p>
+   *
+   * <p>
+   *   Note that this isn't an exact metric -- in no small part because Java does not expose this
+   *   information easily. Moreover, containerized environments don't necessarily know this information
+   *   with high reliability either.
+   * </p>
+   */
+  default boolean isSaturated() {
+    return false;
+  }
+
+
   /**
    * A thread pool from which to run tasks.
    */

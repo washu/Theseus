@@ -287,7 +287,6 @@ public class EloquentRaftAlgorithmTest {
       raftState.nextIndex.get().put("server3", 1L);
 
       transport.broadcastCalls.clear();
-      transport.sleep(EloquentRaftAlgorithm.BROADCAST_PERIOD + 1);
       algorithm.broadcastAppendEntries();
       assertEquals(1, transport.broadcastCalls.size());
 
@@ -303,7 +302,6 @@ public class EloquentRaftAlgorithmTest {
       raftState.nextIndex.get().put("server3", 3L);
 
       transport.broadcastCalls.clear();
-      transport.sleep(EloquentRaftAlgorithm.BROADCAST_PERIOD + 1);
       algorithm.broadcastAppendEntries();
       assertEquals(1, transport.broadcastCalls.size());
 
@@ -323,7 +321,6 @@ public class EloquentRaftAlgorithmTest {
       raftState.nextIndex.get().put("server3", 5L);
 
       transport.broadcastCalls.clear();
-      transport.sleep(EloquentRaftAlgorithm.BROADCAST_PERIOD + 1);
       algorithm.broadcastAppendEntries();
       assertEquals(1, transport.broadcastCalls.size());
 
@@ -343,7 +340,6 @@ public class EloquentRaftAlgorithmTest {
       raftState.nextIndex.get().put("server3", 6L);
 
       transport.broadcastCalls.clear();
-      transport.sleep(EloquentRaftAlgorithm.BROADCAST_PERIOD + 1);
       algorithm.broadcastAppendEntries();
       assertEquals(1, transport.broadcastCalls.size());
 
@@ -361,7 +357,6 @@ public class EloquentRaftAlgorithmTest {
       raftState.nextIndex.get().put("server3", 6L);
 
       transport.broadcastCalls.clear();
-      transport.sleep(EloquentRaftAlgorithm.BROADCAST_PERIOD + 1);
       algorithm.broadcastAppendEntries();
       assertEquals(1, transport.broadcastCalls.size());
 
@@ -370,7 +365,6 @@ public class EloquentRaftAlgorithmTest {
       assertEquals(2, transport.broadcastCalls.get(0).message.getAppendEntries().getPrevLogTerm());
       assertEquals(5, transport.broadcastCalls.get(0).message.getAppendEntries().getPrevLogIndex());
     } finally {
-      transport.sleep(EloquentRaftAlgorithm.BROADCAST_PERIOD + 1);
       algorithm.stop(true);
       transport.stop();
     }
