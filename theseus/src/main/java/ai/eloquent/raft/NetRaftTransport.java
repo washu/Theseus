@@ -5,7 +5,6 @@ import ai.eloquent.data.UDPTransport;
 import ai.eloquent.util.ConcurrencyUtils;
 import ai.eloquent.util.IdentityHashSet;
 import ai.eloquent.util.Span;
-import ai.eloquent.util.TimerUtils;
 import com.google.protobuf.InvalidProtocolBufferException;
 import io.grpc.*;
 import io.grpc.stub.StreamObserver;
@@ -15,10 +14,8 @@ import org.slf4j.LoggerFactory;
 import java.io.IOException;
 import java.net.*;
 import java.util.*;
-import java.util.concurrent.Executor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
 
 /**
@@ -36,22 +33,6 @@ public class NetRaftTransport implements RaftTransport {
    * The port we are listening to RPC messages on.
    */
   private static final int DEFAULT_RPC_LISTEN_PORT = 42889;
-
-  /**
-   * The executor service to use for gRPC requests.
-   */
-  private static final Executor GRPC_POOL =
-      command -> {
-        long startTime = System.currentTimeMillis();
-        try {
-          command.run();
-        } finally {
-          long endTime = System.currentTimeMillis();
-          if (endTime - startTime > 10) {
-            log.warn("gRPC task took >10ms: {}", TimerUtils.formatTimeDifference(endTime - startTime));
-          }
-        }
-      };
 
   /**
    * The name we should assign ourselves on the transport.
@@ -78,11 +59,6 @@ public class NetRaftTransport implements RaftTransport {
    * A map from destination address to a gRPC managed channel for that destination.
    */
   private final Map<String, ManagedChannel> channel = new HashMap<>();
-
-  /**
-   * Track the number of RPC requests we have in flight currently.
-   */
-  private final AtomicInteger rpcsInFlight = new AtomicInteger(0);
 
 
   /**
@@ -147,20 +123,9 @@ public class NetRaftTransport implements RaftTransport {
     if (!boundAlgorithms.contains(listener)) {
       // Bind ourselves to UDP
       UDPTransport.DEFAULT.get().bind(UDPBroadcastProtos.MessageType.RAFT, data -> {
-        log.trace("Received a Raft message");
+        log.trace("Received a UDP message");
         try {
-          // 1. Parse the message
-          long parseBegin = System.currentTimeMillis();
-          EloquentRaftProto.RaftMessage message;
-          try {
-            message = EloquentRaftProto.RaftMessage.parseFrom(data);
-          } finally {
-            long parseEnd = System.currentTimeMillis();
-            if (parseEnd - parseBegin > 10) {
-              log.warn("Parsing Raft message took >10ms: {}", TimerUtils.formatTimeDifference(parseEnd - parseBegin));
-            }
-          }
-          // 2. Deliver the message
+          EloquentRaftProto.RaftMessage message = EloquentRaftProto.RaftMessage.parseFrom(data);
           if (!message.getSender().equals(this.serverName)) {  // don't send ourselves messages
             assert ConcurrencyUtils.ensureNoLocksHeld();
             listener.receiveMessage(message, reply -> sendTransport(listener.serverName(), message.getSender(), reply), true);
@@ -184,7 +149,6 @@ public class NetRaftTransport implements RaftTransport {
 
 
   /** {@inheritDoc} */
-  @SuppressWarnings("Duplicates")
   @Override
   public void rpcTransport(String sender, String destination, EloquentRaftProto.RaftMessage message,
                            Consumer<EloquentRaftProto.RaftMessage> onResponseReceived, Runnable onTimeout,
@@ -211,79 +175,58 @@ public class NetRaftTransport implements RaftTransport {
       }
       // Get our channel
       channel = this.channel.computeIfAbsent(destination, name -> ManagedChannelBuilder.forAddress(destinationIp, rpcListenPort)
-          .executor(GRPC_POOL)
           .usePlaintext()
           .build());
     }
     // Call our stub
     AtomicBoolean awaitingResponse = new AtomicBoolean(true);
-    rpcsInFlight.incrementAndGet();
-    log.trace("Sending RPC request to {} @ ip {}  in_flight={}", destination, destinationIp, rpcsInFlight);
-    try {
-      RaftGrpc.newStub(channel)
-          .withDeadlineAfter(timeout, TimeUnit.MILLISECONDS)
-          .rpc(message, new StreamObserver<EloquentRaftProto.RaftMessage>() {
-            @Override
-            public void onNext(EloquentRaftProto.RaftMessage value) {
-              log.trace("Got an RPC response from {}", destinationIp);
-              if (awaitingResponse.getAndSet(false)) {
-                rpcsInFlight.decrementAndGet();
-                assert ConcurrencyUtils.ensureNoLocksHeld();
-                onResponseReceived.accept(value);
-              }
+    log.trace("Sending RPC request to {} @ ip {}", destination, destinationIp);
+    RaftGrpc.newStub(channel)
+        .withDeadlineAfter(timeout, TimeUnit.MILLISECONDS)
+        .rpc(message, new StreamObserver<EloquentRaftProto.RaftMessage>() {
+          @Override
+          public void onNext(EloquentRaftProto.RaftMessage value) {
+            log.trace("Got an RPC response from {}", destinationIp);
+            if (awaitingResponse.getAndSet(false)) {
+              assert ConcurrencyUtils.ensureNoLocksHeld();
+              onResponseReceived.accept(value);
             }
-
-            @Override
-            public void onError(Throwable t) {
-              if (awaitingResponse.getAndSet(false)) {
-                rpcsInFlight.decrementAndGet();
-                assert ConcurrencyUtils.ensureNoLocksHeld();
-                onTimeout.run();
-              }
+          }
+          @Override
+          public void onError(Throwable t) {
+            if (awaitingResponse.getAndSet(false)) {
+              assert ConcurrencyUtils.ensureNoLocksHeld();
+              onTimeout.run();
             }
-
-            @Override
-            public void onCompleted() {
-              if (awaitingResponse.getAndSet(false)) {
-                rpcsInFlight.decrementAndGet();
-                assert ConcurrencyUtils.ensureNoLocksHeld();
-                onTimeout.run();
-              }
+          }
+          @Override
+          public void onCompleted() {
+            if (awaitingResponse.getAndSet(false)) {
+              assert ConcurrencyUtils.ensureNoLocksHeld();
+              onTimeout.run();
             }
-          });
-    } catch (Throwable t) {
-      rpcsInFlight.decrementAndGet();
-    }
+          }
+        });
   }
 
 
   /** {@inheritDoc} */
-  @SuppressWarnings("Duplicates")
   @Override
   public void sendTransport(String sender, String destination, EloquentRaftProto.RaftMessage message) {
     log.trace("Sending a UDP message to {}", destination);
     assert ConcurrencyUtils.ensureNoLocksHeld();
-    long startTime = System.currentTimeMillis();
 
-    try {
-      // Get the destination IP address
-      int underscoreIndex;
-      final String destinationIp;
-      if ((underscoreIndex = destination.indexOf("_")) > 0) {
-        destinationIp = destination.substring(0, underscoreIndex);
-      } else {
-        destinationIp = destination;
-      }
-
-      // Send the message
-      UDPTransport.DEFAULT.get().sendTransport(destinationIp, UDPBroadcastProtos.MessageType.RAFT, message.toByteArray());
-    } finally {
-      long endTime = System.currentTimeMillis();
-      if (endTime - startTime > 100) {
-        log.warn("sendTransport() call took >100ms  (msg_size={}; destination={})",
-            message.getSerializedSize(), destination);
-      }
+    // Get the destination IP address
+    int underscoreIndex;
+    final String destinationIp;
+    if ((underscoreIndex = destination.indexOf("_")) > 0) {
+      destinationIp = destination.substring(0, underscoreIndex);
+    } else {
+      destinationIp = destination;
     }
+
+    // SEnd the message
+    UDPTransport.DEFAULT.get().sendTransport(destinationIp, UDPBroadcastProtos.MessageType.RAFT, message.toByteArray());
   }
 
 
@@ -300,13 +243,6 @@ public class NetRaftTransport implements RaftTransport {
   @Override
   public Span expectedNetworkDelay() {
     return new Span(10, 100);
-  }
-
-
-  /** {@inheritDoc} */
-  @Override
-  public boolean isSaturated() {
-    return rpcsInFlight.get() > 32 || UDPTransport.DEFAULT.get().isSaturated();
   }
 
 

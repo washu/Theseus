@@ -10,10 +10,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import javax.annotation.Nullable;
-import java.io.File;
-import java.io.FileWriter;
 import java.io.IOException;
-import java.io.PrintWriter;
 import java.lang.ref.WeakReference;
 import java.net.InetAddress;
 import java.net.UnknownHostException;
@@ -215,7 +212,6 @@ public class Theseus implements HasRaftLifecycle {
      */
     @Override
     public synchronized CompletableFuture<Boolean> release() {
-      logTransition("release_lock::" + lockName);
       if (!wantToHold) {
         if (held) {
           log.warn("Double-releasing a lock will have no effect. We see that this lock is currently perhaps held; the only recourse is to wait for the failsafe to release the lock.");
@@ -365,7 +361,7 @@ public class Theseus implements HasRaftLifecycle {
         unreleasedLocks.notifyAll();
       }
     });
-    this.defaultTimeout = Duration.ofMillis(node.algorithm.electionTimeoutMillisRange().end * 10);
+    this.defaultTimeout = Duration.ofMillis(node.algorithm.electionTimeoutMillisRange().end * 5);
     this.stateMachine = (KeyValueStateMachine) algo.mutableStateMachine();
     this.lifecycle = lifecycle;
     this.pool = algo.mutableState().log.pool;
@@ -395,7 +391,6 @@ public class Theseus implements HasRaftLifecycle {
             // 2. Release the locks
             log.info("Trying to release {} unreleased locks", unreleasedLocksCopy.length);
             byte[] bulkTransition = KeyValueStateMachine.createGroupedTransition(unreleasedLocksCopy);
-            logTransition("error_release_locks(" + unreleasedLocksCopy.length + ")");
             Boolean success = exceptionProof(node.submitTransition(bulkTransition))
                 .get(node.algorithm.electionTimeoutMillisRange().end * 2, TimeUnit.MILLISECONDS);
             if (success != null && success) {
@@ -644,7 +639,6 @@ public class Theseus implements HasRaftLifecycle {
    */
   public CompletableFuture<Boolean> withDistributedLockAsync(String lockName, Supplier<CompletableFuture<Boolean>> runnable) {
     Prometheus.counterInc(Prometheus.labelCounter(COUNTER_CALLS, "withDistributedLockAsync"));
-    logTransition("lock::" + lockName);
     // 1. Create and submit the lock request
     final String randomHash = generateUniqueHash();
     byte[] releaseLockTransition = KeyValueStateMachine.createReleaseLockTransition(lockName, serverName, randomHash);
@@ -725,7 +719,6 @@ public class Theseus implements HasRaftLifecycle {
    */
   public CompletableFuture<Optional<LongLivedLock>> tryLockAsync(String lockName, Duration safetyReleaseWindow) {
     Prometheus.counterInc(Prometheus.labelCounter(COUNTER_CALLS, "tryLockAsync"));
-    logTransition("trylock::" + lockName);
     String randomHash = generateUniqueHash();
     CompletableFuture<Optional<LongLivedLock>> future = new CompletableFuture<>();
 
@@ -828,36 +821,6 @@ public class Theseus implements HasRaftLifecycle {
 
 
   /**
-   * TODO(gabor) for temporary debugging only! Delete me.
-   */
-  private PrintWriter transitionLog = null;
-  private int numTransitions = 0;
-  private long lastTransition = 0;
-
-  /**
-   * TODO(gabor) for temporary debugging only! Delete me.
-   */
-  private synchronized void logTransition(String elementName) {
-    if ("true".equalsIgnoreCase(System.getenv("ELOQUENT_PRODUCTION"))) {
-      if (transitionLog == null) {
-        try {
-          transitionLog = new PrintWriter(new FileWriter(new File("/eloquent/transitions.tab")));
-        } catch (IOException ignored) {
-        }
-      }
-      if (transitionLog != null) {
-        long now = System.currentTimeMillis();
-        transitionLog.println((++numTransitions) + "\t" + now + "\t" + (now - lastTransition) + "\t" + elementName);
-        lastTransition = now;
-        if (numTransitions % 100 == 0) {
-          transitionLog.flush();
-        }
-      }
-    }
-  }
-
-
-  /**
    * This is the safest way to do a withElement() update. We take a global lock, and then manipulate the item, and set
    * the result. This means the mutator() can have side effects and not be idempotent, since it will only be called
    * once. This safety comes at a performance cost, since this requires two writes to the raft cluster. This is in
@@ -880,7 +843,6 @@ public class Theseus implements HasRaftLifecycle {
    */
   public CompletableFuture<Boolean> withElementAsync(String elementName, Function<byte[], byte[]> mutator, @Nullable Supplier<byte[]> createNew, boolean permanent) {
     Prometheus.counterInc(Prometheus.labelCounter(COUNTER_CALLS, "withElementAsync"));
-    logTransition("with_element::" + elementName);
     // 1. Create the lock request
     // 1.1. The lock request
     final String randomHash = generateUniqueHash();
@@ -890,7 +852,7 @@ public class Theseus implements HasRaftLifecycle {
     BiFunction<String, Throwable, CompletableFuture<Boolean>> releaseLockWithoutChange = (error, exception) -> {
       if (error != null) {
         Prometheus.counterInc(COUNTER_FAILED_LOCKS);
-        log.warn("Releasing lock '{}' on error: {}", elementName, error, exception);
+        log.debug("Releasing lock '{}' on error: {}", elementName, error, exception);
       }
       return exceptionProof(node.submitTransition(releaseLockTransition)  // note[gabor]: let failsafe retry -- same reasoning as above.
           .whenComplete((s, e) -> {  // note[gabor]: this is not exception-proof; `e` may not be null.
@@ -1302,7 +1264,7 @@ public class Theseus implements HasRaftLifecycle {
             log.debug("Caught a timeout exception");
           } else if (t instanceof RejectedExecutionException ||
                 (t instanceof CompletionException && t.getCause() != null && t.getCause() instanceof RejectedExecutionException)) {
-            log.warn("Caught a rejected execution exception");
+            log.debug("Caught a rejected execution exception");
           } else {
             log.warn("Caught an exception in exception proof wrapper", t);
           }
@@ -1340,12 +1302,11 @@ public class Theseus implements HasRaftLifecycle {
         // B.1. Get the remaining time on the timeout
         long elapsed = node.transport.now() - startTime;
         long remainingTime = timeout.toMillis() - elapsed;
+        log.debug("Retrying a failed transition @ {} ({}ms left). This is fine, but should be rare", node.transport.now(), remainingTime);
         // B.2. Check if there's still time on the timeout, and we haven't shut down the node yet
         if (remainingTime < 0 || !node.isAlive()) {
           log.warn("Failed transition @ {} after {}ms (timeout of {}); not retrying further.", node.transport.now(), elapsed, timeout.toMillis());
           return CompletableFuture.completedFuture(false);
-        } else {
-          log.info("Retrying a failed transition @ {} ({}ms left). This is fine, but should be rare", node.transport.now(), remainingTime);
         }
         // B.3. Retry if there's still time
         CompletableFuture<Boolean> ret = new CompletableFuture<>();
@@ -1354,7 +1315,7 @@ public class Theseus implements HasRaftLifecycle {
                                   public void runUnsafe() {
                                     retryAsync(action, timeout, startTime).thenApply(ret::complete);
                                   }
-                                }, node.algorithm.heartbeatMillis()); // Wait a bit before trying again, to avoid flooding the system with too many requests
+                                }, node.algorithm.electionTimeoutMillisRange().begin / 5); // Wait a bit before trying again, to avoid flooding the system with too many requests
         return ret;
       }
     });

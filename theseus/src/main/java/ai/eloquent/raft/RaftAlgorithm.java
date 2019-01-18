@@ -12,7 +12,6 @@ import ai.eloquent.monitoring.Prometheus;
 import ai.eloquent.raft.EloquentRaftProto.*;
 import ai.eloquent.util.Span;
 import ai.eloquent.util.StringUtils;
-import ai.eloquent.util.TimerUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -30,7 +29,7 @@ public interface RaftAlgorithm {
   /**
    * Timing statistics for Raft.
    */
-  Object summaryTiming = Prometheus.summaryBuild("raft", "Statistics on the Raft RPC calls", "rpc", "from_transport", "is_leader");
+  Object summaryTiming = Prometheus.summaryBuild("raft", "Statistics on the Raft RPC calls", "rpc");
 
   /**
    * Receive a non-blocking RPC in the form of a {@link ai.eloquent.raft.EloquentRaftProto.RaftMessage} proto.
@@ -45,110 +44,90 @@ public interface RaftAlgorithm {
   default void receiveMessage(EloquentRaftProto.RaftMessage messageProto,
                               Consumer<EloquentRaftProto.RaftMessage> replySender,
                               boolean fromTransport) {
-    long startMillis = System.currentTimeMillis();
-    String taskName = "unknown";
-    boolean isLeader = this.mutableState().isLeader();  // note[gabor]: dangerous to use mutableState(), but #isLeader() happens to be an immutable call
-    try {
-      if (!messageProto.getAppendEntries().equals(AppendEntriesRequest.getDefaultInstance())) {
-        // Append Entries
-        taskName = "append entries";
-        Object timerStart = Prometheus.startTimer(summaryTiming, "append_entries", Boolean.toString(fromTransport), Boolean.toString(isLeader));
-        receiveAppendEntriesRPC(messageProto.getAppendEntries(), msg -> {
-          Prometheus.observeDuration(timerStart);
-          replySender.accept(msg);
-        });
-      } else if (!messageProto.getRequestVotes().equals(RequestVoteRequest.getDefaultInstance())) {
-        // Request Votes
-        taskName = "request votes";
-        Object timerStart = Prometheus.startTimer(summaryTiming, "request_votes", Boolean.toString(fromTransport), Boolean.toString(isLeader));
-        receiveRequestVoteRPC(messageProto.getRequestVotes(), msg -> {
-          Prometheus.observeDuration(timerStart);
-          replySender.accept(msg);
-        });
-      } else if (!messageProto.getInstallSnapshot().equals(InstallSnapshotRequest.getDefaultInstance())) {
-        // Install Snapshot
-        taskName = "install snapshot";
-        Object timerStart = Prometheus.startTimer(summaryTiming, "install_snapshot", Boolean.toString(fromTransport), Boolean.toString(isLeader));
-        receiveInstallSnapshotRPC(messageProto.getInstallSnapshot(), msg -> {
-          Prometheus.observeDuration(timerStart);
-          replySender.accept(msg);
-        });
-      } else if (!messageProto.getAppendEntriesReply().equals(AppendEntriesReply.getDefaultInstance())) {
-        // REPLY Append Entries
-        taskName = "append entries reply";
-        Object timerStart = Prometheus.startTimer(summaryTiming, "append_entries_reply", Boolean.toString(fromTransport), Boolean.toString(isLeader));
-        try {
-          receiveAppendEntriesReply(messageProto.getAppendEntriesReply());
-        } finally {
-          Prometheus.observeDuration(timerStart);
-        }
-      } else if (!messageProto.getRequestVotesReply().equals(RequestVoteReply.getDefaultInstance())) {
-        // REPLY Request Votes
-        taskName = "request votes reply";
-        Object timerStart = Prometheus.startTimer(summaryTiming, "request_votes_reply", Boolean.toString(fromTransport), Boolean.toString(isLeader));
-        try {
-          receiveRequestVotesReply(messageProto.getRequestVotesReply());
-        } finally {
-          Prometheus.observeDuration(timerStart);
-        }
-      } else if (!messageProto.getInstallSnapshotReply().equals(InstallSnapshotReply.getDefaultInstance())) {
-        // REPLY Install Snapshot
-        taskName = "install snapshot reply";
-        Object timerStart = Prometheus.startTimer(summaryTiming, "installl_snapshot_reply", Boolean.toString(fromTransport), Boolean.toString(isLeader));
-        try {
-          receiveInstallSnapshotReply(messageProto.getInstallSnapshotReply());
-        } finally {
-          Prometheus.observeDuration(timerStart);
-        }
-      } else if (!messageProto.getAddServer().equals(AddServerRequest.getDefaultInstance())) {
-        // Add Server
-        taskName = "add server";
-        Object timerStart = Prometheus.startTimer(summaryTiming, "add_server", Boolean.toString(fromTransport), Boolean.toString(isLeader));
-        CompletableFuture<RaftMessage> future = receiveAddServerRPC(messageProto.getAddServer());
-        future.whenComplete((reply, exception) -> {
-          Prometheus.observeDuration(timerStart);
-          if (exception != null && reply != null) {
-            replySender.accept(reply);
-          } else {
-            replySender.accept(null);
-          }
-        });
-      } else if (!messageProto.getRemoveServer().equals(RemoveServerRequest.getDefaultInstance())) {
-        // Remove Server
-        taskName = "remove server";
-        Object timerStart = Prometheus.startTimer(summaryTiming, "remove_server", Boolean.toString(fromTransport), Boolean.toString(isLeader));
-        CompletableFuture<RaftMessage> future = receiveRemoveServerRPC(messageProto.getRemoveServer());
-        future.whenComplete((reply, exception) -> {
-          Prometheus.observeDuration(timerStart);
-          if (exception != null && reply != null) {
-            replySender.accept(reply);
-          } else {
-            replySender.accept(null);
-          }
-        });
-      } else if (!messageProto.getApplyTransition().equals(ApplyTransitionRequest.getDefaultInstance())) {
-        // Apply Transition
-        taskName = "apply transition";
-        Object timerStart = Prometheus.startTimer(summaryTiming, "apply_transition", Boolean.toString(fromTransport), Boolean.toString(isLeader));
-        CompletableFuture<RaftMessage> future = receiveApplyTransitionRPC(messageProto.getApplyTransition(), fromTransport);
-        future.whenComplete((reply, exception) -> {
-          Prometheus.observeDuration(timerStart);
-          if (exception != null && reply != null) {
-            replySender.accept(reply);
-          } else {
-            replySender.accept(null);
-          }
-        });
-      } else {
-        taskName = "bad request";
-        receiveBadRequest(messageProto);
+
+    if (!messageProto.getAppendEntries().equals(AppendEntriesRequest.getDefaultInstance())) {
+      // Append Entries
+      Object timerStart = Prometheus.startTimer(summaryTiming,"append_entries");
+      receiveAppendEntriesRPC(messageProto.getAppendEntries(), msg -> {
+        Prometheus.observeDuration(timerStart);
+        replySender.accept(msg);
+      });
+    } else if (!messageProto.getRequestVotes().equals(RequestVoteRequest.getDefaultInstance())) {
+      // Request Votes
+      Object timerStart = Prometheus.startTimer(summaryTiming,"request_votes");
+      receiveRequestVoteRPC(messageProto.getRequestVotes(), msg -> {
+        Prometheus.observeDuration(timerStart);
+        replySender.accept(msg);
+      });
+    } else if (!messageProto.getInstallSnapshot().equals(InstallSnapshotRequest.getDefaultInstance())) {
+      // Install Snapshot
+      Object timerStart = Prometheus.startTimer(summaryTiming,"install_snapshot");
+      receiveInstallSnapshotRPC(messageProto.getInstallSnapshot(), msg -> {
+        Prometheus.observeDuration(timerStart);
+        replySender.accept(msg);
+      });
+    } else if (!messageProto.getAppendEntriesReply().equals(AppendEntriesReply.getDefaultInstance())) {
+      // REPLY Append Entries
+      Object timerStart = Prometheus.startTimer(summaryTiming,"append_entries_reply");
+      try {
+        receiveAppendEntriesReply(messageProto.getAppendEntriesReply());
+      } finally {
+        Prometheus.observeDuration(timerStart);
       }
-    } finally {
-      long endMillis = System.currentTimeMillis();
-      if (fromTransport && (endMillis - startMillis) > 10) {
-        log.warn("receiveMessage task '{}' took {} to execute from transport", taskName, TimerUtils.formatTimeDifference(endMillis - startMillis));
+    } else if (!messageProto.getRequestVotesReply().equals(RequestVoteReply.getDefaultInstance())) {
+      // REPLY Request Votes
+      Object timerStart = Prometheus.startTimer(summaryTiming,"request_votes_reply");
+      try {
+        receiveRequestVotesReply(messageProto.getRequestVotesReply());
+      } finally {
+        Prometheus.observeDuration(timerStart);
       }
-//      log.info("sign of life @ {}: {}", startMillis, taskName);
+    } else if (!messageProto.getInstallSnapshotReply().equals(InstallSnapshotReply.getDefaultInstance())) {
+      // REPLY Install Snapshot
+      Object timerStart = Prometheus.startTimer(summaryTiming,"installl_snapshot_reply");
+      try {
+        receiveInstallSnapshotReply(messageProto.getInstallSnapshotReply());
+      } finally {
+        Prometheus.observeDuration(timerStart);
+      }
+    } else if (!messageProto.getAddServer().equals(AddServerRequest.getDefaultInstance())) {
+      // Add Server
+      Object timerStart = Prometheus.startTimer(summaryTiming,"add_server");
+      CompletableFuture<RaftMessage> future = receiveAddServerRPC(messageProto.getAddServer());
+      future.whenComplete( (reply, exception) -> {
+        Prometheus.observeDuration(timerStart);
+        if (exception != null && reply != null) {
+          replySender.accept(reply);
+        } else {
+          replySender.accept(null);
+        }
+      });
+    } else if (!messageProto.getRemoveServer().equals(RemoveServerRequest.getDefaultInstance())) {
+      // Remove Server
+      Object timerStart = Prometheus.startTimer(summaryTiming,"remove_server");
+      CompletableFuture<RaftMessage> future = receiveRemoveServerRPC(messageProto.getRemoveServer());
+      future.whenComplete( (reply, exception) -> {
+        Prometheus.observeDuration(timerStart);
+        if (exception != null && reply != null) {
+          replySender.accept(reply);
+        } else {
+          replySender.accept(null);
+        }
+      });
+    } else if (!messageProto.getApplyTransition().equals(ApplyTransitionRequest.getDefaultInstance())) {
+      // Apply Transition
+      Object timerStart = Prometheus.startTimer(summaryTiming,"apply_transition");
+      CompletableFuture<RaftMessage> future = receiveApplyTransitionRPC(messageProto.getApplyTransition(), fromTransport);
+      future.whenComplete( (reply, exception) -> {
+        Prometheus.observeDuration(timerStart);
+        if (exception != null && reply != null) {
+          replySender.accept(reply);
+        } else {
+          replySender.accept(null);
+        }
+      });
+    } else {
+      receiveBadRequest(messageProto);
     }
   }
 
@@ -166,45 +145,45 @@ public interface RaftAlgorithm {
    */
   default CompletableFuture<EloquentRaftProto.RaftMessage> receiveRPC(EloquentRaftProto.RaftMessage messageProto, boolean fromTransport) {
     Object timerStart = null;
-    boolean isLeader = this.mutableState().isLeader();  // note[gabor]: dangerous to use mutableState(), but #isLeader() happens to be an immutable call
     CompletableFuture<EloquentRaftProto.RaftMessage> future = new CompletableFuture<>();
     try {
       if (messageProto.getAppendEntries() != AppendEntriesRequest.getDefaultInstance()) {
         // Append Entries
-        timerStart = Prometheus.startTimer(summaryTiming, "append_entries_rpc", Boolean.toString(fromTransport), Boolean.toString(isLeader));
+        timerStart = Prometheus.startTimer(summaryTiming, "append_entries_rpc");
         receiveAppendEntriesRPC(messageProto.getAppendEntries(), future::complete);
       } else if (messageProto.getRequestVotes() != RequestVoteRequest.getDefaultInstance()) {
         // Request Votes
-        timerStart = Prometheus.startTimer(summaryTiming, "request_votes_rpc", Boolean.toString(fromTransport), Boolean.toString(isLeader));
+        timerStart = Prometheus.startTimer(summaryTiming, "request_votes_rpc");
         receiveRequestVoteRPC(messageProto.getRequestVotes(), future::complete);
       } else if (messageProto.getInstallSnapshot() != InstallSnapshotRequest.getDefaultInstance()) {
         // Install Snapshot
-        timerStart = Prometheus.startTimer(summaryTiming, "install_snapshot_rpc", Boolean.toString(fromTransport), Boolean.toString(isLeader));
+        timerStart = Prometheus.startTimer(summaryTiming, "install_snapshop_rpc");
         receiveInstallSnapshotRPC(messageProto.getInstallSnapshot(), future::complete);
       } else if (messageProto.getAddServer() != AddServerRequest.getDefaultInstance()) {
         // Add Server
-        timerStart = Prometheus.startTimer(summaryTiming, "add_server_rpc", Boolean.toString(fromTransport), Boolean.toString(isLeader));
+        timerStart = Prometheus.startTimer(summaryTiming, "add_server_rpc");
         future = receiveAddServerRPC(messageProto.getAddServer());
       } else if (messageProto.getRemoveServer() != RemoveServerRequest.getDefaultInstance()) {
         // Remove Server
-        timerStart = Prometheus.startTimer(summaryTiming, "remove_server_rpc", Boolean.toString(fromTransport), Boolean.toString(isLeader));
+        timerStart = Prometheus.startTimer(summaryTiming, "remove_server_rpc");
         future = receiveRemoveServerRPC(messageProto.getRemoveServer());
       } else if (messageProto.getApplyTransition() != ApplyTransitionRequest.getDefaultInstance()) {
         // Apply Transition
-        timerStart = Prometheus.startTimer(summaryTiming, "transition_rpc", Boolean.toString(fromTransport), Boolean.toString(isLeader));
+        timerStart = Prometheus.startTimer(summaryTiming, "transition_rpc");
         future = receiveApplyTransitionRPC(messageProto.getApplyTransition(), fromTransport);
       } else {
-        timerStart = Prometheus.startTimer(summaryTiming, "unknown_rpc", Boolean.toString(fromTransport), Boolean.toString(isLeader));
+        timerStart = Prometheus.startTimer(summaryTiming, "unknown_rpc");
         future.completeExceptionally(new IllegalStateException("Message type not implemented: " + messageProto));
       }
     } catch (Throwable t) {
       future.completeExceptionally(t);
     }
     Object timerStartFinal = timerStart;
-    return future.whenComplete((x, err) -> {
+    return future.thenApply(x -> {
       if (timerStartFinal != null) {
         Prometheus.observeDuration(timerStartFinal);
       }
+      return x;
     });
   }
 
@@ -409,13 +388,13 @@ public interface RaftAlgorithm {
    * Apply a transition to Raft.
    *
    * @param transition The transition to apply
-   * @param forceOntoQueue If true, this RPC came from another Raft node via an RPC. Therefore, it's potentially
+   * @param fromTransport If true, this RPC came from another Raft node via an RPC. Therefore, it's potentially
    *                      blocking the transport thread if we block (therefore, we shouldn't block!).
    *                      This is different from if this is coming from user-space, where it's often preferable
    *                      to block the user thread rather than flood Raft with requests.
    */
   CompletableFuture<RaftMessage> receiveApplyTransitionRPC(EloquentRaftProto.ApplyTransitionRequest transition,
-                                                           boolean forceOntoQueue);
+                                                           boolean fromTransport);
 
 
   /**
@@ -454,7 +433,7 @@ public interface RaftAlgorithm {
 
 
   /** The default timeout range for elections. */
-  Span DEFAULT_ELECTION_RANGE = new Span(300, 500);
+  Span DEFAULT_ELECTION_RANGE = new Span(150, 300);
 
 
   /**
@@ -464,16 +443,6 @@ public interface RaftAlgorithm {
   default Span electionTimeoutMillisRange() {
     return DEFAULT_ELECTION_RANGE;
   }
-
-
-  /**
-   * Block until this Raft algorithm has the capacity to accept new requests.
-   * This is a useful way to prevent flooding the transport / work queue of the
-   * algorithm.
-   *
-   * Note that <b>this is a blocking call</b>.
-   */
-  default void awaitCapacity() {}
 
 
   /**

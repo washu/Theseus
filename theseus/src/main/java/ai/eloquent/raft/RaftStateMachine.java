@@ -142,10 +142,8 @@ public abstract class RaftStateMachine {
    * The set of nodes that own anything in the state machine.
    * This is an optional override, only for state machines that have a notion
    * of ownership.
-   *
-   * @param now The current timestamp in milliseconds
    */
-  public Set<String> owners(long now) {
+  public Set<String> owners() {
     return Collections.emptySet();
   }
 }

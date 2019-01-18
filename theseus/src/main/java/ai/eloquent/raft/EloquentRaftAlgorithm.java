@@ -4,7 +4,6 @@ import ai.eloquent.monitoring.Prometheus;
 import ai.eloquent.raft.EloquentRaftProto.*;
 import ai.eloquent.util.RuntimeInterruptedException;
 import ai.eloquent.util.TimerUtils;
-import ai.eloquent.util.Uninterruptably;
 import com.google.protobuf.ByteString;
 import com.google.protobuf.InvalidProtocolBufferException;
 import com.sun.management.GcInfo;
@@ -49,6 +48,14 @@ public class EloquentRaftAlgorithm implements RaftAlgorithm {
 
 
   /**
+   * The minimum number of milliseconds between broadcasts.
+   * This is to ensure a tradeoff between quick commits (a low number)
+   * and not killing the transport (a high number).
+   */
+  public static final long BROADCAST_PERIOD = 10;
+
+
+  /**
    * The Raft state
    */
   private final RaftState state;
@@ -78,6 +85,12 @@ public class EloquentRaftAlgorithm implements RaftAlgorithm {
    * overwritten, and is not part of the core Raft algorithm.
    */
   private volatile long lastClusterMembershipChange;
+
+  /**
+   * The last time we broadcast a message.
+   * Useful for rate-limiting.
+   */
+  private long lastBroadcastTime = -1000L;
 
   /**
    * This is the lifecycle that this algorithm is associated with. This is only for mocks to use.
@@ -198,9 +211,7 @@ public class EloquentRaftAlgorithm implements RaftAlgorithm {
     assert drivingThreadId < 0 || drivingThreadId == Thread.currentThread().getId() : "Eloquent Raft Algorithm should only be run from the driving thread (" + drivingThreadId + ") but is being driven by " + Thread.currentThread();
     String methodName = "AppendEntriesRPC";
     RaftMessage reply;
-    if (heartbeat.getEntriesCount() > 0) {
-      log.trace("{} - [{}] {}; num_entries={}  prevIndex={}  leader={}", state.serverName, transport.now(), methodName, heartbeat.getEntriesCount(), heartbeat.getPrevLogIndex(), heartbeat.getLeaderName());
-    }
+    if (heartbeat.getEntriesCount() > 0) log.trace("{} - [{}] {}; num_entries={}  prevIndex={}  leader={}", state.serverName, transport.now(), methodName, heartbeat.getEntriesCount(), heartbeat.getPrevLogIndex(), heartbeat.getLeaderName());
     AppendEntriesReply.Builder partialReply = AppendEntriesReply.newBuilder()
         .setFollowerName(state.serverName);  // signal our name
 
@@ -213,6 +224,16 @@ public class EloquentRaftAlgorithm implements RaftAlgorithm {
           .setMissingFromQuorum(!this.state.log.latestQuorumMembers.contains(this.state.serverName))
           .build());
     } else {
+
+      // Valid heartbeat: Reset the election timeout
+      // note[gabor]: this is last because the function above may actually take enough time
+      //              to otherwise trigger an election timeout in rare cases.
+      Optional<String> oldLeader = state.leader;
+      state.resetElectionTimeout(transport.now(), heartbeat.getLeaderName());
+      if (!oldLeader.equals(state.leader)) {
+        log.info("{} - {}; registered new leader={} (via heartbeat)  old leader={}  time={}",
+            state.serverName, methodName, state.leader.orElse("<none>"), oldLeader.orElse("<none>"), transport.now());
+      }
 
       // Step 2-4:
       //   2. Reply false if log doesn't contain an entry at prevLogIndex whose term matches prevLogTerm
@@ -252,21 +273,21 @@ public class EloquentRaftAlgorithm implements RaftAlgorithm {
             .build());
       } else if (heartbeat.getEntriesCount() > 0) {
         // Case: failed to append
-        long requestedNextIndex = Math.max(
-            state.log.snapshot.map(snapshot -> snapshot.lastIndex).orElse(0L),
-            Math.min(heartbeat.getPrevLogIndex() - 1, state.log.getLastEntryIndex())
-        );
         //noinspection StatementWithEmptyBody
         if (heartbeat.getPrevLogIndex() < this.state.log.snapshot.map(snapshot -> snapshot.lastIndex).orElse(0L)) {
           // This is actually ok, because we can receive appends out of order and fail an append that comes before a snapshot
         } else {
-          log.warn("{} - {} replying error;  term={}  lastIndex={}  heartbeat.term={}  heartbeat.prevIndex={}  requesting nextIndex={}",
-              state.serverName, methodName, state.currentTerm, state.log.getLastEntryIndex(), heartbeat.getTerm(), heartbeat.getPrevLogIndex(), requestedNextIndex);
+          log.warn("{} - {} replying error;  term={}  lastIndex={}  heartbeat.term={}  heartbeat.prevIndex={}",
+              state.serverName, methodName, state.currentTerm, state.log.getLastEntryIndex(), heartbeat.getTerm(), heartbeat.getPrevLogIndex());
         }
+        long requestIndex = Math.max(
+            state.log.snapshot.map(snapshot -> snapshot.lastIndex).orElse(0L),
+            Math.min(heartbeat.getPrevLogIndex() - 1, state.log.getLastEntryIndex())
+        );
         reply = RaftTransport.mkRaftMessage(state.serverName, partialReply
             .setSuccess(false)                                  // the update failed
             .setTerm(state.currentTerm)                         // signal the new term
-            .setNextIndex(requestedNextIndex)    // signal the next index in the new term
+            .setNextIndex(requestIndex)    // signal the next index in the new term
             .setMissingFromQuorum(!this.state.log.latestQuorumMembers.contains(this.state.serverName))
             .build());
       } else {
@@ -283,16 +304,6 @@ public class EloquentRaftAlgorithm implements RaftAlgorithm {
     }
 
     replyLeader.accept(reply);
-
-    // Valid heartbeat: Reset the election timeout
-    // note[gabor]: this is last because the function above may actually take enough time
-    //              to otherwise trigger an election timeout in rare cases.
-    Optional<String> oldLeader = state.leader;
-    state.resetElectionTimeout(transport.now(), heartbeat.getLeaderName());
-    if (!oldLeader.equals(state.leader)) {
-      log.info("{} - {}; registered new leader={} (via heartbeat)  old leader={}  time={}",
-          state.serverName, methodName, state.leader.orElse("<none>"), oldLeader.orElse("<none>"), transport.now());
-    }
   }
 
 
@@ -510,10 +521,13 @@ public class EloquentRaftAlgorithm implements RaftAlgorithm {
     AppendEntriesRequest appendEntriesRequest;  // The request we're sending. This does not need to be sent in a lock
 
     // 1. Rate Limit
-    if (!force && this.transport.isSaturated()) {
-      log.trace("{} - {}; rate limiting broadcast to avoid saturating the transport.", state.serverName, methodName);
-      return;
+    long now = transport.now();
+    if (!force && (now - lastBroadcastTime) < BROADCAST_PERIOD) {
+      log.trace("{} - {}; rate limiting broadcast. Last broadcast={}; now={}",
+          state.serverName, methodName, lastBroadcastTime, now);
+//      return;  // note[gabor] enable me to rate-limit, but SingleThreadedRaftAlgorithm should rate limit itself now
     }
+    lastBroadcastTime = now;
 
     // 2. Preconditions
     if (!this.state.isLeader()) {  // in case we lost leadership in between
@@ -541,12 +555,12 @@ public class EloquentRaftAlgorithm implements RaftAlgorithm {
           long nextIndexForMember = nextIndex.get(member);
           long prevLogIndex = Math.max(0, nextIndexForMember - 1);
           long prevLogTerm = state.log.getPreviousEntryTerm(prevLogIndex).orElse(-1L);
+          Optional<List<LogEntry>> entries = state.log.getEntriesSinceInclusive(nextIndexForMember);
           // 3.3. Update the min
-          if (prevLogTerm < minLogTerm ||
-              (prevLogTerm == minLogTerm && prevLogIndex < minLogIndex)
-          ) {
-            Optional<List<LogEntry>> entries = state.log.getEntriesSinceInclusive(nextIndexForMember);
-            if (entries.isPresent()) {  // Ignore nodes that need a snapshot
+          if (entries.isPresent()) {  // Ignore nodes that need a snapshot
+            if (prevLogTerm < minLogTerm ||
+                (prevLogTerm == minLogTerm && prevLogIndex < minLogIndex)
+            ) {
               minLogTerm = prevLogTerm;
               minLogIndex = prevLogIndex;
               argminEntries = entries.get();
@@ -558,6 +572,7 @@ public class EloquentRaftAlgorithm implements RaftAlgorithm {
     checkDuration("finding update index", findUpdateStart, System.currentTimeMillis());
 
     // 4. Handle the case that we have no updates
+    //noinspection ConstantConditions
     if (minLogTerm == Long.MAX_VALUE || minLogIndex == Long.MAX_VALUE || argminEntries == null) {
       minLogIndex = state.log.getLastEntryIndex();
       minLogTerm = state.log.getLastEntryTerm();
@@ -751,7 +766,7 @@ public class EloquentRaftAlgorithm implements RaftAlgorithm {
   public void receiveRequestVotesReply(RequestVoteReply reply) {
     assert drivingThreadId < 0 || drivingThreadId == Thread.currentThread().getId() : "Eloquent Raft Algorithm should only be run from the driving thread (" + drivingThreadId + ") but is being driven by " + Thread.currentThread();
     String methodName = "RequestVoteReply";
-    log.info("{} - [{}] {} from {};  term={}  follower_term={}  vote_granted={}",
+    log.trace("{} - [{}] {} from {};  term={}  follower_term={}  vote_granted={}",
         state.serverName, transport.now(), methodName, reply.getFollowerName(), reply.getTerm(), reply.getFollowerTerm(), reply.getVoteGranted());
     if (canPerformFollowerAction(methodName, reply.getTerm(), true)) {
       // 1. Grant the vote
@@ -780,18 +795,18 @@ public class EloquentRaftAlgorithm implements RaftAlgorithm {
   public void triggerElection() {
     assert drivingThreadId < 0 || drivingThreadId == Thread.currentThread().getId() : "Eloquent Raft Algorithm should only be run from the driving thread (" + drivingThreadId + ") but is being driven by " + Thread.currentThread();
     String methodName = "triggerElection";
-    log.info("{} - Raft triggered an election with term {} -> {} (now={} chkpt={} cluster={} leader={} election_checkpoint={})",
-        state.serverName, state.currentTerm, state.currentTerm + 1, transport.now(), state.electionTimeoutCheckpoint, state.log.getQuorumMembers(), state.leader.orElse("<unknown>"), state.electionTimeoutCheckpoint);
     // The request we're sending. This does not need to be sent in a lock
     RequestVoteRequest voteRequest;
 
     // 1. Become a candidate, if not already one
     state.becomeCandidate(this.transport.now());
     assert this.state.isCandidate() : "Should not be requesting votes if we're not a candidate";
+    long originalTerm = state.currentTerm;
 
     // 2. Initiate Election
     // 2.1. Increment currentTerm
     state.setCurrentTerm(state.currentTerm + 1);
+    log.info("{} - Raft triggered an election with term {} -> {} (time={} chkpt={} cluster={} leader={})", state.serverName, originalTerm, state.currentTerm, transport.now(), state.electionTimeoutCheckpoint, state.log.getQuorumMembers(), state.leader.orElse("<unknown>"));
     // 2.2. Vote for self
     state.voteFor(state.serverName, transport.now());  // resets election timer
 
@@ -1218,7 +1233,7 @@ public class EloquentRaftAlgorithm implements RaftAlgorithm {
 
   /** {@inheritDoc} */
   @Override
-  public CompletableFuture<RaftMessage> receiveApplyTransitionRPC(ApplyTransitionRequest transition, boolean forceOntoQueue) {
+  public CompletableFuture<RaftMessage> receiveApplyTransitionRPC(ApplyTransitionRequest transition, boolean fromTransport) {
     assert drivingThreadId < 0 || drivingThreadId == Thread.currentThread().getId() : "Eloquent Raft Algorithm should only be run from the driving thread (" + drivingThreadId + ") but is being driven by " + Thread.currentThread();
     String methodName = "ReceiveApplyTransition";
     log.trace("{} - [{}] {}; is_leader={}", state.serverName, transport.now(), methodName, this.state.isLeader());
@@ -1291,7 +1306,7 @@ public class EloquentRaftAlgorithm implements RaftAlgorithm {
                     .setNewEntryIndex(-3)
                     .setSuccess(false)).build();
               }
-            }, this.drivingThreadQueue, 2000)  // 1s timeout
+            }, this.drivingThreadQueue, this.electionTimeoutMillisRange().end)
             .thenCompose(leaderResponse -> {
               assert drivingThreadId < 0 || drivingThreadId == Thread.currentThread().getId() : "Eloquent Raft Algorithm should only be run from the driving thread (" + drivingThreadId + ") but is being driven by " + Thread.currentThread();
               // Then wait for it to commit locally
@@ -1326,7 +1341,7 @@ public class EloquentRaftAlgorithm implements RaftAlgorithm {
     } else {
       // Case: We're not the leader, and we don't know who is.
       //       We have no choice but to fail the request.
-      log.info("{} - {}; we're not the leader and don't know who the leader is. This is OK if we're in the middle of an election", state.serverName, methodName);
+      log.debug("{} - {}; we're not the leader and don't know who the leader is", state.serverName, methodName);
       rtn = CompletableFuture.completedFuture(RaftMessage.newBuilder().setSender(state.serverName).setApplyTransitionReply(ApplyTransitionReply
           .newBuilder()
           .setTerm(state.currentTerm)
@@ -1344,7 +1359,7 @@ public class EloquentRaftAlgorithm implements RaftAlgorithm {
   public void heartbeat() {
     assert drivingThreadId < 0 || drivingThreadId == Thread.currentThread().getId() : "Eloquent Raft Algorithm should only be run from the driving thread (" + drivingThreadId + ") but is being driven by " + Thread.currentThread();
     long begin = transport.now();
-    Object timerPrometheusBegin = Prometheus.startTimer(summaryTiming, "heartbeat", "false", Boolean.toString(this.state.isLeader()));
+    Object timerPrometheusBegin = Prometheus.startTimer(summaryTiming, "heartbeat");
     long sectionBegin;
     try {
       if (this.state.isLeader()) {
@@ -1487,17 +1502,6 @@ public class EloquentRaftAlgorithm implements RaftAlgorithm {
   /** {@inheritDoc} */
   @Override
   public void stop(boolean kill) {
-  }
-
-
-  /** {@inheritDoc} */
-  @Override
-  public void awaitCapacity() {
-    assert drivingThreadId < 0 || drivingThreadId != Thread.currentThread().getId() : "It's extremely dangerous to awaitCapacity on the driving thread!";
-    int iters = 0;
-    while ((++iters < 1000) && (!state.leader.isPresent() || transport.isSaturated())) {
-      Uninterruptably.sleep(1);  // sleep for just a bit; until the next millisecond
-    }
   }
 
 

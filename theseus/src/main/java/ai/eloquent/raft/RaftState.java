@@ -143,6 +143,17 @@ public class RaftState {
    */
   public volatile Optional<Set<String>> alreadyKilled = Optional.empty();
 
+  /**
+   * A cache on {@link RaftStateMachine#owners()}, since the call can potentially take
+   * a long time.
+   */
+  private volatile Set<String> cachedOwners = new HashSet<>();
+
+  /**
+   * The timestamp at which we last refreshed {@link #cachedOwners}.
+   */
+  private volatile long cachedOwnersTimestamp = Long.MIN_VALUE;
+
 
   /* --------------------------------------------------------------------------
      METHODS
@@ -327,7 +338,7 @@ public class RaftState {
             lastMessageTimestamp.put(node, now);  // Assume everyone is online
           }
         }
-        Set<String> owners = this.log.stateMachine.owners(now);
+        Set<String> owners = this.log.stateMachine.owners();
         for (String stateOwner : owners) {
           if (!stateOwner.equals(this.serverName)) {
             lastMessageTimestamp.put(stateOwner, now);  // Assume everyone who owns anything on the state is online
@@ -447,8 +458,7 @@ public class RaftState {
         // Case: check if we should trigger a timeout
         long electionTimeoutMillis = new Random((this.currentTerm << 32) | this.serverName.hashCode())  // note[gabor]: non-random seed ensures the same timeout each call
             .nextInt((int) (electionTimeoutMillisRange.end - electionTimeoutMillisRange.begin)) + electionTimeoutMillisRange.begin;
-        boolean shouldTrigger =  now - this.electionTimeoutCheckpoint > electionTimeoutMillis;
-        return shouldTrigger;
+        return now - this.electionTimeoutCheckpoint > electionTimeoutMillis;
       }
     } finally {
       log.assertConsistency();
@@ -777,7 +787,11 @@ public class RaftState {
       return lastMessageTimestamp.flatMap(lastMessageTimestamp ->
           alreadyKilled.map(alreadyKilled -> {
             Set<String> rtn = new HashSet<>();
-            for (String owner : log.stateMachine.owners(now)) {
+            if (now > cachedOwnersTimestamp + 1000) {  // note[gabor]: This introduces a <=1s lag, but avoids hitting the expensive owners() function too often.
+              cachedOwners = log.stateMachine.owners();
+              cachedOwnersTimestamp = now;
+            }
+            for (String owner : cachedOwners) {
               if (!owner.equals(this.serverName) &&
                   (now - lastMessageTimestamp.computeIfAbsent(owner, s -> now - timeout / 2)) > timeout &&
                   !alreadyKilled.contains(owner)) {

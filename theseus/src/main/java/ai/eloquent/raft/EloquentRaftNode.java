@@ -224,10 +224,6 @@ public class EloquentRaftNode implements HasRaftLifecycle {
    * @return A future for the transition, marking whether it completed successfully.
    */
   public CompletableFuture<Boolean> submitTransition(byte[] transition) {
-    // 1. Wait for the algorithm to have capacity.
-    //    This is a courtesy to avoid flooding the algorithm with requests.
-    algorithm.awaitCapacity();
-    // 2. Receive the RPC request.
     return algorithm.receiveRPC(RaftTransport.mkRaftRPC(algorithm.serverName(),
         EloquentRaftProto.ApplyTransitionRequest.newBuilder()
             .setTransition(ByteString.copyFrom(transition))

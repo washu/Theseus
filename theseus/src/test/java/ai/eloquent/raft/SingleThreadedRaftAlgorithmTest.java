@@ -740,38 +740,4 @@ public class SingleThreadedRaftAlgorithmTest {
     }
   }
 
-
-  /**
-   * @see #dequeBlockWriteGeneralized(BiConsumer, Consumer)
-   */
-  @SuppressWarnings("SynchronizeOnNonFinalField")
-  @Test
-  public void dequeBlockedWriteDoesntHoldLock(){
-    // Fill the deque
-    for (int i = 0; i < RaftDeque.MAX_SIZE; ++i) {
-      deque.add(task("task" + i));
-    }
-    assertEquals(RaftDeque.MAX_SIZE, deque.size());
-    // Block on the deque
-    Thread blocking = new Thread(() -> {
-      synchronized (deque) {
-        deque.add(task("blocking"));
-      }
-      System.out.println("Added blocking element");
-    });
-    blocking.start();
-    for (int i = 0; i < 100; ++i) {
-      Thread.yield();
-    }
-    // Ensure we can add a non-blocking call
-    synchronized (deque) {
-      deque.forceAdd(task("nonblocking"));
-    }
-    System.out.println("Added non-blocking element");
-    assertEquals(RaftDeque.MAX_SIZE + 1, deque.size());
-    // Clean up
-    System.out.println("Clearing");
-    deque.clear();
-  }
-
 }

@@ -60,20 +60,6 @@ public class UDPTransport implements Transport {
   private static boolean networkSeemsDown = false;
 
   /**
-   * A histogram of timing for processing an incoming UDP message.
-   */
-  private static final Object inboundHandleTimeHistogram =
-      Prometheus.histogramBuild("udp_transport_proctime", "The time it takes to process a UDP packet, in seconds",
-          0, 0.1 / 1000.0, 0.5 / 1000.0, 1.0 / 1000.0, 5.0 / 1000.0, 10.0 / 1000.0, 50.0 / 1000.0, 100.0 / 1000.0, 200.0 / 1000.0, 300.0 / 1000.0, 1.0 / 2.0, 1.0, 10.0);
-
-  /**
-   * The number of listeners bound to this transport
-   */
-  private static final Object boundListenerCount =
-      Prometheus.gaugeBuild("udp_transport_listeners", "The number of listeners bound to this transport");
-
-
-  /**
    * The name we should assign ourselves on the transport.
    */
   public final InetAddress serverName;
@@ -164,11 +150,18 @@ public class UDPTransport implements Transport {
    */
   private final Queue<Runnable> sendQueue = new ArrayDeque<>();
 
+  /**
+   * A histogram of timing for processing an incoming UDP message.
+   */
+  private static final Object inboundHandleTimeHistogram =
+      Prometheus.histogramBuild("udp_transport_proctime", "The time it takes to process a UDP packet, in seconds",
+      0, 0.1 / 1000.0, 0.5 / 1000.0, 1.0 / 1000.0, 5.0 / 1000.0, 10.0 / 1000.0, 50.0 / 1000.0, 100.0 / 1000.0, 200.0 / 1000.0, 300.0 / 1000.0, 1.0 / 2.0, 1.0, 10.0);
 
   /**
-   * A rate limiter to spare the transport
+   * The number of listeners bound to this transport
    */
-  private final LeakyBucket rateLimiter = new LeakyBucket(32L, 10000000L);  // 10ms between messages, buffer of 32.
+  private static final Object boundListenerCount =
+      Prometheus.gaugeBuild("udp_transport_listeners", "The number of listeners bound to this transport");
 
 
   /**
@@ -295,11 +288,10 @@ public class UDPTransport implements Transport {
               // 2. Parse the packet
               byte[] protoBytes;
               int offset;
-              final int length = packet.getLength();
               if (this.zip) {
                 // 2.A. Copy + unzip the bytes
-                byte[] datagram = new byte[length];
-                System.arraycopy(packet.getData(), packet.getOffset(), datagram, 0, length);
+                byte[] datagram = new byte[packet.getLength()];
+                System.arraycopy(packet.getData(), packet.getOffset(), datagram, 0, datagram.length);
                 try {
                   protoBytes = ZipUtils.gunzip(datagram);
                 } catch (Throwable t) {
@@ -311,7 +303,7 @@ public class UDPTransport implements Transport {
                 protoBytes = packet.getData();
                 offset = packet.getOffset();
               }
-              UDPBroadcastProtos.UDPPacket proto = UDPBroadcastProtos.UDPPacket.parseFrom(ByteBuffer.wrap(protoBytes, offset, length));
+              UDPBroadcastProtos.UDPPacket proto = UDPBroadcastProtos.UDPPacket.parseFrom(ByteBuffer.wrap(protoBytes, offset, packet.getLength()));
               if (proto == null) {
                 continue;
               }
@@ -320,12 +312,14 @@ public class UDPTransport implements Transport {
               if (proto.getType() == UDPBroadcastProtos.MessageType.PING) {
                 this.pingsReceived.put(proto.getContents().toByteArray(), System.currentTimeMillis());
               } else if (!proto.getIsBroadcast() || !proto.getSender().equals(this.serverAddress)) {
-                Set<Consumer<byte[]>> listeners;
+                IdentityHashSet<Consumer<byte[]>> listeners;
                 synchronized (this.listeners) {
-                  listeners = new IdentityHashSet<>(this.listeners.getOrDefault(proto.getType(), new IdentityHashSet<>()));
+                  listeners = this.listeners.get(proto.getType());
                 }
-                for (Consumer<byte[]> listener : listeners) {
-                  doAction(async, "inbound message of type " + proto.getType(), () -> listener.accept(proto.getContents().toByteArray()));
+                if (listeners != null) {
+                  for (Consumer<byte[]> listener : listeners) {
+                    doAction(async, "inbound message of type " + proto.getType(), () -> listener.accept(proto.getContents().toByteArray()));
+                  }
                 }
               }
             } finally {
@@ -531,10 +525,10 @@ public class UDPTransport implements Transport {
 
 
   /** {@inheritDoc} */
-  @Override
   public void bind(UDPBroadcastProtos.MessageType channel, Consumer<byte[]> listener) {
     synchronized (this.listeners) {
-      this.listeners.computeIfAbsent(channel, k -> new IdentityHashSet<>()).add(listener);
+      IdentityHashSet<Consumer<byte[]>> listenersOnChannel = this.listeners.computeIfAbsent(channel, k -> new IdentityHashSet<>());
+      listenersOnChannel.add(listener);
     }
     Prometheus.gaugeInc(boundListenerCount);
   }
@@ -549,7 +543,6 @@ public class UDPTransport implements Transport {
    *
    * @return True if the message was sent; false if the message was too long.
    */
-  @Override
   public boolean sendTransport(String destination, UDPBroadcastProtos.MessageType messageType, byte[] message) {
     try {
       // 1. Create the packet
@@ -600,16 +593,8 @@ public class UDPTransport implements Transport {
       } else {
         // 2.B. Send over TCP
         log.debug("Message is too long to send as a single packet ({}); sending over TCP", datagram.length);
-        long socketSendStart = System.currentTimeMillis();
-        try {
-          Optional<Socket> tcpSocket = getTcpSocket(InetAddress.getByName(destination), false);
-          tcpSocket.ifPresent(socket1 -> safeWrite(proto, socket1, "sendTransport"));
-        } finally {
-          long socketSendEnd = System.currentTimeMillis();
-          if (socketSendEnd > socketSendStart + 100) {
-            log.warn("Sending a direct message on the TCP socket took {}", TimerUtils.formatTimeDifference(socketSendEnd - socketSendStart));
-          }
-        }
+        Optional<Socket> tcpSocket = getTcpSocket(InetAddress.getByName(destination), false);
+        tcpSocket.ifPresent(socket1 -> safeWrite(proto, socket1, "sendTransport"));
       }
 
     } catch (SocketException e) {
@@ -628,7 +613,6 @@ public class UDPTransport implements Transport {
       }
     } finally {
       lastMessageSent = System.currentTimeMillis();
-      rateLimiter.forceSubmit();
     }
     return false;
   }
@@ -735,7 +719,6 @@ public class UDPTransport implements Transport {
    * @param messageType The type of message we're sending.
    * @param message The messge to send
    */
-  @Override
   public boolean broadcastTransport(UDPBroadcastProtos.MessageType messageType, byte[] message) {
     long startTime = System.currentTimeMillis();
     try {
@@ -831,18 +814,9 @@ public class UDPTransport implements Transport {
       }
     } finally {
       lastMessageSent = System.currentTimeMillis();
-      rateLimiter.forceSubmit();
       log.trace("Sending UDP broadcast took {}", TimerUtils.formatTimeSince(startTime));
     }
     return false;
-  }
-
-
-  /** {@inheritDoc} */
-  @Override
-  public boolean isSaturated() {
-    // Check if we're sending more than 1 message every 5ms on average
-    return rateLimiter.isFull();
   }
 
 

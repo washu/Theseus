@@ -696,9 +696,8 @@ public abstract class AbstractRaftAlgorithmTest {
     RaftState[] closedNodes = bootstrap((nodes, states) -> {
       states[0].transition(new byte[]{42});
       nodes[0].heartbeat();
-      waitForSilence(nodes);
+      waitForSilence(nodes[0]);
       nodes[0].heartbeat();
-      waitForSilence(nodes);
     });
     basicSuccessTests(closedNodes);
 
