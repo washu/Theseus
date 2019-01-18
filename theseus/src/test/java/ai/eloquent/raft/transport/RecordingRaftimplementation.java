@@ -141,7 +141,7 @@ public class RecordingRaftimplementation implements RaftAlgorithm {
   }
 
   @Override
-  public CompletableFuture<EloquentRaftProto.RaftMessage> receiveApplyTransitionRPC(EloquentRaftProto.ApplyTransitionRequest transition, boolean fromTransport) {
+  public CompletableFuture<EloquentRaftProto.RaftMessage> receiveApplyTransitionRPC(EloquentRaftProto.ApplyTransitionRequest transition, boolean forceOntoQueue) {
     throw new IllegalStateException("Not implemented");
   }
 

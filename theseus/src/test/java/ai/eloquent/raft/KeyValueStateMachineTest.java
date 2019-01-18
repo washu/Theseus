@@ -1,6 +1,5 @@
 package ai.eloquent.raft;
 
-import ai.eloquent.test.SlowTests;
 import ai.eloquent.util.Pointer;
 import ai.eloquent.util.TimerUtils;
 import com.google.common.util.concurrent.MoreExecutors;
@@ -8,7 +7,6 @@ import com.google.common.util.concurrent.ThreadFactoryBuilder;
 import com.google.protobuf.ByteString;
 import org.junit.Ignore;
 import org.junit.Test;
-import org.junit.experimental.categories.Category;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -516,7 +514,7 @@ public class KeyValueStateMachineTest {
   public void testClearTransientsFor() {
     KeyValueStateMachine stateMachine = new KeyValueStateMachine("name");
     stateMachine.applyTransition(createSetValueTransitionWithOwner("transient", new byte[]{42}, "me"), now, MoreExecutors.newDirectExecutorService());
-    assertEquals("The state machine should know I'm an owner of something", Collections.singleton("me"), stateMachine.owners());
+    assertEquals("The state machine should know I'm an owner of something", Collections.singleton("me"), stateMachine.owners(0L));
     assertArrayEquals("Should have set the entry",
         new byte[]{42}, Optional.ofNullable(stateMachine.values.get("transient")).map(x -> x.value).orElse(null));
     stateMachine.applyTransition(createClearTransition("me"), now, MoreExecutors.newDirectExecutorService());
@@ -566,7 +564,7 @@ public class KeyValueStateMachineTest {
     KeyValueStateMachine machine = new KeyValueStateMachine("name");
     // 1. Take the lock
     machine.applyTransition(createRequestLockTransition("lock", "me", "hash1"), now, MoreExecutors.newDirectExecutorService());
-    assertEquals("The state machine should know I'm an owner of something", Collections.singleton("me"), machine.owners());
+    assertEquals("The state machine should know I'm an owner of something", Collections.singleton("me"), machine.owners(0L));
 
 
     assertTrue("Should be able to get the lock", machine.createLockAcquiredFuture("lock", "me", "hash1").getNow(false));
@@ -983,7 +981,6 @@ public class KeyValueStateMachineTest {
    * Test that we can fuzz acquiring locks from multiple threads and still have all the futures fire
    * at the right times.
    */
-  @Category(SlowTests.class)
   @Test
   public void fuzzLockFutures() throws InterruptedException {
     int numLocks = 10000;

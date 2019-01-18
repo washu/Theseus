@@ -1,9 +1,12 @@
 package ai.eloquent.raft;
 
+import ai.eloquent.data.Transport;
 import ai.eloquent.util.SafeTimerTask;
 import ai.eloquent.util.Span;
 
 import java.io.IOException;
+import java.lang.management.GarbageCollectorMXBean;
+import java.lang.management.ManagementFactory;
 import java.time.Duration;
 import java.util.Collection;
 import java.util.concurrent.CompletableFuture;
@@ -15,6 +18,7 @@ import java.util.function.Consumer;
 import java.util.function.Supplier;
 
 import ai.eloquent.raft.EloquentRaftProto.*;
+import com.sun.management.GcInfo;
 import org.slf4j.Logger;
 
 /**
@@ -147,44 +151,45 @@ public interface RaftTransport {
    * @param log A log for printing messages.
    */
   default void scheduleHeartbeat(Supplier<Boolean> alive, long period, Runnable heartbeatFn, Logger log) {
-    Thread heartbeat = new Thread() {
+    RaftLifecycle.global.timer.get().schedule(new SafeTimerTask() {
       private long lastHeartbeat = 0;
+      @SuppressWarnings("Duplicates")
       @Override
-      public void run() {
-        while (alive.get()) {
+      public void runUnsafe() {
+        long nowBefore = now();
+        if (nowBefore - lastHeartbeat > 2 * period) {
+          long lastGcTime = -1L;
           try {
-            long nowBefore = now();
-            if (nowBefore - lastHeartbeat > 2 * period) {
-              log.warn("Heartbeat interval slipped to {}ms", nowBefore - lastHeartbeat);
-            }
-            if (nowBefore - lastHeartbeat >= period - 1) {
-              long nowAfter = nowBefore;  // to be overwritten below
-              try {
-                // -- do the heartbeat --
-                heartbeatFn.run();
-                // --                  --
-                nowAfter = now();
-                long timeTakenOnHeartbeat = nowBefore - nowAfter;
-                if (timeTakenOnHeartbeat > period) {
-                  log.warn("Heartbeat execution took {}ms", timeTakenOnHeartbeat);
-                }
-              } finally {
-                lastHeartbeat = nowAfter;  // use heartbeat time from after scheduling it
+            long uptime = ManagementFactory.getRuntimeMXBean().getStartTime();
+            for (GarbageCollectorMXBean gcBean : ManagementFactory.getGarbageCollectorMXBeans()) {
+              com.sun.management.GarbageCollectorMXBean sunGcBean = (com.sun.management.GarbageCollectorMXBean) gcBean;
+              GcInfo lastGcInfo = sunGcBean.getLastGcInfo();
+              if (lastGcInfo != null) {
+                lastGcTime = lastGcInfo.getStartTime() + uptime;
               }
             }
-            sleep(0, 100000);  // 0.1ms
-          } catch (InterruptedException ignored) {
           } catch (Throwable t) {
-            log.warn("Exception on heartbeat thread: ", t);
+            log.warn("Could not get GC info -- are you running on a non-Sun JVM?");
           }
+          boolean interruptedByGC = false;
+          if (lastGcTime > lastHeartbeat) {
+            interruptedByGC = true;
+          }
+          log.warn("Heartbeat interval slipped to {}ms (interrupted by gc = {})", nowBefore - lastHeartbeat, interruptedByGC);
+        }
+        lastHeartbeat = nowBefore;
+        // -- do the heartbeat --
+        heartbeatFn.run();
+        // --                  --
+        long timeTakenOnHeartbeat = now() - nowBefore;
+        if (timeTakenOnHeartbeat > period) {
+          log.warn("Heartbeat execution took {}ms", timeTakenOnHeartbeat);
+        }
+        if (!alive.get()) {
+          this.cancel();
         }
       }
-    };
-    heartbeat.setPriority(Thread.MAX_PRIORITY);
-    heartbeat.setDaemon(true);
-    heartbeat.setName("raft-heartbeat");
-    // 1.2. Start the thread
-    heartbeat.start();
+    }, 0, period - 1);
   }
 
 
@@ -371,6 +376,12 @@ public interface RaftTransport {
     } else {
       return "unknown";
     }
+  }
+
+
+  /** @see Transport#isSaturated()  */
+  default boolean isSaturated() {
+    return false;
   }
 
 }

@@ -125,6 +125,7 @@ public class TheseusTest extends WithLocalTransport {
       RaftLifecycle lifecycle = RaftLifecycle.newBuilder().mockTime().build();
       Theseus raft = new Theseus("10.0.0.1", transport, Collections.singleton("10.0.0.1"), lifecycle);
       raft.start();
+      raft.node.algorithm.triggerElection();
       Optional<Theseus.LongLivedLock> lock = raft.tryLock("test", Duration.ofSeconds(5));
       assertTrue(lock.isPresent());
       Optional<Theseus.LongLivedLock> secondAttempt = raft.tryLock("test", Duration.ofSeconds(5));
