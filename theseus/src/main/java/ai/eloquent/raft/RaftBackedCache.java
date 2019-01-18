@@ -253,7 +253,7 @@ public abstract class RaftBackedCache<V> implements Iterable<Map.Entry<String,V>
         }
       }
     };
-    this.raft.node.transport.scheduleAtFixedRate(evictionTask, 1000);
+    this.raft.node.transport.scheduleAtFixedRate(evictionTask, 10000);
 
     // Create a single Raft listener for this cache, so we only parse the proto for our listeners once. Parsing proto
     // is slow (a few ms each) so doing it hundreds of times per raft change is not acceptable.
