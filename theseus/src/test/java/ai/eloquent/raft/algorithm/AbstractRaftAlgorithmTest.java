@@ -475,13 +475,7 @@ public abstract class AbstractRaftAlgorithmTest {
    * @param fn The code to run 'quietly'
    */
   private void quietly(Runnable fn) {
-    int logLevel = RaftLog.level();
-    RaftLog.setLevel("info");
-    try {
-      fn.run();
-    } finally {
-      RaftLog.setLevel(logLevel);
-    }
+    fn.run();
   }
 
 
@@ -494,13 +488,12 @@ public abstract class AbstractRaftAlgorithmTest {
    * @return The future for whether the transition was successful.
    */
   private CompletableFuture<Boolean> transition(RaftAlgorithm node, int data) {
-    CompletableFuture<Boolean> rtn = node.receiveRPC(RaftTransport.mkRaftRPC(node.serverName(),
+    return node.receiveRPC(RaftTransport.mkRaftRPC(node.serverName(),
         EloquentRaftProto.ApplyTransitionRequest.newBuilder()
             .setTransition(ByteString.copyFrom(new byte[]{(byte) data}))
             .build()),
         false
     ).thenApply(reply -> reply.getApplyTransitionReply().getSuccess());
-    return rtn;
   }
 
 
@@ -1439,7 +1432,7 @@ public abstract class AbstractRaftAlgorithmTest {
         LogEntry.newBuilder().setIndex(3).setTerm(4).setTransition(ByteString.copyFrom(new byte[]{3})).build()
     ));
     sL.setCurrentTerm(4);
-    sL.voteFor(sL.serverName, now());
+    sL.voteFor(sL.serverName);
     assertEquals("leader log should have some entries", 3, sL.log.getLastEntryIndex());
     assertEquals("leader term should be 4", 4, sL.currentTerm);
     assertEquals("Leader should be a candidate", RaftState.LeadershipStatus.CANDIDATE, sL.leadership);
@@ -1545,10 +1538,14 @@ public abstract class AbstractRaftAlgorithmTest {
   @Test
   public void testSubmitTransitionFromFollowerCommittedToOtherFollower() {
     Assume.assumeTrue(isStableTransport());  // requires a stable transport
-    RaftState[] closedNodes = bootstrap((nodes, states) -> assertEquals("Commit should have been successful", Optional.of(42), transitionAndWait(nodes[1], states[2], 42, () -> {
-      nodes[0].heartbeat();
-      waitForSilence(nodes[0]);
-    })));
+    RaftState[] closedNodes = bootstrap((nodes, states) ->
+        assertEquals("Commit should have been successful",
+            Optional.of(42),
+            transitionAndWait(nodes[1], states[2], 42, () -> {
+              nodes[0].heartbeat();
+              waitMillis(nodes[0].heartbeatMillis());
+              waitForSilence(nodes[0]);
+            })));
     basicSuccessTests(closedNodes);
   }
 
@@ -1985,6 +1982,10 @@ public abstract class AbstractRaftAlgorithmTest {
     // 1. Run the test
     List<CompletableFuture<Boolean>> rpcResults = new ArrayList<>();
     RaftState[] closedNodes = bootstrap((nodes, states) -> {
+      waitMillis(nodes[0].electionTimeoutMillisRange().end);
+      nodes[0].heartbeat();  // heartbeat, to start everyone off
+      waitMillis(nodes[0].heartbeatMillis());
+
       for (int i = 0; i < count; ++i) {
         rpcResults.add(transition(nodes[1], i % 127));
       }
@@ -1994,12 +1995,10 @@ public abstract class AbstractRaftAlgorithmTest {
         }
       }
       log.info("All tasks have been queued");
-      waitMillis(500);
       for (int i = 0; i < 10; ++i) {
         waitMillis(nodes[0].heartbeatMillis());
         nodes[0].heartbeat();  // heartbeat a bit, to mitigate throttling
       }
-      waitMillis(nodes[0].electionTimeoutMillisRange().end);     // just for good measure
       for (RaftAlgorithm node : nodes) {
         waitForSilence(node);           // wait for heartbeat to complete
       }
@@ -2014,24 +2013,20 @@ public abstract class AbstractRaftAlgorithmTest {
    */
   @Test
   public void testTransitionOverTime() {
+    Assume.assumeTrue(isStableTransport());  // requires a stable transport
     int count = 100;
     quietly(() -> {
       // 1. Run the test
       List<CompletableFuture<Boolean>> rpcResults = new ArrayList<>();
       RaftState[] closedNodes = bootstrap((nodes, states) -> {
+        // 1.1. Schedule a bunch of transitions
         Random rand = new Random(42L);
         schedule(100, count, (k, now) -> rpcResults.add(transition(nodes[rand.nextInt(nodes.length)], k % 127)));
+        // 1.2. Wait for all the transitions to make it through
+        waitMillis(count * 100);
+        // 1.3. Submit a final heartbeat
+        nodes[0].heartbeat();  // make sure everyone is caught up
         waitForSilence(nodes);
-        nodes[0].heartbeat();  // make sure everyone is caught up
-        if (!isStableTransport()) {
-          for (int i = 0; i < 1000 && Arrays.stream(nodes).map(x -> ((SingleByteStateMachine) x.mutableState().log.stateMachine).value).collect(Collectors.toSet()).size() != 1; ++i) {
-            for (RaftAlgorithm node : nodes) {
-              waitForSilence(node);           // wait for heartbeat to complete
-            }
-            nodes[0].heartbeat();  // make sure everyone is caught up
-          }
-        }
-        nodes[0].heartbeat();  // make sure everyone is caught up
       });
       basicSuccessTests(closedNodes, -1);
       transitionSuccessTests(closedNodes, -1, rpcResults, count);

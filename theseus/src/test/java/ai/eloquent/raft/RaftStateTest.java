@@ -19,6 +19,7 @@ public class RaftStateTest {
 
 
   /** Assert that the given runnable should throw the given exception (or something compatible). */
+  @SuppressWarnings("SameParameterValue")
   protected void assertException(Runnable r, Class<? extends Throwable> expectedException) {
     @Nullable
     Throwable exception = null;
@@ -107,69 +108,42 @@ public class RaftStateTest {
     assertEquals("Votes should go through (another test should be failing if this fails)", Collections.singleton("name"), state.votesReceived);
     state.setCurrentTerm(10);
     assertEquals("Should keep votes if term didn't increase", Collections.singleton("name"), state.votesReceived);
-    state.setCurrentTerm(11);
-    assertEquals("Should clear votes on new term", Collections.emptySet(), state.votesReceived);
   }
 
 
   /**
-   * Test {@link RaftState#voteFor(String, long)}
+   * Test {@link RaftState#voteFor(String)}
    */
   @Test
   public void voteFor() {
     RaftState state = new RaftState("name", new KeyValueStateMachine("name"), MoreExecutors.newDirectExecutorService());
-    state.voteFor("candidate", 0L);
+    state.voteFor("candidate");
     assertEquals("candidate", state.votedFor.orElse(null));
   }
 
 
   /**
-   * Test that {@link RaftState#voteFor(String, long)} can't vote for multiple people on the same term
+   * Test that {@link RaftState#voteFor(String)} can't vote for multiple people on the same term
    */
   @Test
   public void voteForCantDoubleVote() {
     RaftState state = new RaftState("name", new KeyValueStateMachine("name"), MoreExecutors.newDirectExecutorService());
-    state.voteFor("candidate", 0L);
+    state.voteFor("candidate");
     assertEquals("candidate", state.votedFor.orElse(null));
     state.electionTimeoutCheckpoint = 0L;
-    state.voteFor("candidate", 1000L);
-    assertEquals("Voting should reset the election timeout", 1000L, state.electionTimeoutCheckpoint);  // note[gabor]: From p.129: "...it’s likely that all servers have reset their timers, _since servers do this when they grant a vote_"
-    assertException(() -> state.voteFor("name", 1000L), AssertionError.class);
+    state.voteFor("candidate");
+    assertException(() -> state.voteFor("name"), AssertionError.class);
   }
 
 
   /**
-   * Test that {@link RaftState#voteFor(String, long)} can't vote for multiple people on the same term
+   * Test that {@link RaftState#voteFor(String)} can't vote for multiple people on the same term
    */
   @Test
   public void voteForResetsElectionTimer() {
     RaftState state = new RaftState("name", new KeyValueStateMachine("name"), MoreExecutors.newDirectExecutorService());
     state.electionTimeoutCheckpoint = 1000L;
-    state.voteFor("candidate", 2000L);
-    assertEquals("Voting should reset the election timeout", 2000L, state.electionTimeoutCheckpoint);  // note[gabor]: From p.129: "...it’s likely that all servers have reset their timers, _since servers do this when they grant a vote_"
-
-  }
-
-
-  /**
-   * Test {@link RaftState#voteFor(String, long)}
-   */
-  @Test
-  public void voteClearedOnTermChange() {
-    RaftState state = new RaftState("name", new KeyValueStateMachine("name"), MoreExecutors.newDirectExecutorService());
-    state.voteFor("candidate", 0L);
-    assertEquals("Our vote should have been registered", "candidate", state.votedFor.orElse(null));
-    // Changing the term should clear our vote
-    state.setCurrentTerm(10);
-    assertFalse("Changing the term should clear our vote", state.votedFor.isPresent());
-    // Keeping the term should keep our vote
-    state.voteFor("candidate", 0L);
-    assertEquals("candidate", state.votedFor.orElse(null));
-    state.setCurrentTerm(10);
-    assertEquals("Keeping the term should keep our vote","candidate", state.votedFor.orElse(null));
-    // Changing again should clear our vote
-    state.setCurrentTerm(11);
-    assertFalse("Changing the term should clear our vote (instance 2)", state.votedFor.isPresent());
+    state.voteFor("candidate");
   }
 
 
@@ -225,6 +199,7 @@ public class RaftStateTest {
    * Test that {@link RaftState#elect(long)} initializes {@link RaftState#nextIndex}, {@link RaftState#matchIndex},
    * and {@link RaftState#lastMessageTimestamp}.
    */
+  @SuppressWarnings("OptionalGetWithoutIsPresent")
   @Test
   public void electShouldInitializeMaps() {
     List<String> members = Arrays.asList("L", "A", "B");
@@ -240,7 +215,7 @@ public class RaftStateTest {
     assertEquals(expectedKeys, state.lastMessageTimestamp.get().keySet());
 
     // Step down
-    state.stepDownFromElection(0L);
+    state.stepDownFromElection(state.currentTerm, 0L);
     assertFalse(state.nextIndex.isPresent());
     assertFalse(state.matchIndex.isPresent());
     assertFalse(state.lastMessageTimestamp.isPresent());
@@ -258,6 +233,7 @@ public class RaftStateTest {
    * Test that {@link RaftState#elect(long)} initializes {@link RaftState#nextIndex}, {@link RaftState#matchIndex},
    * and {@link RaftState#lastMessageTimestamp} to the correct values
    */
+  @SuppressWarnings("OptionalGetWithoutIsPresent")
   @Test
   public void electShouldInitializeMapsCorrectValues() {
     // Some initialization to get a nontrivial state
@@ -267,7 +243,7 @@ public class RaftStateTest {
     state.elect(0L);
     state.commitUpTo(state.transition(new byte[]{42}).index, 0L);
     state.commitUpTo(state.transition(new byte[]{43}).index, 0L);
-    state.stepDownFromElection(0L);
+    state.stepDownFromElection(state.currentTerm, 0L);
 
     // Elect
     state.elect(1L);
@@ -278,7 +254,7 @@ public class RaftStateTest {
 
 
   /**
-   * Test {@link RaftState#stepDownFromElection(long)}
+   * Test {@link RaftState#stepDownFromElection(long, long)}
    */
   @Test
   public void stepDownFromElection() {
@@ -290,7 +266,7 @@ public class RaftStateTest {
     state.receiveVoteFrom("name");
     assertEquals("Should be able to vote for self (if this fails, another test should also be failing)", Collections.singleton("name"), state.votesReceived);
     // 2. Step down
-    state.stepDownFromElection(0L);
+    state.stepDownFromElection(state.currentTerm, 0L);
     // 3. Check the resulting state
     assertEquals(RaftState.LeadershipStatus.OTHER, state.leadership);
     assertEquals(Optional.empty(), state.nextIndex);
@@ -301,67 +277,23 @@ public class RaftStateTest {
 
 
   /**
-   * Test {@link RaftState#becomeCandidate(long)}
-   */
-  @Test
-  public void becomeCandidate() {
-    RaftState state = new RaftState("name", new KeyValueStateMachine("name"), MoreExecutors.newDirectExecutorService());
-    // 1. Become a candidate
-    state.becomeCandidate(0L);
-    state.becomeCandidate(0L);  // note: can double become candidate
-    assertTrue("Should have become a candidate", state.isCandidate());
-    assertEquals("Should not have any votes yet", Collections.emptySet(), state.votesReceived);
-    assertFalse("Should not yet keep track of leader state (nextIndex)", state.nextIndex.isPresent());
-    assertFalse("Should not yet keep track of leader state (matchIndex)", state.matchIndex.isPresent());
-    assertFalse("Should not yet keep track of leader state (lastMessageTimestamp)", state.lastMessageTimestamp.isPresent());
-  }
-
-
-  /**
-   * Test that {@link RaftState#becomeCandidate(long)} should not work if we've voted for someone
-   */
-  @Test
-  public void becomeCandidateShouldAssertErrorIfVotesExist() {
-    RaftState state = new RaftState("name", new KeyValueStateMachine("name"), MoreExecutors.newDirectExecutorService());
-    state.votesReceived.add("name");
-    assertException(() -> state.becomeCandidate(0L), AssertionError.class);
-  }
-
-
-
-  /**
-   * Test that {@link RaftState#becomeCandidate(long)} doesn't work if we're not in the quorum
-   */
-  @Test
-  public void becomeCandidateShouldAssertErrorIfShadow() {
-    RaftLog log = new RaftLog(new KeyValueStateMachine("name"), Arrays.asList("A", "B"), MoreExecutors.newDirectExecutorService());
-    RaftState state = new RaftState("name", log, 3);
-    assertException(() -> state.becomeCandidate(0L), AssertionError.class);
-  }
-
-  /**
    * Test the various state transitions between {@link RaftState#leadership} values.
    */
   @Test
   public void stateTransitions() {
     RaftState state = new RaftState("name", new KeyValueStateMachine("name"), MoreExecutors.newDirectExecutorService());
     // x : candidate -> candidate
-    state.becomeCandidate(0L);
-    state.becomeCandidate(0L);  // note: can double become candidate
+    state.leadership = RaftState.LeadershipStatus.CANDIDATE;
     // ok: candidate -> leader
     state.elect(0L);
     // x : leader -> leader
     assertException(() -> state.elect(1L), AssertionError.class);  // cannot become a candidate twice
-    // x : leader -> candidate
-    assertException(() -> state.becomeCandidate(1L), AssertionError.class);  // can't become a candidate from leadership
     // ok: leader -> other
-    state.stepDownFromElection(0L);  // can step down from election
+    state.stepDownFromElection(state.currentTerm, 0L);  // can step down from election
     // ok: other -> leader
     state.elect(0L);  // can elect immediately
     // ok: candidate -> other
-    state.stepDownFromElection(0L);
-    state.becomeCandidate(0L);
-    state.stepDownFromElection(0L);
+    state.stepDownFromElection(state.currentTerm, 0L);
   }
 
 
@@ -396,6 +328,7 @@ public class RaftStateTest {
   /**
    * Test the {@link RaftState#observeLifeFrom(String, long)} ()} function
    */
+  @SuppressWarnings("OptionalGetWithoutIsPresent")
   @Test
   public void observeLifeFrom() {
     RaftState state = new RaftState("name", new KeyValueStateMachine("name"), MoreExecutors.newDirectExecutorService());
@@ -461,7 +394,7 @@ public class RaftStateTest {
 
 
   /**
-   * Test {@link RaftState#resetElectionTimeout(long, String)}
+   * Test {@link RaftState#resetElectionTimeout(long, Optional)}
    */
   @Test
   public void resetElectionTimeout() {
@@ -471,7 +404,7 @@ public class RaftStateTest {
     // Check initial value
     assertEquals(-1, state.electionTimeoutCheckpoint);
     // Check that we can move forwards
-    state.resetElectionTimeout(10L, "other");
+    state.resetElectionTimeout(10L, Optional.of("other"));
     assertEquals("We know the leader after refreshing the election timeout", Optional.of("other"), state.leader);
     assertEquals("The election timeout should have updated", 10L, state.electionTimeoutCheckpoint);
     // Check that we can't move backwards
@@ -501,7 +434,7 @@ public class RaftStateTest {
     assertTrue("Triggering elections is idempotent", state.shouldTriggerElection(1101, timeout));
     assertTrue("Triggering elections is idempotent", state.shouldTriggerElection(1102, timeout));
     // Reset timer
-    state.resetElectionTimeout(1100, "new_leader");
+    state.resetElectionTimeout(1100, Optional.of("new_leader"));
     assertFalse("Should not longer trigger elections after reset", state.shouldTriggerElection(1102, timeout));
   }
 
@@ -596,6 +529,7 @@ public class RaftStateTest {
   /**
    * Test {@link RaftState#reconfigure(Collection, long)} adding a server
    */
+  @SuppressWarnings("OptionalGetWithoutIsPresent")
   @Test
   public void reconfigureAdd() {
     RaftLog log = new RaftLog(new KeyValueStateMachine("name"), Arrays.asList("L", "A"), MoreExecutors.newDirectExecutorService());
@@ -797,6 +731,7 @@ public class RaftStateTest {
   /**
    * Test {@link RaftState#killNodes(long, long)}
    */
+  @SuppressWarnings("OptionalGetWithoutIsPresent")
   @Test
   public void killNodes() {
     RaftLog log = new RaftLog(new KeyValueStateMachine("name"), Arrays.asList("L", "A", "B"), MoreExecutors.newDirectExecutorService());
@@ -824,6 +759,7 @@ public class RaftStateTest {
    * Test {@link RaftState#killNodes(long, long)}
    * Kill a node even if they don't have any life ever
    */
+  @SuppressWarnings("OptionalGetWithoutIsPresent")
   @Test
   public void killNodesEvenIfNoLifeEver() {
     RaftLog log = new RaftLog(new KeyValueStateMachine("name"), Arrays.asList("L", "A", "B"), MoreExecutors.newDirectExecutorService());

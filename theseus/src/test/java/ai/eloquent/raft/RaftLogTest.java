@@ -1,5 +1,6 @@
 package ai.eloquent.raft;
 
+import ai.eloquent.raft.algorithm.AbstractRaftAlgorithmTest;
 import ai.eloquent.util.TimerUtils;
 import com.google.common.util.concurrent.MoreExecutors;
 import com.google.protobuf.ByteString;
@@ -7,8 +8,7 @@ import org.junit.Test;
 
 import javax.annotation.Nullable;
 import java.util.*;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.ExecutionException;
+import java.util.concurrent.*;
 
 import static org.junit.Assert.*;
 
@@ -16,11 +16,19 @@ import static org.junit.Assert.*;
  * This unit tests a lot of the important core logic around appending to the logs and compacting the logs, in addition
  * to dealing with snapshots.
  */
-@SuppressWarnings({"ConstantConditions", "SynchronizationOnLocalVariableOrMethodParameter", "unused", "UnusedAssignment"})
+@SuppressWarnings({"SynchronizationOnLocalVariableOrMethodParameter", "unused", "UnusedAssignment"})
 public class RaftLogTest {
 
 
+  //
+  // --------------------------------------------------------------------------
+  // HELPER METHODS
+  // --------------------------------------------------------------------------
+  //
+
+
   /** Assert that the given runnable should throw the given exception (or something compatible). */
+  @SuppressWarnings("SameParameterValue")
   protected void assertException(Runnable r, Class<? extends AssertionError> expectedException) {
     @Nullable
     Throwable exception = null;
@@ -66,7 +74,7 @@ public class RaftLogTest {
   /**
    * This is a simple helper to create an entry to be inserted into the Raft log.
    */
-  private EloquentRaftProto.LogEntry makeConfigurationEntry(long index, long term, Collection<String> clusterMembership) {
+  public static EloquentRaftProto.LogEntry makeConfigurationEntry(long index, long term, Collection<String> clusterMembership) {
     return EloquentRaftProto.LogEntry
         .newBuilder()
         .setType(EloquentRaftProto.LogEntryType.CONFIGURATION)
@@ -89,6 +97,117 @@ public class RaftLogTest {
     assertEquals(term, entry.getTerm());
     assertEquals(new HashSet<>(clusterMembership), new HashSet<>(entry.getConfigurationList()));
   }
+
+
+  /**
+   * A helper for creating a log with a fertile state for submitting snapshots.
+   *
+   * @see #installSnapshotOnCommit()
+   * @see #installSnapshotOverCommit()
+   * @see #installSnapshotWrongTerm()
+   */
+  private RaftLog mkSnapshotSetup() {
+    RaftLog log = new RaftLog(new SingleByteStateMachine(), new ArrayList<>(), MoreExecutors.newDirectExecutorService());
+    List<EloquentRaftProto.LogEntry> appendEntries = Arrays.asList(
+        makeEntry(1, 1, 3),
+        makeEntry(2, 1, 4),
+        makeEntry(3, 1, 5),
+        makeEntry(4, 2, 1),
+        makeEntry(5, 2, 3)
+    );
+    boolean success = log.appendEntries(0, 0, appendEntries);
+    assertEquals("The log should have the correct index", 5, log.getLastEntryIndex());
+    assertEquals("The log should have the correct term", 2, log.getLastEntryTerm());
+    assertEquals("Nothing should be committed to the state machine yet",
+        -1, ((SingleByteStateMachine) log.stateMachine).value);
+    return log;
+  }
+
+
+  //
+  // --------------------------------------------------------------------------
+  // GET ENTRY AT INDEX
+  // --------------------------------------------------------------------------
+  //
+
+
+  /**
+   * A simple test case for {@link RaftLog#getEntryAtIndex(long)}
+   */
+  @Test
+  public void getEntryAtIndexSimple() {
+    SingleByteStateMachine stateMachine = new SingleByteStateMachine();
+    RaftLog log = new RaftLog(stateMachine, new ArrayList<>(), MoreExecutors.newDirectExecutorService());
+    assertFalse("An empty log should have no entry @ index 0", log.getEntryAtIndex(0).isPresent());
+    assertFalse("An empty log should have no entry @ index 1", log.getEntryAtIndex(1).isPresent());
+
+    boolean success = log.appendEntries(0, 0, Collections.singletonList(makeEntry(1, 1, 3)));
+    assertFalse("An log should never have an entry @ index 0", log.getEntryAtIndex(0).isPresent());
+    assertTrue("We should have committed our entry @ index 1", log.getEntryAtIndex(1).isPresent());
+    assertFalse("We should still not have an entry @ index 2", log.getEntryAtIndex(2).isPresent());
+  }
+
+
+  /**
+   * Test {@link RaftLog#getEntryAtIndex(long)} for when we made a snapshot
+   */
+  @Test
+  public void getEntryAtIndexInSnapshot() {
+    RaftLog log = mkSnapshotSetup();
+    RaftLog.Snapshot snapshot = new RaftLog.Snapshot(new SingleByteStateMachine(5).serialize(), 3, 1, new ArrayList<>());
+    assertTrue("Should be able to install our snapshot", log.installSnapshot(snapshot, 0));
+
+    assertFalse("An log should never have an entry @ index 0", log.getEntryAtIndex(0).isPresent());
+    assertFalse("Index 1 should be in our snapshot", log.getEntryAtIndex(1).isPresent());
+    assertFalse("Index 2 should be in our snapshot", log.getEntryAtIndex(2).isPresent());
+    assertFalse("Index 3 should be in our snapshot", log.getEntryAtIndex(3).isPresent());
+    assertTrue("Index 4 is not yet in our snapshot", log.getEntryAtIndex(4).isPresent());
+    assertTrue("Index 5 is not yet in our snapshot", log.getEntryAtIndex(5).isPresent());
+    assertFalse("Index 6 is not yet entered into the log", log.getEntryAtIndex(6).isPresent());
+  }
+
+
+  /**
+   * Test {@link RaftLog#getEntryAtIndex(long)} for a sequence of standard transitions
+   */
+  @Test
+  public void getEntryAtIndexFuzzTest() {
+    SingleByteStateMachine stateMachine = new SingleByteStateMachine();
+    RaftLog log = new RaftLog(stateMachine, new ArrayList<>(), MoreExecutors.newDirectExecutorService());
+    Random r = new Random();
+
+    for (int i = 1; i <= 1000; ++i) {
+      if (i > 990 || r.nextInt(100) == 0) {
+        assertTrue("We should be able to append our new entry",
+            log.appendEntries(log.getLastEntryIndex(), log.getLastEntryTerm(), Collections.singletonList(makeEntry(i, 1, i))));
+        assertTrue("Index " + i + " should be in our log. last snapshot=" + log.snapshot, log.getEntryAtIndex(i).isPresent());
+      } else {
+        RaftLog.Snapshot snapshot = new RaftLog.Snapshot(new SingleByteStateMachine(i).serialize(), i, 1, new ArrayList<>());
+        log.installSnapshot(snapshot, 0);
+        assertFalse("Index " + i + " should now be snapshotted", log.getEntryAtIndex(i).isPresent());
+      }
+    }
+    assertTrue("Index 1000 should be in our log", log.getEntryAtIndex(1000).isPresent());
+  }
+
+
+  /**
+   * A simple test case for {@link RaftLog#getEntryAtIndex(long)}
+   */
+  @Test
+  public void getEntryAtIndexOutOfBounds() {
+    RaftLog log = new RaftLog(new SingleByteStateMachine(), new ArrayList<>(), MoreExecutors.newDirectExecutorService());
+    log.logEntries.add(makeEntry(1, 1, 0));
+    log.logEntries.add(makeEntry(3, 1, 0));
+    assertException(() -> log.getEntryAtIndex(2), AssertionError.class);
+  }
+
+
+  //
+  // --------------------------------------------------------------------------
+  // APPEND ENTRIES
+  // --------------------------------------------------------------------------
+  //
 
 
   @Test
@@ -123,13 +242,15 @@ public class RaftLogTest {
 
 
   /**
-   * Tests {@link RaftLog#getAllUncompressedEntries()}
+   * Ensure that we can't append an entry that skips indices in the log.
    */
   @Test
-  public void testGetAllUncompressedEntries() {
-    RaftLog log = new RaftLog(new SingleByteStateMachine(), new ArrayList<>(), MoreExecutors.newDirectExecutorService());
-    assertTrue("Should be able to append first entry", log.appendEntries(0, 1, Collections.singletonList(makeEntry(1, 1, 3))));
-    assertEquals(new ArrayList<>(log.logEntries), new ArrayList<>(log.getAllUncompressedEntries()));
+  public void appendSkipIndex() {
+    SingleByteStateMachine stateMachine = new SingleByteStateMachine();
+    RaftLog log = new RaftLog(stateMachine, new ArrayList<>(), MoreExecutors.newDirectExecutorService());
+    log.appendEntries(0, 0, Collections.singletonList(makeEntry(1, 1, 42)));
+    assertException(() -> log.appendEntries(0, 0, Collections.singletonList(makeEntry(3, 1, 42))), AssertionError.class);
+
   }
 
 
@@ -276,287 +397,447 @@ public class RaftLogTest {
   }
 
 
+  //
+  // ---------
+  // This sub-section goes over basically every line of appendEntries to make
+  // sure that it's actually doing what it's supposed to be doing.
+  // ---------
+  //
+
+
+  /**
+   * Ensure that we can append an entry with a newer term to the log.
+   */
   @Test
-  public void updateQuorumOnUpdate() {
-    RaftLog log = new RaftLog(new SingleByteStateMachine(), Arrays.asList("L", "A", "B"), MoreExecutors.newDirectExecutorService());
-    assertTrue("Should be able to append configuration",
-        log.appendEntries(0, 1, Collections.singletonList(makeConfigurationEntry(1, 1, Arrays.asList("L", "A")))));
-    assertEquals("Log should have new entry", 1, log.logEntries.size());
-    assertEquals("Quorum should have been updated", new HashSet<>(Arrays.asList("L", "A")), log.getQuorumMembers());
-    assertTrue("Should be able to append new configuration",
-        log.appendEntries(0, 1, Collections.singletonList(makeConfigurationEntry(2, 1, Arrays.asList("L", "A", "B")))));
-    assertEquals("Quorum should have been updated", new HashSet<>(Arrays.asList("L", "A", "B")), log.getQuorumMembers());
+  public void appendEntriesAlwaysAllowFirstEntry() {
+    RaftLog log = new RaftLog(new SingleByteStateMachine(), new ArrayList<>(), MoreExecutors.newDirectExecutorService());
+    assertTrue("We should always be able to append the first entry",
+        log.appendEntries(0, 0, Collections.singletonList(makeEntry(1, 42, 0))));
   }
 
 
+  /**
+   * Ensure that we can append an entry with a newer term to the log.
+   */
   @Test
-  public void doubleWriteRoot() {
-    SingleByteStateMachine stateMachine = new SingleByteStateMachine();
-    RaftLog log = new RaftLog(stateMachine, new ArrayList<>(), MoreExecutors.newDirectExecutorService());
-
-    List<EloquentRaftProto.LogEntry> appendEntries = new ArrayList<>();
-    // Add a transition to the value 3
-    appendEntries.add(makeEntry(1, 1, 3));
-    appendEntries.add(makeEntry(2, 1, 4));
-
-    // Add the entries as uncommitted
-    boolean success = log.appendEntries(0, 0, appendEntries);
-    assertTrue(success);
-    assertEquals(2, log.logEntries.size());
-    verifyEntry(log, 1, 1, 3);
-    verifyEntry(log, 2, 1, 4);
-
-    // Double add the entries, which should be a no-op
-    success = log.appendEntries(0, 0, appendEntries);
-    assertTrue(success);
-
-    // Check the entry is present
-    verifyEntry(log, 1, 1, 3);
-    verifyEntry(log, 2, 1, 4);
-    assertEquals(2, log.logEntries.size());
-    assertFalse(log.getEntryAtIndex(3).isPresent());
-
-    // Partially commit the entries
-    synchronized (log) {
-      log.setCommitIndex((long) 1, TimerUtils.mockableNow().toEpochMilli());
-    }
-    assertEquals("We should have applied our entry to our state machine", 3, stateMachine.value);
-
-    // Commit the other entry
-    synchronized (log) {
-      log.setCommitIndex((long) 2, TimerUtils.mockableNow().toEpochMilli());
-    }
-    assertEquals("We should have applied our entry to our state machine", 4, stateMachine.value);
+  public void appendEntriesAllowIfPrevEntryExists() {
+    RaftLog log = new RaftLog(new SingleByteStateMachine(), new ArrayList<>(), MoreExecutors.newDirectExecutorService());
+    assertTrue("We should always be able to append the first entry",
+        log.appendEntries(0, 0, Collections.singletonList(makeEntry(1, 2, 0))));
+    assertTrue("We should be able to append the next entry, with same term",
+        log.appendEntries(0, 0, Collections.singletonList(makeEntry(2, 2, 0))));
+    assertTrue("We should be able to append the next entry, with higher term",
+        log.appendEntries(0, 0, Collections.singletonList(makeEntry(3, 4, 0))));
   }
 
 
+  /**
+   * Ensure that we can't append entries that go backwards (i.e., have lower term than their predecessor.
+   */
   @Test
-  public void simpleFailure() {
-    SingleByteStateMachine stateMachine = new SingleByteStateMachine();
-    RaftLog log = new RaftLog(stateMachine, new ArrayList<>(), MoreExecutors.newDirectExecutorService());
+  public void appendEntriesProhibitBackwardsTerm() {
+    RaftLog log = new RaftLog(new SingleByteStateMachine(), new ArrayList<>(), MoreExecutors.newDirectExecutorService());
+    assertTrue("We should always be able to append the first entry",
+        log.appendEntries(0, 0, Collections.singletonList(makeEntry(1, 2, 0))));
 
-    List<EloquentRaftProto.LogEntry> appendEntries = new ArrayList<>();
-    appendEntries.add(makeEntry(1, 1, 3));
+    // Case 1: committing @ index=1, correct prev term
+    assertFalse("We should NOT be able to append an entry with a lower term (@index=1, correct prev_term)",
+        log.appendEntries(0, 0, Collections.singletonList(makeEntry(1, 1, 0))));
+    // Case 2: committing @ index=2, incorrect prev term
+    // This is basically a stupid corner case
+    assertFalse("We should NOT be able to append an entry with a lower term (@index=2, incorrect prev_term)",
+        log.appendEntries(0, 0, Collections.singletonList(makeEntry(2, 1, 0))));
 
-    // Add the entries as uncommitted
-    boolean success = log.appendEntries(0, 0, appendEntries);
-    assertTrue(success);
-    assertEquals("Nothing should be committed yet", -1, stateMachine.value);
-
-    success = log.appendEntries(1, 2, new ArrayList<>()); // <- WRONG TERM
-    assertFalse(success);
-    assertEquals("Nothing should be committed yet", -1, stateMachine.value);
-
-    // Check the entry is present
-    verifyEntry(log, 1, 1, 3);
-
-    // Commit the entries
-    synchronized (log) {
-      log.setCommitIndex((long) 1, TimerUtils.mockableNow().toEpochMilli());
-    }
-    assertEquals("We should have applied our entry to our state machine", 3, stateMachine.value);
+    assertTrue(log.appendEntries(1, 2, Collections.singletonList(makeEntry(2, 2, 0))));
+    // Case 3: committing @ index=3, correctly report previous term
+    assertFalse("We should NOT be able to append an entry with a lower term (@index=3, correct prev_term)",
+        log.appendEntries(1, 2, Collections.singletonList(makeEntry(3, 1, 0))));
+    // Case 4: committing @ index=3, incorrectly report previous term
+    assertFalse("We should NOT be able to append an entry with a lower term (@index=3, incorrect prev_term)",
+        log.appendEntries(1, 1, Collections.singletonList(makeEntry(3, 1, 0))));
   }
 
 
+  /**
+   * Test that we can append entries over a snapshot
+   */
   @Test
-  public void truncateOverwrite() {
-    SingleByteStateMachine stateMachine = new SingleByteStateMachine();
-    RaftLog log = new RaftLog(stateMachine, new ArrayList<>(), MoreExecutors.newDirectExecutorService());
-
-    List<EloquentRaftProto.LogEntry> appendEntries1 = new ArrayList<>();
-    appendEntries1.add(makeEntry(1, 1, 3));
-    appendEntries1.add(makeEntry(2, 1, 2));
-    appendEntries1.add(makeEntry(3, 1, 1));
-
-    // Add the entries as uncommitted
-    boolean success = log.appendEntries(0, 0, appendEntries1);
-    assertTrue(success);
-    assertEquals("Nothing should be committed yet", -1, stateMachine.value);
-
-    // Check the entries are present
-    verifyEntry(log, 1, 1, 3);
-    verifyEntry(log, 2, 1, 2);
-    verifyEntry(log, 3, 1, 1);
-
-    List<EloquentRaftProto.LogEntry> appendEntries2 = new ArrayList<>();
-    appendEntries2.add(makeEntry(2, 2, 5));
-    appendEntries2.add(makeEntry(3, 2, 6));
-
-    // Add the entries, which should overwrite previous entries
-    success = log.appendEntries(1, 1, appendEntries2);
-    assertTrue(success);
-    assertEquals("Nothing should be committed yet", -1, stateMachine.value);
-
-    // Check the entries are present
-    verifyEntry(log, 1, 1, 3);
-    verifyEntry(log, 2, 2, 5);
-    verifyEntry(log, 3, 2, 6);
-
-    // test getEntriesSinceInclusive()
-    Optional<List<EloquentRaftProto.LogEntry>> entries = log.getEntriesSinceInclusive(1);
-    assertTrue(entries.isPresent());
-    assertEquals(3, entries.get().size());
-    assertEquals(1, entries.get().get(0).getIndex());
-    entries = log.getEntriesSinceInclusive(3);
-    assertTrue(entries.isPresent());
-    assertEquals(1, entries.get().size());
-
-    // Commit the entries
-    synchronized (log) {
-      log.setCommitIndex((long) 3, TimerUtils.mockableNow().toEpochMilli());
-    }
-    assertEquals("We should have applied our entry to our state machine", 6, stateMachine.value);
+  public void appendEntriesOverSnapshot() {
+    RaftLog log = mkSnapshotSetup();
+    RaftLog.Snapshot snapshot = new RaftLog.Snapshot(new SingleByteStateMachine(3).serialize(), 5, 2, new ArrayList<>());
+    log.installSnapshot(snapshot, 0L);
+    assertTrue("We should be able to commit over the last index of a snapshot",
+        log.appendEntries(5, 2, Collections.singletonList(makeEntry(6, 2, 0))));
   }
 
 
+  /**
+   * Test that we can append an entry of a newer term over a snapshot.
+   */
   @Test
-  public void doubleTruncateOverwrite() {
-    SingleByteStateMachine stateMachine = new SingleByteStateMachine();
-    RaftLog log = new RaftLog(stateMachine, new ArrayList<>(), MoreExecutors.newDirectExecutorService());
-
-    List<EloquentRaftProto.LogEntry> appendEntries1 = new ArrayList<>();
-    appendEntries1.add(makeEntry(1, 1, 3));
-    appendEntries1.add(makeEntry(2, 1, 2));
-    appendEntries1.add(makeEntry(3, 1, 1));
-
-    // Add the entries as uncommitted
-    boolean success = log.appendEntries(0, 0, appendEntries1);
-    assertTrue(success);
-    assertEquals("Nothing should be committed yet", -1, stateMachine.value);
-
-    // Check the entries are present
-    verifyEntry(log, 1, 1, 3);
-    verifyEntry(log, 2, 1, 2);
-    verifyEntry(log, 3, 1, 1);
-
-    List<EloquentRaftProto.LogEntry> appendEntries2 = new ArrayList<>();
-    appendEntries2.add(makeEntry(2, 2, 5));
-    appendEntries2.add(makeEntry(3, 2, 6));
-
-    // Add the entries, which should overwrite previous entries
-    success = log.appendEntries(1, 1, appendEntries2);
-    assertTrue(success);
-    assertEquals("Nothing should be committed yet", -1, stateMachine.value);
-
-    // Check the entries are present
-    verifyEntry(log, 1, 1, 3);
-    verifyEntry(log, 2, 2, 5);
-    verifyEntry(log, 3, 2, 6);
-    assertEquals(3, log.logEntries.size());
-    assertFalse(log.getEntryAtIndex(4).isPresent());
-    assertFalse(log.getEntryAtIndex(5).isPresent());
-
-    // Add the entries again, which should be a no-op
-    success = log.appendEntries(1, 1, appendEntries2);
-    assertTrue(success);
-    assertEquals("Nothing should be committed yet", -1, stateMachine.value);
-
-    // Check the entries are present
-    verifyEntry(log, 1, 1, 3);
-    verifyEntry(log, 2, 2, 5);
-    verifyEntry(log, 3, 2, 6);
-    assertEquals(3, log.logEntries.size());
-    assertFalse(log.getEntryAtIndex(4).isPresent());
-    assertFalse(log.getEntryAtIndex(5).isPresent());
-
-    // Commit the entries
-    synchronized (log) {
-      log.setCommitIndex((long) 3, TimerUtils.mockableNow().toEpochMilli());
-    }
-    assertEquals("We should have applied our entry to our state machine", 6, stateMachine.value);
+  public void appendEntriesOverSnapshotNewerTerm() {
+    RaftLog log = mkSnapshotSetup();
+    RaftLog.Snapshot snapshot = new RaftLog.Snapshot(new SingleByteStateMachine(3).serialize(), 5, 2, new ArrayList<>());
+    log.installSnapshot(snapshot, 0L);
+    assertTrue("We should be able to commit over the last index of a snapshot (even if term is higher)",
+        log.appendEntries(5, 2, Collections.singletonList(makeEntry(6, 4, 0))));
   }
 
 
+  /**
+   * Test that we CANNOT append an entry of a older term over a snapshot.
+   */
   @Test
-  public void failedOverwrite() {
-    SingleByteStateMachine stateMachine = new SingleByteStateMachine();
-    RaftLog log = new RaftLog(stateMachine, new ArrayList<>(), MoreExecutors.newDirectExecutorService());
-
-    List<EloquentRaftProto.LogEntry> appendEntries1 = new ArrayList<>();
-    appendEntries1.add(makeEntry(1, 1, 3));
-    appendEntries1.add(makeEntry(2, 1, 2));
-    appendEntries1.add(makeEntry(3, 1, 1));
-
-    // Add the entries as uncommitted
-    boolean success = log.appendEntries(0, 0, appendEntries1);
-    assertTrue(success);
-    assertEquals("Nothing should be committed yet", -1, stateMachine.value);
-
-    // Check the entries are present
-    verifyEntry(log, 1, 1, 3);
-    verifyEntry(log, 2, 1, 2);
-    verifyEntry(log, 3, 1, 1);
-
-    // Add the entries, which should overwrite previous entries
-    success = log.appendEntries(1, 2, appendEntries1); // <- AN INCORRECT TERM
-    assertFalse(success);
-    assertEquals("Nothing should be committed yet", -1, stateMachine.value);
-
-    // Check the entries are present
-    verifyEntry(log, 1, 1, 3);
-    verifyEntry(log, 2, 1, 2);
-    verifyEntry(log, 3, 1, 1);
-
-    // Commit the entries
-    synchronized (log) {
-      log.setCommitIndex((long) 3, TimerUtils.mockableNow().toEpochMilli());
-    }
-    assertEquals("We should have applied our entry to our state machine", 1, stateMachine.value);
-  }
-
-  @Test
-  public void testClusterMembershipChanges() {
-    SingleByteStateMachine stateMachine = new SingleByteStateMachine();
-
-    Set<String> configuration0 = new HashSet<>();
-    configuration0.add("test1");
-
-    Set<String> configuration1 = new HashSet<>();
-    configuration1.add("test1");
-
-    Set<String> configuration2 = new HashSet<>();
-    configuration2.add("test1");
-    configuration2.add("test2");
-
-    RaftLog log = new RaftLog(stateMachine, configuration0, MoreExecutors.newDirectExecutorService());
-
-    List<EloquentRaftProto.LogEntry> appendEntries1 = new ArrayList<>();
-    appendEntries1.add(makeEntry(1, 1, 3));
-    appendEntries1.add(makeConfigurationEntry(2, 1, configuration1));
-    appendEntries1.add(makeConfigurationEntry(3, 1, configuration2));
-
-    assertEquals(configuration0, log.committedQuorumMembers);
-    assertEquals(configuration0, log.latestQuorumMembers);
-
-    // Add the entries as uncommitted
-    boolean success = log.appendEntries(0, 0, appendEntries1);
-    assertTrue(success);
-    assertEquals("Nothing should be committed yet", -1, stateMachine.value);
-
-    // Check the entries are present
-    verifyEntry(log, 1, 1, 3);
-    verifyConfigurationEntry(log, 2, 1, configuration1);
-    verifyConfigurationEntry(log, 3, 1, configuration2);
-
-    assertEquals(configuration0, log.committedQuorumMembers);
-    assertEquals(configuration2, log.latestQuorumMembers);
-
-    synchronized (log) {
-      log.setCommitIndex((long) 2, TimerUtils.mockableNow().toEpochMilli());
-    }
-
-    assertEquals(configuration1, log.committedQuorumMembers);
-    assertEquals(configuration2, log.latestQuorumMembers);
-
-    synchronized (log) {
-      log.setCommitIndex((long) 3, TimerUtils.mockableNow().toEpochMilli());
-    }
-
-    assertEquals(configuration2, log.committedQuorumMembers);
-    assertEquals(configuration2, log.latestQuorumMembers);
+  public void appendEntriesOverSnapshotOlderTerm() {
+    RaftLog log = mkSnapshotSetup();
+    RaftLog.Snapshot snapshot = new RaftLog.Snapshot(new SingleByteStateMachine(3).serialize(), 5, 2, new ArrayList<>());
+    log.installSnapshot(snapshot, 0L);
+    assertFalse("We should not commit an entry of lower term than our last snapshot",
+        log.appendEntries(5, 2, Collections.singletonList(makeEntry(6, 1, 0))));  // term 1; snapshot term is 2
   }
 
 
+  /**
+   * Test that we can append an entry of a newer term over a snapshot.
+   */
+  @Test
+  public void appendEntriesOverSnapshotCannotSkipIndex() {
+    RaftLog log = mkSnapshotSetup();
+    RaftLog.Snapshot snapshot = new RaftLog.Snapshot(new SingleByteStateMachine(3).serialize(), 5, 2, new ArrayList<>());
+    log.installSnapshot(snapshot, 0L);
+
+    // case 1: we correctly report prevLogIndex
+    assertFalse("We should not be able to skip indexes after a snapshot",
+        log.appendEntries(5, 2, Collections.singletonList(makeEntry(7, 2, 0))));  // note: index=7, after 5
+    // case 2: we incorrectly report prevLogIndex
+    assertFalse("We should not be able to skip indexes after a snapshot",
+        log.appendEntries(6, 2, Collections.singletonList(makeEntry(7, 2, 0))));  // note: index=7, after 5
+  }
+
+
+  /**
+   * Test that we can overwrite a log entry with one of a newer term
+   */
+  @Test
+  public void appendEntriesOverwriteLogEntryWithNewerTerm() {
+    RaftLog log = new RaftLog(new SingleByteStateMachine(), new ArrayList<>(), MoreExecutors.newDirectExecutorService());
+    assertTrue("We should always be able to append the first entry",
+        log.appendEntries(0, 0, Collections.singletonList(makeEntry(1, 2, 0))));
+    assertTrue("We should be able to commit an entry with a newer term",
+        log.appendEntries(0, 0, Collections.singletonList(makeEntry(1, 4, 0))));
+  }
+
+
+  /**
+   * Test that we CANNOT overwrite a log entry with one of an older term
+   */
+  @Test
+  public void appendEntriesOverwriteLogEntryWithOlderTerm() {
+    RaftLog log = new RaftLog(new SingleByteStateMachine(), new ArrayList<>(), MoreExecutors.newDirectExecutorService());
+    assertTrue("We should always be able to append the first entry",
+        log.appendEntries(0, 0, Collections.singletonList(makeEntry(1, 2, 0))));
+    assertFalse("We should NOT be able to write an entry with an older term (index=1)",
+        log.appendEntries(0, 0, Collections.singletonList(makeEntry(1, 1, 0))));
+
+    assertTrue("We should be able to commit a new entry",
+        log.appendEntries(1, 2, Collections.singletonList(makeEntry(2, 2, 0))));
+    assertFalse("We should NOT be able to write an entry with a older term (index=2)",
+        log.appendEntries(1, 2, Collections.singletonList(makeEntry(2, 1, 0))));
+  }
+
+
+  /**
+   * Test that we can overwrite a log entry with one of a newer term
+   */
+  @Test
+  public void appendEntriesOverwriteLogEntryWithNewerTermClearsLog() {
+    RaftLog log = new RaftLog(new SingleByteStateMachine(), new ArrayList<>(), MoreExecutors.newDirectExecutorService());
+    assertTrue(log.appendEntries(0, 0, Collections.singletonList(makeEntry(1, 2, 1))));
+    assertTrue(log.appendEntries(1, 2, Collections.singletonList(makeEntry(2, 2, 2))));
+    assertTrue(log.appendEntries(2, 2, Collections.singletonList(makeEntry(3, 2, 3))));
+
+    assertTrue("We should be able to commit an entry with a newer term",
+        log.appendEntries(0, 0, Collections.singletonList(makeEntry(1, 4, 42))));
+    assertEquals("We should have truncated our log", 1, log.logEntries.size());
+    assertEquals("We should have the right term for the new entry", 4L, log.logEntries.getFirst().getTerm());
+    assertEquals("We should have the right index for the new entry", 1L, log.logEntries.getFirst().getIndex());  // a bit silly, but may as well
+    assertArrayEquals("We should have the right value for the new entry",
+        new byte[]{42}, log.logEntries.getFirst().getTransition().toByteArray());
+  }
+
+
+  /**
+   * Test that we can overwrite a log entry with one of a newer term, even if we're submitting a bulk
+   * transition.
+   */
+  @Test
+  public void appendEntriesOverwriteLogEntryWithNewerTermClearsLogBulk() {
+    // 1. Set up the log
+    RaftLog log = new RaftLog(new SingleByteStateMachine(), new ArrayList<>(), MoreExecutors.newDirectExecutorService());
+    assertTrue(log.appendEntries(0, 0, Collections.singletonList(makeEntry(1, 2, 1))));
+    assertTrue(log.appendEntries(1, 2, Collections.singletonList(makeEntry(2, 2, 2))));
+    assertTrue(log.appendEntries(2, 2, Collections.singletonList(makeEntry(3, 2, 3))));
+    // This entry should be removed when we clear the log below
+    assertTrue(log.appendEntries(3, 2, Collections.singletonList(makeEntry(4, 2, 4))));
+
+    // 2. Submit a transition that should truncate the log
+    assertTrue("We should be able to commit an entry with a newer term",
+        log.appendEntries(0, 0, Arrays.asList(
+            makeEntry(1, 4, 40),
+            makeEntry(2, 4, 41),
+            makeEntry(3, 4, 42)
+        )));
+    assertEquals("We should have truncated our log", 3, log.logEntries.size());
+    assertEquals("We should have the right term for the new [first] entry", 4L, log.logEntries.getFirst().getTerm());
+    assertEquals("We should have the right term for the new [last] entry", 4L, log.logEntries.getLast().getTerm());
+    assertArrayEquals("We should have the right value for the new [last] entry",
+        new byte[]{42}, log.logEntries.getLast().getTransition().toByteArray());
+  }
+
+
+  /**
+   * Test that we CANNOT overwrite a log entry with one of an older term
+   */
+  @Test
+  public void appendEntriesDuplicateTransition() {
+    RaftLog log = new RaftLog(new SingleByteStateMachine(), new ArrayList<>(), MoreExecutors.newDirectExecutorService());
+    assertTrue(log.appendEntries(0, 0, Collections.singletonList(makeEntry(1, 2, 1))));
+    assertException(() -> log.appendEntries(0, 0, Collections.singletonList(makeEntry(1, 2, 2))), AssertionError.class);
+  }
+
+
+  /**
+   * Test that we CANNOT overwrite a log entry with one of an older term, even on a bulk transition
+   */
+  @Test
+  public void appendEntriesDuplicateTransitionBulk() {
+    RaftLog log = new RaftLog(new SingleByteStateMachine(), new ArrayList<>(), MoreExecutors.newDirectExecutorService());
+    assertTrue(log.appendEntries(0, 0, Collections.singletonList(makeEntry(1, 2, 1))));
+    assertException(() -> log.appendEntries(0, 0, Arrays.asList(
+        makeEntry(1, 2, 2),  // <-- this entry conflicts! The others are fine.
+        makeEntry(2, 2, 3),
+        makeEntry(3, 2, 4)
+        )), AssertionError.class);
+  }
+
+
+  /**
+   * Create a bulk transition at index 1 (i.e., the first commit) where the terms
+   * changed in the stream of things to add.
+   * This is a regression in {@link AbstractRaftAlgorithmTest#testRecoverFromBotchedElection()}.
+   */
+  @Test
+  public void appendEntriesOverwriteBulkIndex1() {
+    RaftLog log = new RaftLog(new SingleByteStateMachine(), new ArrayList<>(), MoreExecutors.newDirectExecutorService());
+    // populate the log
+    log.appendEntries(0, 0, Arrays.asList(
+        makeEntry(1, 2, 2),
+        makeEntry(2, 3, 3),
+        makeEntry(3, 3, 4)
+    ));
+    // append things again
+    assertTrue("Should be able to replay the log",
+        log.appendEntries(0, 0, Arrays.asList(
+        makeEntry(1, 2, 2),
+        makeEntry(2, 3, 3),
+        makeEntry(3, 3, 4)
+    )));
+  }
+
+
+  //
+  // --------------------------------------------------------------------------
+  // INSTALL SNAPSHOT
+  // --------------------------------------------------------------------------
+  //
+
+
+  /**
+   * Commit up to index 5, then install a snapshot at index 5.
+   */
+  @Test
+  public void installSnapshotOnCommit() {
+    // Setup
+    RaftLog log = mkSnapshotSetup();
+    log.setCommitIndex(5, 0);
+    assertEquals("We should have 5 elements in the log before the snapshot",
+        5, log.logEntries.size());
+
+    RaftLog.Snapshot snapshot = new RaftLog.Snapshot(new SingleByteStateMachine(3).serialize(), 5, 2, new ArrayList<>());
+    assertTrue("Should be able to install an outdated snapshot",
+        log.installSnapshot(snapshot, 0));
+    assertEquals("Should not go back in commits",
+        5, log.commitIndex);
+    assertEquals("Should still have the most recent value in the state machine",
+        3, ((SingleByteStateMachine) log.stateMachine).value);
+    assertEquals("We should have no elements in the log after the snapshot",
+        0, log.logEntries.size());
+  }
+
+
+  /**
+   * Commit up to index 5, then install a snapshot at index 2.
+   * We should still behave as if we were at index 5.
+   */
+  @Test
+  public void installSnapshotOverCommit() {
+    // Setup
+    RaftLog log = mkSnapshotSetup();
+    log.setCommitIndex(5, 0);
+    assertEquals("We should have 5 elements in the log before the snapshot",
+        5, log.logEntries.size());
+
+    RaftLog.Snapshot snapshot = new RaftLog.Snapshot(new SingleByteStateMachine(4).serialize(), 2, 1, new ArrayList<>());
+    assertTrue("Should be able to install an outdated snapshot",
+        log.installSnapshot(snapshot, 0));
+    assertEquals("Should not go back in commits",
+        5, log.commitIndex);
+    assertEquals("Should still have the most recent value in the state machine",
+        3, ((SingleByteStateMachine) log.stateMachine).value);
+    assertEquals("We should have 3 elements in the log after the snapshot",
+        3, log.logEntries.size());
+  }
+
+
+  /**
+   * Commit up to index 5, then install a snapshot at index 5 but with the wrong term!
+   * This should fail.
+   */
+  @SuppressWarnings("OptionalGetWithoutIsPresent")
+  @Test
+  public void installSnapshotWrongTerm() {
+    // Setup
+    RaftLog log = mkSnapshotSetup();
+    log.setCommitIndex(5, 0);
+    assertEquals("We should have 5 elements in the log before the snapshot",
+        5, log.logEntries.size());
+
+    // Install a bad snapshot
+    assertEquals("We should be at term 2 -- we're going to try to install a snapshot on term 1",
+        2, log.getEntryAtIndex(5).get().getTerm());
+    RaftLog.Snapshot snapshot = new RaftLog.Snapshot(new SingleByteStateMachine(3).serialize(), 5, 1, new ArrayList<>());
+
+    // Check state afterwards
+    assertFalse("Should not be able to install a snapshot with the wrong term.",
+        log.installSnapshot(snapshot, 0));
+    assertEquals("Should not go back in commits",
+        5, log.commitIndex);
+    assertEquals("Should still have the most recent value in the state machine",
+        3, ((SingleByteStateMachine) log.stateMachine).value);
+    assertEquals("We should still have 5 elements in our log -- the snapshot failed",
+        5, log.logEntries.size());
+  }
+
+
+  /**
+   * Commit up to index 5, then install a snapshot at index 7 but with an earlier term.
+   * This should fail, similar to {@link #installSnapshotWrongTerm()}.
+   */
+  @SuppressWarnings("OptionalGetWithoutIsPresent")
+  @Test
+  public void installSnapshotAheadWrongTerm() {
+    // Setup
+    RaftLog log = mkSnapshotSetup();
+    log.setCommitIndex(5, 0);
+    assertEquals("We should have 5 elements in the log before the snapshot",
+        5, log.logEntries.size());
+
+    // Install a bad snapshot
+    assertEquals("We should be at term 2 -- we're going to try to install a snapshot on term 1",
+        2, log.getEntryAtIndex(5).get().getTerm());
+    RaftLog.Snapshot snapshot = new RaftLog.Snapshot(new SingleByteStateMachine(42).serialize(), 7, 1, new ArrayList<>());
+
+    // Check state afterwards
+    assertFalse("Should not be able to install a snapshot with the wrong term.",
+        log.installSnapshot(snapshot, 0));
+    assertEquals("Should not go back in commits",
+        5, log.commitIndex);
+    assertEquals("Should still have the most recent value in the state machine",
+        3, ((SingleByteStateMachine) log.stateMachine).value);
+    assertEquals("We should still have 5 elements in our log -- the snapshot failed",
+        5, log.logEntries.size());
+  }
+
+
+  /**
+   * Commit up to index 5, then install a snapshot at index 5 but with the wrong term!
+   * This should fail.
+   */
+  @Test
+  public void installSnapshotAheadOfLog() {
+    // Setup
+    RaftLog log = mkSnapshotSetup();
+    log.setCommitIndex(5, 0);
+    assertEquals("We should have 5 elements in the log before the snapshot",
+        5, log.logEntries.size());
+
+    // Install forward-looking
+    RaftLog.Snapshot snapshot = new RaftLog.Snapshot(new SingleByteStateMachine(42).serialize(), 7, 2, new ArrayList<>());
+
+    // Check state afterwards
+    assertTrue("Should be able to install a snapshot ahead of the current log",
+        log.installSnapshot(snapshot, 0));
+    assertEquals("Should commit up to the snapshot",
+        7, log.commitIndex);
+    assertEquals("Should still have the most recent value in the state machine",
+        42, ((SingleByteStateMachine) log.stateMachine).value);
+    assertEquals("We should not have a log",
+        0, log.logEntries.size());
+  }
+
+
+  /**
+   * Should not be able to commit the same snapshot twice
+   */
+  @Test
+  public void installSnapshotFailOnDuplicateSnapshot() {
+    RaftLog log = mkSnapshotSetup();
+    RaftLog.Snapshot firstSnapshot = new RaftLog.Snapshot(new SingleByteStateMachine(5).serialize(), 3, 1, new ArrayList<>());
+    assertTrue(log.installSnapshot(firstSnapshot, 0L));
+    RaftLog.Snapshot sameSnapshot = new RaftLog.Snapshot(new SingleByteStateMachine(5).serialize(), 3, 1, new ArrayList<>());
+    assertFalse("Should not be able to install a snapshot of the same index + term", log.installSnapshot(sameSnapshot, 0L));
+  }
+
+
+  /**
+   * Should be able to commit the same snapshot with a new term.
+   * Note that this should never actually happen! This would be rewriting a committed entry with a
+   * new term.
+   */
+  @Test
+  public void installSnapshotDuplicateSnapshotNewTerm() {
+    RaftLog log = mkSnapshotSetup();
+    RaftLog.Snapshot firstSnapshot = new RaftLog.Snapshot(new SingleByteStateMachine(5).serialize(), 3, 1, new ArrayList<>());
+    assertTrue(log.installSnapshot(firstSnapshot, 0L));
+    RaftLog.Snapshot sameSnapshot = new RaftLog.Snapshot(new SingleByteStateMachine(5).serialize(), 3, 2, new ArrayList<>());
+    assertTrue("Should be able to commit a snapshot with a new term", log.installSnapshot(sameSnapshot, 0L));
+  }
+
+
+  /**
+   * Test some corner cases stemming from {@link #installSnapshotDuplicateSnapshotNewTerm()}.
+   * In particular, make sure that we don't clear our log accidentally.
+   */
+  @Test
+  public void installSnapshotClearLogCornerCase() {
+    // Create our snapshot
+    RaftLog log = mkSnapshotSetup();
+    assertEquals("We should have 5 elements in the log before the snapshot", 5, log.logEntries.size());
+    RaftLog.Snapshot firstSnapshot = new RaftLog.Snapshot(new SingleByteStateMachine(5).serialize(), 3, 1, new ArrayList<>());
+    assertTrue(log.installSnapshot(firstSnapshot, 0L));
+    assertEquals("We should have 2 log entries after our snapshot", 2, log.logEntries.size());
+    assertEquals("Our first log entry should have term 2", 2, log.logEntries.getFirst().getTerm());
+
+    // Install a snapshot with the same index but new term
+    RaftLog.Snapshot sameSnapshot = new RaftLog.Snapshot(new SingleByteStateMachine(5).serialize(), 3, 2, new ArrayList<>());
+    assertTrue("Should be able to commit a snapshot with a new term", log.installSnapshot(sameSnapshot, 0L));
+
+    // Make sure we still have our log
+    assertEquals("We should still have 2 log entries after our new term snapshot", 2, log.logEntries.size());
+  }
+
+
+  @SuppressWarnings("OptionalGetWithoutIsPresent")
   @Test
   public void simpleSnapshotTests() {
     SingleByteStateMachine stateMachine = new SingleByteStateMachine();
@@ -1012,115 +1293,18 @@ public class RaftLogTest {
   }
 
 
-  @Test
-  public void testTruncateAfterInclusive() {
-    SingleByteStateMachine stateMachine = new SingleByteStateMachine();
-    RaftLog log = new RaftLog(stateMachine, new ArrayList<>(), MoreExecutors.newDirectExecutorService());
-
-    List<EloquentRaftProto.LogEntry> appendEntries1 = new ArrayList<>();
-    appendEntries1.add(makeEntry(1, 1, 3));
-    appendEntries1.add(makeEntry(2, 1, 2));
-    appendEntries1.add(makeEntry(3, 1, 1));
-
-    // Add the entries as uncommitted
-    boolean success = log.appendEntries(0, 0, appendEntries1);
-    assertTrue(success);
-    assertEquals("Nothing should be committed yet", -1, stateMachine.value);
-
-    // Check the entries are present
-    verifyEntry(log, 1, 1, 3);
-    verifyEntry(log, 2, 1, 2);
-    verifyEntry(log, 3, 1, 1);
-
-    log.truncateLogAfterIndexInclusive(2);
-
-    assertEquals(1, log.logEntries.size());
-    assertEquals(1, log.logEntries.getFirst().getIndex());
-    verifyEntry(log, 1, 1, 3);
-  }
-
-  @Test
-  public void testTruncateBeforeInclusive() {
-    SingleByteStateMachine stateMachine = new SingleByteStateMachine();
-    RaftLog log = new RaftLog(stateMachine, new ArrayList<>(), MoreExecutors.newDirectExecutorService());
-
-    List<EloquentRaftProto.LogEntry> appendEntries1 = new ArrayList<>();
-    appendEntries1.add(makeEntry(1, 1, 3));
-    appendEntries1.add(makeEntry(2, 1, 2));
-    appendEntries1.add(makeEntry(3, 1, 1));
-
-    // Add the entries as uncommitted
-    boolean success = log.appendEntries(0, 0, appendEntries1);
-    assertTrue(success);
-    assertEquals("Nothing should be committed yet", -1, stateMachine.value);
-
-    // Check the entries are present
-    verifyEntry(log, 1, 1, 3);
-    verifyEntry(log, 2, 1, 2);
-    verifyEntry(log, 3, 1, 1);
-
-    log.truncateLogBeforeIndexInclusive(2);
-
-    assertEquals(1, log.logEntries.size());
-    assertEquals(3, log.logEntries.getFirst().getIndex());
-    verifyEntry(log, 3, 1, 1);
-  }
-
-  @Test
-  public void testGetPreviousEntryTerm() {
-    SingleByteStateMachine stateMachine = new SingleByteStateMachine();
-    RaftLog log = new RaftLog(stateMachine, new ArrayList<>(), MoreExecutors.newDirectExecutorService());
-
-    List<EloquentRaftProto.LogEntry> appendEntries1 = new ArrayList<>();
-    appendEntries1.add(makeEntry(1, 1, 3));
-    appendEntries1.add(makeEntry(2, 1, 2));
-    appendEntries1.add(makeEntry(3, 1, 1));
-
-    Optional<Long> previousEntry = log.getPreviousEntryTerm(0);
-    assertTrue(previousEntry.isPresent());
-    assertEquals(0, (long)previousEntry.get());
-
-    // Add the entries as uncommitted
-    boolean success = log.appendEntries(0, 0, appendEntries1);
-    assertTrue(success);
-    assertEquals("Nothing should be committed yet", -1, stateMachine.value);
-
-    // Check the entries are present
-    verifyEntry(log, 1, 1, 3);
-    verifyEntry(log, 2, 1, 2);
-    verifyEntry(log, 3, 1, 1);
-
-    previousEntry = log.getPreviousEntryTerm(0);
-    assertTrue(previousEntry.isPresent());
-    assertEquals(0, (long)previousEntry.get());
-    previousEntry = log.getPreviousEntryTerm(1);
-    assertTrue(previousEntry.isPresent());
-    assertEquals(1, (long)previousEntry.get());
-    previousEntry = log.getPreviousEntryTerm(2);
-    assertTrue(previousEntry.isPresent());
-    assertEquals(1, (long)previousEntry.get());
-    previousEntry = log.getPreviousEntryTerm(3);
-    assertTrue(previousEntry.isPresent());
-    assertEquals(1, (long)previousEntry.get());
-
-    synchronized (log) {
-      log.setCommitIndex((long) 2, TimerUtils.mockableNow().toEpochMilli());
-    }
-    log.forceSnapshot();
-
-    previousEntry = log.getPreviousEntryTerm(0);
-    assertTrue(previousEntry.isPresent());
-    previousEntry = log.getPreviousEntryTerm(1);
-    assertFalse(previousEntry.isPresent());
-    previousEntry = log.getPreviousEntryTerm(2);
-    assertTrue(previousEntry.isPresent());
-    assertEquals(1, (long)previousEntry.get());
-    previousEntry = log.getPreviousEntryTerm(3);
-    assertTrue(previousEntry.isPresent());
-    assertEquals(1, (long)previousEntry.get());
-  }
+  //
+  // --------------------------------------------------------------------------
+  // CREATE COMMIT FUTURE
+  // --------------------------------------------------------------------------
+  //
 
 
+  /**
+   * A Keenon test for commit futures
+   *
+   * TODO(gabor) split me up into tests that are actually readable
+   */
   @Test
   public void testCreateCommitFuture() throws ExecutionException, InterruptedException {
     SingleByteStateMachine stateMachine = new SingleByteStateMachine();
@@ -1193,6 +1377,691 @@ public class RaftLogTest {
     assertEquals(false, commit1BadTermPast.get());
     assertTrue(commit1Past.isDone());
     assertEquals(true, commit1Past.get());
+  }
+
+
+  /**
+   * Test that commit futures offload to another thread, rather than completing on the main thread.
+   */
+  @Test
+  public void commitFutureRunsOnSeparateThread() throws ExecutionException, InterruptedException, TimeoutException {
+    long threadId = Thread.currentThread().getId();
+    ExecutorService executor = Executors.newSingleThreadExecutor();  // important: default should be running on another thread
+    try {
+      RaftLog log = new RaftLog(new SingleByteStateMachine(), new ArrayList<>(), executor);
+      CompletableFuture<Boolean> future = log.createCommitFuture(1, 1, false);  // note: not internal
+      CompletableFuture<Boolean> onCorrectThread = future.thenApply(success -> Thread.currentThread().getId() == threadId);
+      log.appendEntries(0, 0, Collections.singletonList(makeEntry(1, 1, 42)));
+      log.setCommitIndex(1, 0L);
+
+      assertFalse("The future should NOT have executed on the main thread", onCorrectThread.get(1, TimeUnit.SECONDS));
+    } finally {
+      executor.shutdown();
+    }
+  }
+
+
+  /**
+   * Test creating an "internal" commit future
+   */
+  @Test
+  public void internalCommitFuture() {
+    long threadId = Thread.currentThread().getId();
+    ExecutorService executor = Executors.newSingleThreadExecutor();  // important: default should be running on another thread
+    try {
+      RaftLog log = new RaftLog(new SingleByteStateMachine(), new ArrayList<>(), executor);
+      CompletableFuture<Boolean> future = log.createCommitFuture(1, 1, true);
+      CompletableFuture<Boolean> onCorrectThread = future.thenApply(success -> Thread.currentThread().getId() == threadId);
+      log.appendEntries(0, 0, Collections.singletonList(makeEntry(1, 1, 42)));
+      log.setCommitIndex(1, 0L);
+
+      assertTrue("The future should have completed", onCorrectThread.isDone());
+      assertTrue("The future should have executed on the main thread", onCorrectThread.getNow(false));
+    } finally {
+      executor.shutdown();
+    }
+  }
+
+
+  /**
+   * Test that commit futures don't fire until the commit is registered
+   */
+  @Test
+  public void commitFutureWaitForCommit() {
+    RaftLog log = new RaftLog(new SingleByteStateMachine(), new ArrayList<>(), MoreExecutors.newDirectExecutorService());
+    CompletableFuture<Boolean> future = log.createCommitFuture(1, 1, true);
+    log.appendEntries(0, 0, Collections.singletonList(makeEntry(1, 1, 42)));
+    assertFalse("The future should NOT have completed before the commit", future.isDone());
+    log.setCommitIndex(1, 0L);
+    assertTrue("The future should have completed after the commit", future.isDone());
+  }
+
+
+  /**
+   * The same as {@link #commitFutureWaitForCommit()}, but the future is registered after we append the entries,
+   * rather than before. Who knows, could be a weird corner case.
+   */
+  @Test
+  public void commitFutureRegisterAfterAppend() {
+    RaftLog log = new RaftLog(new SingleByteStateMachine(), new ArrayList<>(), MoreExecutors.newDirectExecutorService());
+    log.appendEntries(0, 0, Collections.singletonList(makeEntry(1, 1, 42)));
+    CompletableFuture<Boolean> future = log.createCommitFuture(1, 1, true);
+    assertFalse("The future should NOT have completed before the commit", future.isDone());
+    log.setCommitIndex(1, 0L);
+    assertTrue("The future should have completed after the commit", future.isDone());
+  }
+
+
+  //
+  // --------------------------------------------------------------------------
+  // TRUNCATE LOG AFTER
+  // --------------------------------------------------------------------------
+  //
+
+
+  /**
+   * Ensure that we can't truncate to negative indices
+   */
+  @Test
+  public void truncateAfterInclusiveNegativeIndex() {
+    RaftLog log = new RaftLog(new SingleByteStateMachine(), new ArrayList<>(), MoreExecutors.newDirectExecutorService());
+    log.appendEntries(0, 0, Collections.singletonList(makeEntry(1, 1, 42)));
+    assertException(() -> log.truncateLogAfterIndexInclusive(-1L), AssertionError.class);  // or, can ignore the error
+    assertEquals("We should still have our entry", 1, log.logEntries.size());
+  }
+
+
+  /**
+   * Ensure that we can't truncate committed entries
+   */
+  @Test
+  public void truncateAfterInclusiveBeforeCommit() {
+    RaftLog log = new RaftLog(new SingleByteStateMachine(), new ArrayList<>(), MoreExecutors.newDirectExecutorService());
+    log.appendEntries(0, 0, Collections.singletonList(makeEntry(1, 1, 42)));
+    log.setCommitIndex(1, 0);
+
+    assertException(() -> log.truncateLogAfterIndexInclusive(0L), AssertionError.class);  // or, can ignore the error
+    assertEquals("We should still have our committed entry", 1, log.logEntries.size());
+  }
+
+
+  /**
+   * Ensure that we can't truncate an empty log.
+   * This is a bit degenerate as a test, but it's a code path in the function.
+   */
+  @Test
+  public void truncateAfterInclusiveEmptyLog() {
+    RaftLog log = new RaftLog(new SingleByteStateMachine(), new ArrayList<>(), MoreExecutors.newDirectExecutorService());
+    log.truncateLogAfterIndexInclusive(0L);
+    assertEquals("The log should still be empty", 0, log.logEntries.size());
+  }
+
+
+  /**
+   * Truncate some entries.
+   */
+  @Test
+  public void truncateAfterInclusiveSimple() {
+    RaftLog log = new RaftLog(new SingleByteStateMachine(), new ArrayList<>(), MoreExecutors.newDirectExecutorService());
+    log.appendEntries(0, 0, Arrays.asList(
+        makeEntry(1, 1, 40),
+        makeEntry(2, 1, 41),
+        makeEntry(3, 1, 42)
+    ));
+
+    log.truncateLogAfterIndexInclusive(2L);
+    assertEquals("We should have 1 entries now", 1, log.logEntries.size());
+    assertEquals("The entry should be at index 1", 1, log.logEntries.getFirst().getIndex());
+  }
+
+
+  /**
+   * Truncate the whole log
+   */
+  @Test
+  public void truncateAfterInclusiveWholeLog() {
+    RaftLog log = new RaftLog(new SingleByteStateMachine(), new ArrayList<>(), MoreExecutors.newDirectExecutorService());
+    log.appendEntries(0, 0, Arrays.asList(
+        makeEntry(1, 1, 40),
+        makeEntry(2, 1, 41),
+        makeEntry(3, 1, 42)
+    ));
+
+    log.truncateLogAfterIndexInclusive(1L);
+    assertTrue("We should no longer have any entries", log.logEntries.isEmpty());
+  }
+
+
+  /**
+   * Revert our cluster configuration from the log.
+   */
+  @Test
+  public void truncateAfterInclusiveRevertConfigFromLog() {
+    RaftLog log = new RaftLog(new SingleByteStateMachine(), new ArrayList<>(), MoreExecutors.newDirectExecutorService());
+    log.appendEntries(0, 0, Arrays.asList(
+        makeConfigurationEntry(1, 1, Collections.singleton("A")),
+        makeConfigurationEntry(2, 1, Collections.singleton("B")),
+        makeConfigurationEntry(3, 1, Collections.singleton("C"))
+        ));
+
+    log.truncateLogAfterIndexInclusive(2L);
+    assertEquals("We should now see configuration 'A'", Collections.singleton("A"), new HashSet<>(log.latestQuorumMembers));
+    log.truncateLogAfterIndexInclusive(1L);
+    assertTrue("We should now see our initial configuration", log.latestQuorumMembers.isEmpty());
+  }
+
+
+  /**
+   * Revert our cluster configuration from a snapshot.
+   */
+  @Test
+  public void truncateAfterInclusiveRevertConfigFromSnapshot() {
+    RaftLog log = new RaftLog(new SingleByteStateMachine(), new ArrayList<>(), MoreExecutors.newDirectExecutorService());
+    log.appendEntries(0, 0, Collections.singletonList(makeConfigurationEntry(1, 1, Collections.singleton("A"))));
+    log.forceSnapshot();
+    log.appendEntries(0, 0, Collections.singletonList(makeConfigurationEntry(2, 1, Collections.singleton("B"))));
+
+    log.truncateLogAfterIndexInclusive(2L);
+    assertEquals("We should now see configuration 'A' from the snapshot", Collections.singleton("A"), new HashSet<>(log.latestQuorumMembers));
+  }
+
+
+  /**
+   * Revert our cluster configuration from the log.
+   */
+  @Test
+  public void truncateAfterInclusiveRevertConfigFromLogOverSnapshot() {
+    RaftLog log = new RaftLog(new SingleByteStateMachine(), new ArrayList<>(), MoreExecutors.newDirectExecutorService());
+    log.appendEntries(0, 0, Collections.singletonList(makeConfigurationEntry(1, 1, Collections.singleton("A"))));
+    log.forceSnapshot();
+    log.appendEntries(0, 0, Arrays.asList(
+        makeConfigurationEntry(2, 1, Collections.singleton("B")),
+        makeConfigurationEntry(3, 1, Collections.singleton("C"))
+    ));
+
+    log.truncateLogAfterIndexInclusive(3L);
+    assertEquals("We should now see configuration 'B' from the log", Collections.singleton("B"), new HashSet<>(log.latestQuorumMembers));
+  }
+
+
+  /**
+   * A vintage Keenon test
+   */
+  @Test
+  public void truncateAfterInclusive() {
+    SingleByteStateMachine stateMachine = new SingleByteStateMachine();
+    RaftLog log = new RaftLog(stateMachine, new ArrayList<>(), MoreExecutors.newDirectExecutorService());
+
+    List<EloquentRaftProto.LogEntry> appendEntries1 = new ArrayList<>();
+    appendEntries1.add(makeEntry(1, 1, 3));
+    appendEntries1.add(makeEntry(2, 1, 2));
+    appendEntries1.add(makeEntry(3, 1, 1));
+
+    // Add the entries as uncommitted
+    boolean success = log.appendEntries(0, 0, appendEntries1);
+    assertTrue(success);
+    assertEquals("Nothing should be committed yet", -1, stateMachine.value);
+
+    // Check the entries are present
+    verifyEntry(log, 1, 1, 3);
+    verifyEntry(log, 2, 1, 2);
+    verifyEntry(log, 3, 1, 1);
+
+    log.truncateLogAfterIndexInclusive(2);
+
+    assertEquals(1, log.logEntries.size());
+    assertEquals(1, log.logEntries.getFirst().getIndex());
+    verifyEntry(log, 1, 1, 3);
+  }
+
+
+  //
+  // --------------------------------------------------------------------------
+  // TRUNCATE LOG BEFORE
+  // --------------------------------------------------------------------------
+  //
+
+
+  /**
+   * Ensure that we can't truncate to negative indices
+   */
+  @Test
+  public void truncateBeforeInclusiveNegativeIndex() {
+    RaftLog log = new RaftLog(new SingleByteStateMachine(), new ArrayList<>(), MoreExecutors.newDirectExecutorService());
+    log.appendEntries(0, 0, Collections.singletonList(makeEntry(1, 1, 42)));
+    assertException(() -> log.truncateLogBeforeIndexInclusive(-1L), AssertionError.class);  // or, can ignore the error
+    assertEquals("We should still have our entry", 1, log.logEntries.size());
+  }
+
+
+  /**
+   * Ensure that we can't truncate an empty log.
+   * This is a bit degenerate as a test, but it's a code path in the function.
+   */
+  @Test
+  public void truncateBeforeInclusiveEmptyLog() {
+    RaftLog log = new RaftLog(new SingleByteStateMachine(), new ArrayList<>(), MoreExecutors.newDirectExecutorService());
+    log.truncateLogBeforeIndexInclusive(1L);
+    assertEquals("The log should still be empty", 0, log.logEntries.size());
+  }
+
+
+  /**
+   * Truncate some entries.
+   */
+  @Test
+  public void truncateBeforeInclusiveSimple() {
+    RaftLog log = new RaftLog(new SingleByteStateMachine(), new ArrayList<>(), MoreExecutors.newDirectExecutorService());
+    log.appendEntries(0, 0, Arrays.asList(
+        makeEntry(1, 1, 40),
+        makeEntry(2, 1, 41),
+        makeEntry(3, 1, 42)
+    ));
+
+    log.truncateLogBeforeIndexInclusive(2L);
+    assertEquals("We should have 1 entries now", 1, log.logEntries.size());
+    assertEquals("The entry should be at index 3", 3, log.logEntries.getFirst().getIndex());
+  }
+
+
+  /**
+   * Truncate the whole log
+   */
+  @Test
+  public void truncateBeforeInclusiveWholeLog() {
+    RaftLog log = new RaftLog(new SingleByteStateMachine(), new ArrayList<>(), MoreExecutors.newDirectExecutorService());
+    log.appendEntries(0, 0, Arrays.asList(
+        makeEntry(1, 1, 40),
+        makeEntry(2, 1, 41),
+        makeEntry(3, 1, 42)
+    ));
+
+    log.truncateLogBeforeIndexInclusive(3L);
+    assertTrue("We should no longer have any entries", log.logEntries.isEmpty());
+  }
+
+
+  /**
+   * A vintage Keenon test
+   */
+  @Test
+  public void testTruncateBeforeInclusive() {
+    SingleByteStateMachine stateMachine = new SingleByteStateMachine();
+    RaftLog log = new RaftLog(stateMachine, new ArrayList<>(), MoreExecutors.newDirectExecutorService());
+
+    List<EloquentRaftProto.LogEntry> appendEntries1 = new ArrayList<>();
+    appendEntries1.add(makeEntry(1, 1, 3));
+    appendEntries1.add(makeEntry(2, 1, 2));
+    appendEntries1.add(makeEntry(3, 1, 1));
+
+    // Add the entries as uncommitted
+    boolean success = log.appendEntries(0, 0, appendEntries1);
+    assertTrue(success);
+    assertEquals("Nothing should be committed yet", -1, stateMachine.value);
+
+    // Check the entries are present
+    verifyEntry(log, 1, 1, 3);
+    verifyEntry(log, 2, 1, 2);
+    verifyEntry(log, 3, 1, 1);
+
+    log.truncateLogBeforeIndexInclusive(2);
+
+    assertEquals(1, log.logEntries.size());
+    assertEquals(3, log.logEntries.getFirst().getIndex());
+    verifyEntry(log, 3, 1, 1);
+  }
+
+
+  //
+  // --------------------------------------------------------------------------
+  // MISC TODO(gabor) ORGANIZE ME
+  // --------------------------------------------------------------------------
+  //
+
+
+  /**
+   * Tests {@link RaftLog#getAllUncompressedEntries()}
+   */
+  @Test
+  public void testGetAllUncompressedEntries() {
+    RaftLog log = new RaftLog(new SingleByteStateMachine(), new ArrayList<>(), MoreExecutors.newDirectExecutorService());
+    assertTrue("Should be able to append first entry", log.appendEntries(0, 1, Collections.singletonList(makeEntry(1, 1, 3))));
+    assertEquals(new ArrayList<>(log.logEntries), new ArrayList<>(log.getAllUncompressedEntries()));
+  }
+
+
+  @Test
+  public void updateQuorumOnUpdate() {
+    RaftLog log = new RaftLog(new SingleByteStateMachine(), Arrays.asList("L", "A", "B"), MoreExecutors.newDirectExecutorService());
+    assertTrue("Should be able to append configuration",
+        log.appendEntries(0, 1, Collections.singletonList(makeConfigurationEntry(1, 1, Arrays.asList("L", "A")))));
+    assertEquals("Log should have new entry", 1, log.logEntries.size());
+    assertEquals("Quorum should have been updated", new HashSet<>(Arrays.asList("L", "A")), log.getQuorumMembers());
+    assertTrue("Should be able to append new configuration",
+        log.appendEntries(0, 1, Collections.singletonList(makeConfigurationEntry(2, 1, Arrays.asList("L", "A", "B")))));
+    assertEquals("Quorum should have been updated", new HashSet<>(Arrays.asList("L", "A", "B")), log.getQuorumMembers());
+  }
+
+
+  @Test
+  public void doubleWriteRoot() {
+    SingleByteStateMachine stateMachine = new SingleByteStateMachine();
+    RaftLog log = new RaftLog(stateMachine, new ArrayList<>(), MoreExecutors.newDirectExecutorService());
+
+    List<EloquentRaftProto.LogEntry> appendEntries = new ArrayList<>();
+    // Add a transition to the value 3
+    appendEntries.add(makeEntry(1, 1, 3));
+    appendEntries.add(makeEntry(2, 1, 4));
+
+    // Add the entries as uncommitted
+    boolean success = log.appendEntries(0, 0, appendEntries);
+    assertTrue(success);
+    assertEquals(2, log.logEntries.size());
+    verifyEntry(log, 1, 1, 3);
+    verifyEntry(log, 2, 1, 4);
+
+    // Double add the entries, which should be a no-op
+    success = log.appendEntries(0, 0, appendEntries);
+    assertTrue(success);
+
+    // Check the entry is present
+    verifyEntry(log, 1, 1, 3);
+    verifyEntry(log, 2, 1, 4);
+    assertEquals(2, log.logEntries.size());
+    assertFalse(log.getEntryAtIndex(3).isPresent());
+
+    // Partially commit the entries
+    synchronized (log) {
+      log.setCommitIndex((long) 1, TimerUtils.mockableNow().toEpochMilli());
+    }
+    assertEquals("We should have applied our entry to our state machine", 3, stateMachine.value);
+
+    // Commit the other entry
+    synchronized (log) {
+      log.setCommitIndex((long) 2, TimerUtils.mockableNow().toEpochMilli());
+    }
+    assertEquals("We should have applied our entry to our state machine", 4, stateMachine.value);
+  }
+
+
+  @Test
+  public void simpleFailure() {
+    SingleByteStateMachine stateMachine = new SingleByteStateMachine();
+    RaftLog log = new RaftLog(stateMachine, new ArrayList<>(), MoreExecutors.newDirectExecutorService());
+
+    List<EloquentRaftProto.LogEntry> appendEntries = new ArrayList<>();
+    appendEntries.add(makeEntry(1, 1, 3));
+
+    // Add the entries as uncommitted
+    boolean success = log.appendEntries(0, 0, appendEntries);
+    assertTrue(success);
+    assertEquals("Nothing should be committed yet", -1, stateMachine.value);
+
+    success = log.appendEntries(1, 2, new ArrayList<>()); // <- WRONG TERM
+    assertFalse(success);
+    assertEquals("Nothing should be committed yet", -1, stateMachine.value);
+
+    // Check the entry is present
+    verifyEntry(log, 1, 1, 3);
+
+    // Commit the entries
+    synchronized (log) {
+      log.setCommitIndex((long) 1, TimerUtils.mockableNow().toEpochMilli());
+    }
+    assertEquals("We should have applied our entry to our state machine", 3, stateMachine.value);
+  }
+
+
+  @Test
+  public void truncateOverwrite() {
+    SingleByteStateMachine stateMachine = new SingleByteStateMachine();
+    RaftLog log = new RaftLog(stateMachine, new ArrayList<>(), MoreExecutors.newDirectExecutorService());
+
+    List<EloquentRaftProto.LogEntry> appendEntries1 = new ArrayList<>();
+    appendEntries1.add(makeEntry(1, 1, 3));
+    appendEntries1.add(makeEntry(2, 1, 2));
+    appendEntries1.add(makeEntry(3, 1, 1));
+
+    // Add the entries as uncommitted
+    boolean success = log.appendEntries(0, 0, appendEntries1);
+    assertTrue(success);
+    assertEquals("Nothing should be committed yet", -1, stateMachine.value);
+
+    // Check the entries are present
+    verifyEntry(log, 1, 1, 3);
+    verifyEntry(log, 2, 1, 2);
+    verifyEntry(log, 3, 1, 1);
+
+    List<EloquentRaftProto.LogEntry> appendEntries2 = new ArrayList<>();
+    appendEntries2.add(makeEntry(2, 2, 5));
+    appendEntries2.add(makeEntry(3, 2, 6));
+
+    // Add the entries, which should overwrite previous entries
+    success = log.appendEntries(1, 1, appendEntries2);
+    assertTrue(success);
+    assertEquals("Nothing should be committed yet", -1, stateMachine.value);
+
+    // Check the entries are present
+    verifyEntry(log, 1, 1, 3);
+    verifyEntry(log, 2, 2, 5);
+    verifyEntry(log, 3, 2, 6);
+
+    // test getEntriesSinceInclusive()
+    Optional<List<EloquentRaftProto.LogEntry>> entries = log.getEntriesSinceInclusive(1);
+    assertTrue(entries.isPresent());
+    assertEquals(3, entries.get().size());
+    assertEquals(1, entries.get().get(0).getIndex());
+    entries = log.getEntriesSinceInclusive(3);
+    assertTrue(entries.isPresent());
+    assertEquals(1, entries.get().size());
+
+    // Commit the entries
+    synchronized (log) {
+      log.setCommitIndex((long) 3, TimerUtils.mockableNow().toEpochMilli());
+    }
+    assertEquals("We should have applied our entry to our state machine", 6, stateMachine.value);
+  }
+
+
+  @Test
+  public void doubleTruncateOverwrite() {
+    SingleByteStateMachine stateMachine = new SingleByteStateMachine();
+    RaftLog log = new RaftLog(stateMachine, new ArrayList<>(), MoreExecutors.newDirectExecutorService());
+
+    List<EloquentRaftProto.LogEntry> appendEntries1 = new ArrayList<>();
+    appendEntries1.add(makeEntry(1, 1, 3));
+    appendEntries1.add(makeEntry(2, 1, 2));
+    appendEntries1.add(makeEntry(3, 1, 1));
+
+    // Add the entries as uncommitted
+    boolean success = log.appendEntries(0, 0, appendEntries1);
+    assertTrue(success);
+    assertEquals("Nothing should be committed yet", -1, stateMachine.value);
+
+    // Check the entries are present
+    verifyEntry(log, 1, 1, 3);
+    verifyEntry(log, 2, 1, 2);
+    verifyEntry(log, 3, 1, 1);
+
+    List<EloquentRaftProto.LogEntry> appendEntries2 = new ArrayList<>();
+    appendEntries2.add(makeEntry(2, 2, 5));
+    appendEntries2.add(makeEntry(3, 2, 6));
+
+    // Add the entries, which should overwrite previous entries
+    success = log.appendEntries(1, 1, appendEntries2);
+    assertTrue(success);
+    assertEquals("Nothing should be committed yet", -1, stateMachine.value);
+
+    // Check the entries are present
+    verifyEntry(log, 1, 1, 3);
+    verifyEntry(log, 2, 2, 5);
+    verifyEntry(log, 3, 2, 6);
+    assertEquals(3, log.logEntries.size());
+    assertFalse(log.getEntryAtIndex(4).isPresent());
+    assertFalse(log.getEntryAtIndex(5).isPresent());
+
+    // Add the entries again, which should be a no-op
+    success = log.appendEntries(1, 1, appendEntries2);
+    assertTrue(success);
+    assertEquals("Nothing should be committed yet", -1, stateMachine.value);
+
+    // Check the entries are present
+    verifyEntry(log, 1, 1, 3);
+    verifyEntry(log, 2, 2, 5);
+    verifyEntry(log, 3, 2, 6);
+    assertEquals(3, log.logEntries.size());
+    assertFalse(log.getEntryAtIndex(4).isPresent());
+    assertFalse(log.getEntryAtIndex(5).isPresent());
+
+    // Commit the entries
+    synchronized (log) {
+      log.setCommitIndex((long) 3, TimerUtils.mockableNow().toEpochMilli());
+    }
+    assertEquals("We should have applied our entry to our state machine", 6, stateMachine.value);
+  }
+
+
+  @Test
+  public void failedOverwrite() {
+    SingleByteStateMachine stateMachine = new SingleByteStateMachine();
+    RaftLog log = new RaftLog(stateMachine, new ArrayList<>(), MoreExecutors.newDirectExecutorService());
+
+    List<EloquentRaftProto.LogEntry> appendEntries1 = new ArrayList<>();
+    appendEntries1.add(makeEntry(1, 1, 3));
+    appendEntries1.add(makeEntry(2, 1, 2));
+    appendEntries1.add(makeEntry(3, 1, 1));
+
+    // Add the entries as uncommitted
+    boolean success = log.appendEntries(0, 0, appendEntries1);
+    assertTrue(success);
+    assertEquals("Nothing should be committed yet", -1, stateMachine.value);
+
+    // Check the entries are present
+    verifyEntry(log, 1, 1, 3);
+    verifyEntry(log, 2, 1, 2);
+    verifyEntry(log, 3, 1, 1);
+
+    // Add the entries, which should overwrite previous entries
+    success = log.appendEntries(1, 2, appendEntries1); // <- AN INCORRECT TERM
+    assertFalse(success);
+    assertEquals("Nothing should be committed yet", -1, stateMachine.value);
+
+    // Check the entries are present
+    verifyEntry(log, 1, 1, 3);
+    verifyEntry(log, 2, 1, 2);
+    verifyEntry(log, 3, 1, 1);
+
+    // Commit the entries
+    synchronized (log) {
+      log.setCommitIndex((long) 3, TimerUtils.mockableNow().toEpochMilli());
+    }
+    assertEquals("We should have applied our entry to our state machine", 1, stateMachine.value);
+  }
+
+  @Test
+  public void testClusterMembershipChanges() {
+    SingleByteStateMachine stateMachine = new SingleByteStateMachine();
+
+    Set<String> configuration0 = new HashSet<>();
+    configuration0.add("test1");
+
+    Set<String> configuration1 = new HashSet<>();
+    configuration1.add("test1");
+
+    Set<String> configuration2 = new HashSet<>();
+    configuration2.add("test1");
+    configuration2.add("test2");
+
+    RaftLog log = new RaftLog(stateMachine, configuration0, MoreExecutors.newDirectExecutorService());
+
+    List<EloquentRaftProto.LogEntry> appendEntries1 = new ArrayList<>();
+    appendEntries1.add(makeEntry(1, 1, 3));
+    appendEntries1.add(makeConfigurationEntry(2, 1, configuration1));
+    appendEntries1.add(makeConfigurationEntry(3, 1, configuration2));
+
+    assertEquals(configuration0, log.committedQuorumMembers);
+    assertEquals(configuration0, log.latestQuorumMembers);
+
+    // Add the entries as uncommitted
+    boolean success = log.appendEntries(0, 0, appendEntries1);
+    assertTrue(success);
+    assertEquals("Nothing should be committed yet", -1, stateMachine.value);
+
+    // Check the entries are present
+    verifyEntry(log, 1, 1, 3);
+    verifyConfigurationEntry(log, 2, 1, configuration1);
+    verifyConfigurationEntry(log, 3, 1, configuration2);
+
+    assertEquals(configuration0, log.committedQuorumMembers);
+    assertEquals(configuration2, log.latestQuorumMembers);
+
+    synchronized (log) {
+      log.setCommitIndex((long) 2, TimerUtils.mockableNow().toEpochMilli());
+    }
+
+    assertEquals(configuration1, log.committedQuorumMembers);
+    assertEquals(configuration2, log.latestQuorumMembers);
+
+    synchronized (log) {
+      log.setCommitIndex((long) 3, TimerUtils.mockableNow().toEpochMilli());
+    }
+
+    assertEquals(configuration2, log.committedQuorumMembers);
+    assertEquals(configuration2, log.latestQuorumMembers);
+  }
+
+  @Test
+  public void testGetPreviousEntryTerm() {
+    SingleByteStateMachine stateMachine = new SingleByteStateMachine();
+    RaftLog log = new RaftLog(stateMachine, new ArrayList<>(), MoreExecutors.newDirectExecutorService());
+
+    List<EloquentRaftProto.LogEntry> appendEntries1 = new ArrayList<>();
+    appendEntries1.add(makeEntry(1, 1, 3));
+    appendEntries1.add(makeEntry(2, 1, 2));
+    appendEntries1.add(makeEntry(3, 1, 1));
+
+    Optional<Long> previousEntry = log.getPreviousEntryTerm(0);
+    assertTrue(previousEntry.isPresent());
+    assertEquals(0, (long)previousEntry.get());
+
+    // Add the entries as uncommitted
+    boolean success = log.appendEntries(0, 0, appendEntries1);
+    assertTrue(success);
+    assertEquals("Nothing should be committed yet", -1, stateMachine.value);
+
+    // Check the entries are present
+    verifyEntry(log, 1, 1, 3);
+    verifyEntry(log, 2, 1, 2);
+    verifyEntry(log, 3, 1, 1);
+
+    previousEntry = log.getPreviousEntryTerm(0);
+    assertTrue(previousEntry.isPresent());
+    assertEquals(0, (long)previousEntry.get());
+    previousEntry = log.getPreviousEntryTerm(1);
+    assertTrue(previousEntry.isPresent());
+    assertEquals(1, (long)previousEntry.get());
+    previousEntry = log.getPreviousEntryTerm(2);
+    assertTrue(previousEntry.isPresent());
+    assertEquals(1, (long)previousEntry.get());
+    previousEntry = log.getPreviousEntryTerm(3);
+    assertTrue(previousEntry.isPresent());
+    assertEquals(1, (long)previousEntry.get());
+
+    synchronized (log) {
+      log.setCommitIndex((long) 2, TimerUtils.mockableNow().toEpochMilli());
+    }
+    log.forceSnapshot();
+
+    previousEntry = log.getPreviousEntryTerm(0);
+    assertTrue(previousEntry.isPresent());
+    previousEntry = log.getPreviousEntryTerm(1);
+    assertFalse(previousEntry.isPresent());
+    previousEntry = log.getPreviousEntryTerm(2);
+    assertTrue(previousEntry.isPresent());
+    assertEquals(1, (long)previousEntry.get());
+    previousEntry = log.getPreviousEntryTerm(3);
+    assertTrue(previousEntry.isPresent());
+    assertEquals(1, (long)previousEntry.get());
   }
 
 
@@ -1360,7 +2229,6 @@ public class RaftLogTest {
   /**
    * Ensure that we can append entries that agree initially, and then disagree with the log.
    */
-  @SuppressWarnings("ArraysAsListWithZeroOrOneArgument")
   @Test
   public void appendTruncateAndOverwriteWithInitialAgreement() {
     SingleByteStateMachine stateMachine = new SingleByteStateMachine();
@@ -1401,7 +2269,6 @@ public class RaftLogTest {
   /**
    * Ensure that we can append entries that agree fully, and extend the log forward
    */
-  @SuppressWarnings("ArraysAsListWithZeroOrOneArgument")
   @Test
   public void appendTruncateAndOverwriteWithFullAgreement() {
     SingleByteStateMachine stateMachine = new SingleByteStateMachine();
@@ -1447,7 +2314,6 @@ public class RaftLogTest {
   /**
    * Ensure that we can append entries that agree initially, and then disagree with the log.
    */
-  @SuppressWarnings("ArraysAsListWithZeroOrOneArgument")
   @Test
   public void truncateOverwriteOnSnapshot() {
     SingleByteStateMachine stateMachine = new SingleByteStateMachine();
@@ -1491,7 +2357,6 @@ public class RaftLogTest {
   /**
    * Ensure that we can install a snapshot that totally nukes a list of entries by disagreeing with them
    */
-  @SuppressWarnings("ArraysAsListWithZeroOrOneArgument")
   @Test
   public void installSnapshotOverwrite() {
     SingleByteStateMachine stateMachine = new SingleByteStateMachine();
@@ -1510,16 +2375,14 @@ public class RaftLogTest {
     assertFalse("There should not be a snapshot", log.snapshot.isPresent());
     assertEquals("There should be 5 log entries", 5, log.logEntries.size());
 
-    long lastIndex = 3;
-    long lastTerm = 2;
-    RaftLog.Snapshot snapshot = new RaftLog.Snapshot(new byte[]{3}, lastIndex, lastTerm, new ArrayList<>());
+    RaftLog.Snapshot snapshot = new RaftLog.Snapshot(new SingleByteStateMachine(3).serialize(), 3, 3, new ArrayList<>());
 
     assertTrue(log.installSnapshot(snapshot, 0));
-    assertEquals("We should have committed up until at least the last snapshot index", lastIndex, log.commitIndex);
+    assertEquals("We should have committed up until at least the last snapshot index", 3, log.commitIndex);
 
     // Snapshot until the 3rd index
     assertTrue("There should be a snapshot", log.snapshot.isPresent());
-    assertEquals("There should be no uncompacted log entries", 0, log.logEntries.size());
+    assertEquals("There should be no un-compacted log entries", 0, log.logEntries.size());
   }
 
 
@@ -1527,7 +2390,6 @@ public class RaftLogTest {
    * Ensure that we can install a snapshot that subsumes part of our log, even while we've already committed beyond the
    * end of it.
    */
-  @SuppressWarnings("ArraysAsListWithZeroOrOneArgument")
   @Test
   public void installSnapshotTruncateAlreadyCommitted() {
     SingleByteStateMachine stateMachine = new SingleByteStateMachine();

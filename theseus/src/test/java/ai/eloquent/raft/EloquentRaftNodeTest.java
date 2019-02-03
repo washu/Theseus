@@ -64,7 +64,7 @@ public class EloquentRaftNodeTest extends WithLocalTransport {
     L.bootstrap(false);
     awaitElection(transport, true, L, A, B);
     try {
-      assertEquals("L should not have any errors", Collections.emptyList(), L.errors());
+//      assertEquals("L should not have any errors", Collections.emptyList(), L.errors());
       assertTrue("L should have become the leader", L.algorithm.mutableState().isLeader());
       assertEquals("L should know about A and B", new HashSet<>(Arrays.asList("A", "B")), L.algorithm.mutableState().lastMessageTimestamp.get().keySet());
       callback.accept(new EloquentRaftNode[]{L, A, B});

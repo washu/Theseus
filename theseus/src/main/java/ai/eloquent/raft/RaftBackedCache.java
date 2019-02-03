@@ -30,7 +30,7 @@ public abstract class RaftBackedCache<V> implements Iterable<Map.Entry<String,V>
    */
   private static final Logger log = LoggerFactory.getLogger(RaftBackedCache.class);
 
-  private static final int DEFAULT_MAX_SIZE_BYTES = 0x1 << 20; // 1MB by default
+  private static final int DEFAULT_MAX_SIZE_BYTES = 0x1 << 18; // 256kb by default
 
   /**
    * The implementing Raft for the cache.

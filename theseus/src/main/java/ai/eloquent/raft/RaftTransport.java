@@ -126,6 +126,15 @@ public interface RaftTransport {
   }
 
 
+  /**
+   * The current (local) time on the transport in nanoseconds.
+   * This is usually {@link System#nanoTime()} if this isn't a mock.
+   */
+  default long nowNanos() {
+    return System.nanoTime();
+  }
+
+
   /** Sleep for the given number of milliseconds. This is purely for mocking for tests. */
   default void sleep(long millis) {
     sleep(millis, 0);
@@ -376,12 +385,6 @@ public interface RaftTransport {
     } else {
       return "unknown";
     }
-  }
-
-
-  /** @see Transport#isSaturated()  */
-  default boolean isSaturated() {
-    return false;
   }
 
 }

@@ -117,6 +117,12 @@ public class SingleThreadedRaftAlgorithm implements RaftAlgorithm {
    * of messages.
    */
   static class RaftDeque implements Deque<RaftTask> {
+    /** To save our logs from spamming the "spent too long waiting" message */
+    long lastWarn = 0L;
+    /** The number of warnings we didn't show. */
+    int maskedWarnings = 0;
+    /** The maximum time we delayed in a masked warning. */
+    long maxDelayInMaskedWarnings = 0;
 
     /**
      * The maximum number of tasks to keep in the queue.
@@ -136,6 +142,7 @@ public class SingleThreadedRaftAlgorithm implements RaftAlgorithm {
      * Ensure that we actually have the capacity to add to the Deque
      */
     private synchronized void ensureCapacity(TaskPriority priority) {
+      // Wait for the queue to free up
       long startTime = System.currentTimeMillis();
       while (! (this.size() < MAX_SIZE || (priority == TaskPriority.CRITICAL && criticalPriority.isEmpty())) ) {
         try {
@@ -145,8 +152,20 @@ public class SingleThreadedRaftAlgorithm implements RaftAlgorithm {
         }
       }
       long endTime = System.currentTimeMillis();
+
+      // 2. A lot of stupid code for logging
       if (endTime - startTime > 100) {
-        log.warn("Spent {} waiting for Raft task to queue (priority {})", TimerUtils.formatTimeDifference(endTime - startTime), priority);
+        if (endTime - lastWarn > 10000) {
+          log.warn("Spent {} waiting for Raft task to queue (priority {}; squashed {} similar messages w/max delay of {})",
+              TimerUtils.formatTimeDifference(endTime - startTime), priority, maskedWarnings,
+              TimerUtils.formatTimeDifference(maxDelayInMaskedWarnings));
+          maskedWarnings = 0;
+          maxDelayInMaskedWarnings = 0;
+          lastWarn = endTime;
+        } else {
+          maskedWarnings += 1;
+          maxDelayInMaskedWarnings = Math.max(maxDelayInMaskedWarnings, endTime - startTime);
+        }
       }
     }
 
@@ -727,9 +746,7 @@ public class SingleThreadedRaftAlgorithm implements RaftAlgorithm {
     this.raftThread.setPriority(Math.max(Thread.NORM_PRIORITY, Thread.MAX_PRIORITY - 2));
     this.raftThread.setDaemon(false);
     this.raftThread.setName("raft-control-" + impl.serverName());
-    this.raftThread.setUncaughtExceptionHandler((t, e) -> {
-      log.warn("Caught exception on {}:", t.getName(), e);
-    });
+    this.raftThread.setUncaughtExceptionHandler((t, e) -> log.warn("Caught exception on {}:", t.getName(), e));
     this.raftThread.start();
     this.boundaryPool = boundaryPool;
   }
@@ -1219,9 +1236,9 @@ public class SingleThreadedRaftAlgorithm implements RaftAlgorithm {
 
   /** {@inheritDoc} */
   @Override
-  public void awaitCapacity() {
+  public void awaitLeaderKnown() {
     this.raftTasks.ensureCapacity(TaskPriority.LOW);
-    this.impl.awaitCapacity();
+    this.impl.awaitLeaderKnown();
   }
 
 
@@ -1304,6 +1321,9 @@ public class SingleThreadedRaftAlgorithm implements RaftAlgorithm {
   @Override
   protected void finalize() throws Throwable {
     super.finalize();
-    stop(true);
+    if (this.alive) {
+      log.warn("Stopping raft from finalize() -- this is a memory leak that you should have cleaned up!");
+      stop(true);
+    }
   }
 }

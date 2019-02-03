@@ -18,7 +18,6 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
-import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
 import java.util.regex.Pattern;
 
@@ -157,18 +156,6 @@ public class UDPTransport implements Transport {
    * local area network.
    */
   public final boolean allowJumboPackets;
-
-
-  /**
-   * A queue of messages to send asynchronously.
-   */
-  private final Queue<Runnable> sendQueue = new ArrayDeque<>();
-
-
-  /**
-   * A rate limiter to spare the transport
-   */
-  private final LeakyBucket rateLimiter = new LeakyBucket(32L, 10000000L);  // 10ms between messages, buffer of 32.
 
 
   /**
@@ -428,7 +415,7 @@ public class UDPTransport implements Transport {
           }
         }
       } catch (Throwable e) {
-        log.error("Could not establish TCP socket -- this is an error!");
+        log.error("Could not establish TCP socket -- this is an error!", e);
       } finally {
         log.error("Why did we shut down the transport listener thread?");
       }
@@ -440,57 +427,6 @@ public class UDPTransport implements Transport {
     tcpServer.setUncaughtExceptionHandler((t, e) -> log.warn("Uncaught exception on thread {}: ", t, e));
     tcpServer.setPriority(Thread.MAX_PRIORITY - 1);
     tcpServer.start();
-
-    // V. Configure sender thread
-    log.info("Starting sender thread" + tcpListenPort);
-    final AtomicLong lastSendTime = new AtomicLong(-1L);
-    // This thread waits for messages to show up on a send queue, and sends
-    // them one by one. The motivation here is to allow the thread to be
-    // interrupted by the timer task below if a message takes too long to send.
-    Thread sender = new Thread(() -> {
-      while (true) {
-        try {
-          // 1. Wait for a message
-          synchronized (sendQueue) {
-            while (sendQueue.isEmpty()) {
-              try {
-                sendQueue.wait(100);
-              } catch (InterruptedException ignored) {}
-            }
-          }
-          // 2. Get the message
-          Runnable message = sendQueue.poll();
-          try {
-            // 3. Send the message
-            if (message != null) {
-              lastSendTime.set(System.currentTimeMillis());
-              message.run();
-              lastSendTime.set(-1L);
-            }
-          } catch (Exception e) {
-            log.warn("Could not send message: {}: {}", e.getClass().getSimpleName(), e.getMessage());
-          }
-        } catch (Throwable t) {
-          log.warn("Caught exception sending message on transport: ", t);
-        }
-      }
-
-    });
-    sender.setDaemon(true);
-    sender.setName("transport-sender");
-    sender.setUncaughtExceptionHandler((t, e) -> log.warn("Uncaught exception on thread {}: ", t, e));
-    sender.setPriority(Thread.MAX_PRIORITY - 1);
-    sender.start();
-
-    // Every 100ms, make sure that the socket sender thread is not stuck.
-    RaftLifecycle.global.timer.get().scheduleAtFixedRate(new SafeTimerTask() {
-      @Override
-      public void runUnsafe() {
-        if (System.currentTimeMillis() - lastSendTime.get() > 100) {
-          sender.interrupt();
-        }
-      }
-    }, Duration.ofMillis(100));
   }
 
 
@@ -603,7 +539,7 @@ public class UDPTransport implements Transport {
         long socketSendStart = System.currentTimeMillis();
         try {
           Optional<Socket> tcpSocket = getTcpSocket(InetAddress.getByName(destination), false);
-          tcpSocket.ifPresent(socket1 -> safeWrite(proto, socket1, "sendTransport"));
+          tcpSocket.ifPresent(socket1 -> safeWriteTcp(proto, socket1, "sendTransport"));
         } finally {
           long socketSendEnd = System.currentTimeMillis();
           if (socketSendEnd > socketSendStart + 100) {
@@ -628,7 +564,6 @@ public class UDPTransport implements Transport {
       }
     } finally {
       lastMessageSent = System.currentTimeMillis();
-      rateLimiter.forceSubmit();
     }
     return false;
   }
@@ -820,7 +755,7 @@ public class UDPTransport implements Transport {
         for (InetAddress addr : this.broadcastAddrs) {
           try {
             Optional<Socket> tcpSocket = getTcpSocket(addr, false);
-            tcpSocket.ifPresent(socket1 -> safeWrite(proto, socket1, "broadcastTransport"));
+            tcpSocket.ifPresent(socket1 -> safeWriteTcp(proto, socket1, "broadcastTransport"));
           } catch (Throwable t) {
             log.warn("Unhandled exception sending message on TCP socket", t);
 
@@ -831,18 +766,9 @@ public class UDPTransport implements Transport {
       }
     } finally {
       lastMessageSent = System.currentTimeMillis();
-      rateLimiter.forceSubmit();
       log.trace("Sending UDP broadcast took {}", TimerUtils.formatTimeSince(startTime));
     }
     return false;
-  }
-
-
-  /** {@inheritDoc} */
-  @Override
-  public boolean isSaturated() {
-    // Check if we're sending more than 1 message every 5ms on average
-    return rateLimiter.isFull();
   }
 
 
@@ -854,26 +780,17 @@ public class UDPTransport implements Transport {
    * @param tcpSocket The socket we're sending the message over
    * @param source A debug source for when we log errors.
    */
-  private void safeWrite(UDPBroadcastProtos.UDPPacket proto, Socket tcpSocket, String source) {
-    synchronized (sendQueue) {
-      if (sendQueue.size() < 10000) {
-        sendQueue.offer(() -> {
-          synchronized (tcpSocket) {
-            try {
-              proto.writeDelimitedTo(tcpSocket.getOutputStream());
-            } catch (IOException e) {
-              log.info("IO or Socket exception writing to TCP socket ({}): {}", source, e.getMessage());
-              try {
-                tcpSocket.close();
-              } catch (Throwable ignored) {
-              }
-            } catch (Throwable e) {
-              log.warn("Unknown exception writing to TCP socket (" + source + "): ", e);
-            }
-          }
-        });
-        sendQueue.notify();
+  private synchronized void safeWriteTcp(UDPBroadcastProtos.UDPPacket proto, final Socket tcpSocket, String source) {
+    try {
+      proto.writeDelimitedTo(tcpSocket.getOutputStream());
+    } catch (IOException e) {
+      log.info("IO or Socket exception writing to TCP socket ({}): {}", source, e.getMessage());
+      try {
+        tcpSocket.close();
+      } catch (Throwable ignored) {
       }
+    } catch (Throwable e) {
+      log.warn("Unknown exception writing to TCP socket (" + source + "): ", e);
     }
   }
 

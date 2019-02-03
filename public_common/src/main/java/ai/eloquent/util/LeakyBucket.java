@@ -3,6 +3,8 @@ package ai.eloquent.util;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.concurrent.TimeUnit;
+
 /**
  * <p>
  *   An implementation of a Leaky Bucket rate limiter.
@@ -15,7 +17,10 @@ import org.slf4j.LoggerFactory;
  * </p>
  *
  * <ol>
- *   <li>Forcing elements into the bucket, </li>
+ *   <li>Forcing elements into the bucket.</li>
+ *   <li>Waiting (i.e., blocking) until the bucket has capacity.</li>
+ *   <li>Checking if the bucket is full -- though this should always be treated as
+ *       an approximate (i.e., not atomic) check.</li>
  * </ol>
  *
  * @author <a href="mailto:gabor@eloquent.ai">Gabor Angeli</a>
@@ -54,13 +59,18 @@ public class LeakyBucket {
    * The straightforward constructor.
    *
    * @param bucketCapacity See {@link #bucketCapacity}.
-   * @param nanosBetweenLeaks See {@link #nanosBetweenLeaks}.
+   * @param periodBetweenDrops The period between when drops go out of the bucket.
+   *                           That is, the period that we want to set for the average "rate"
+   *                           we are enforcing.
+   * @param periodUnit The units that the period is in.
    */
-  public LeakyBucket(long bucketCapacity, long nanosBetweenLeaks) {
+  public LeakyBucket(long bucketCapacity, long periodBetweenDrops, TimeUnit periodUnit) {
     assert bucketCapacity > 0 : "It doesn't make sense to create a bucket with capacity <= 0";
+    long nanosBetweenLeaks = periodUnit.toNanos(periodBetweenDrops);
     assert nanosBetweenLeaks > 0 : "It doesn't make sense to make the nanos between leaks <= 0";
     this.bucketCapacity = bucketCapacity;
     this.nanosBetweenLeaks = nanosBetweenLeaks;
+
   }
 
 

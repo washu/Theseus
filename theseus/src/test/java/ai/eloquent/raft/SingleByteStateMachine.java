@@ -11,7 +11,15 @@ import java.util.concurrent.ExecutorService;
 public class SingleByteStateMachine extends RaftStateMachine {
 
   /** The value of the state machine */
-  public byte value = -1;  // value starts at -1
+  public byte value;
+
+  public SingleByteStateMachine(int value) {
+    this.value = (byte) value;
+  }
+
+  public SingleByteStateMachine() {
+    this(-1);  // value starts at -1
+  }
 
   /** {@inheritDoc} */
   @Override

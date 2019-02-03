@@ -65,11 +65,11 @@ message AppendEntriesRequest {
   // term of log entry immediately preceding new ones
   uint64 prevLogTerm = 4;
   // log entries to store (empty for heartbeat; may send more than one for efficiency)
-  repeated LogEntry entries = 5;
+  repeated LogEntry entry = 5;
   // the leader's commitIndex
   uint64 leaderCommit = 6;
   // NOT STANDARD RAFT: the leader's timestamp, so we can compute the timish values across the cluster
-  uint64 leaderTimish = 7;
+  uint64 leaderTimish = 7 [deprecated=true];
 }
 
 message AppendEntriesReply {
@@ -109,14 +109,14 @@ message RequestVoteRequest {
 }
 
 message RequestVoteReply {
-  // the term of the leader, echoed back to it.
-  uint64 term         = 1;
-  // the term of the follower, who is giving the vote.
-  uint64 followerTerm = 4;
+  // the term of both the voter and requester -- these will be the same by the time the response is sent
+  uint64 term          = 1;
+  // the term of the follower, who is giving the vote. This should always be the same as |term| above
+  uint64 voterTerm     = 4 [deprecated=true];
   // true means candidate received vote
-  bool   voteGranted  = 2;
+  bool   voteGranted   = 2;
   // The name of the follower that sent this reply. */
-  string followerName = 3;
+  string voterName     = 3;
 }
 
 //

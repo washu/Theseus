@@ -342,9 +342,8 @@ public class Theseus implements HasRaftLifecycle {
 
 
   /**
-   * The constructor takes three arguments: a cluster name (for discovery), a server name (for identifying ourselves,
-   * must be unique within the cluster), and a reference to the lifecycle object that governs this Theseus (so that
-   * tests can pass different RaftLifecycle objects to different Raft instances).
+   * Create a new Theseus instance from an underlying implementation (i.e., algorithm), a transport it should run on,
+   * and the lifecycle we should use for managing global state and the program's lifecycle.
    *
    * @param algo The Raft algorithm to use. Defaults to {@link EloquentRaftAlgorithm}.
    * @param transport The type of transport to use for this Raft cluster.
@@ -1173,6 +1172,19 @@ public class Theseus implements HasRaftLifecycle {
       locks.put(entry.getKey(), entry.getValue().holder == null ? "<none>" : entry.getValue().holder.server);
     }
     return locks;
+  }
+
+
+  /**
+   * Get the approximate memory footprint of the Raft state machine.
+   * Note that this is an approximation -- e.g., it depends on the size of the heap, the GC used,
+   * etc.
+   */
+  public long memoryFootprint() {
+    long[] size = new long[]{32};
+    stateMachine.values.forEach((key, value) -> size[0] += 16 * 6 + key.length() + 2 + value.byteSize());
+    stateMachine.locks.forEach((key, value) -> size[0] += 16 * (7 + value.waiting.size() * 2) + key.length() * 2 + value.byteSize());
+    return size[0];
   }
 
 

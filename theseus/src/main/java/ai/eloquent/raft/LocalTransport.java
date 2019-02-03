@@ -103,48 +103,6 @@ public class LocalTransport implements RaftTransport {
 
 
   /**
-   * A runnable task that can be queued on the transport.
-   */
-  private class TransportTask implements TransportEvent {
-    /** The task to run, taking the current time as an argument. */
-    private final Consumer<Long> task;
-    /** For debugging: the time at which the event was queued */
-    private final long queuedAt;
-    /** The call stack that led to this task */
-    private String stack;
-    /** This lets us filter out TransportTasks that are queued up by the tests */
-    private boolean testTask;
-
-    /** A straightforward constructor. */
-    private TransportTask(Consumer<Long> task) {
-      this.task = task;
-      this.queuedAt = now();
-
-      if (RaftLog.level() > 0) { // If we're not on TRACE, don't keep a stack from where this came from
-        stack = "";
-        testTask = false;
-      }
-      else {
-        try {
-          throw new RuntimeException();
-        } catch (Throwable t) {
-          StringWriter sw = new StringWriter();
-          PrintWriter pw = new PrintWriter(sw);
-          t.printStackTrace(pw);
-          stack = sw.toString();
-          testTask = stack.contains("AbstractRaftAlgorithmTest");
-        }
-      }
-    }
-
-    @Override
-    public String toString() {
-      return "TransportTask from @"+this.queuedAt+": "+(testTask ? "AbstractRaftAlgorithmTest" : stack);
-    }
-  }
-
-
-  /**
    * The specification for code awaiting a callback.
    */
   private static class WaitingCallback {
@@ -791,6 +749,17 @@ public class LocalTransport implements RaftTransport {
       return System.currentTimeMillis();
     } else {
       return transportMockTimer.now();
+    }
+  }
+
+
+  /** {@inheritDoc} */
+  @Override
+  public long nowNanos() {
+    if (this.trueTime) {
+      return System.nanoTime();
+    } else {
+      return transportMockTimer.now() * 1000000;
     }
   }
 

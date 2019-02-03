@@ -2,6 +2,7 @@ package ai.eloquent.raft;
 
 import ai.eloquent.monitoring.Prometheus;
 import ai.eloquent.util.FunctionalUtils;
+import ai.eloquent.util.Pair;
 import ai.eloquent.util.TimerUtils;
 import com.sun.management.GcInfo;
 import org.slf4j.Logger;
@@ -12,8 +13,10 @@ import java.lang.management.GarbageCollectorMXBean;
 import java.lang.management.ManagementFactory;
 import java.util.*;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.ExecutorService;
 import java.util.function.Consumer;
+import java.util.stream.Collectors;
 
 /**
  * There turns out to be an annoying amount of book-keeping around the logging abstraction in Raft, since it can be
@@ -29,86 +32,10 @@ public class RaftLog {
   private static final Logger log = LoggerFactory.getLogger(RaftLog.class);
 
   /**
-   *   <li>0: trace</li>
-   *   <li>1: debug</li>
-   *   <li>2: info</li> (Default)
-   *   <li>3: warn</li>
-   *   <li>4: error</li>
-   *   <li>99: off</li>
-   */
-  private static int minLogLevel = 2;
-
-  /**
-   * Explicitly set the log level. These are:
-   *
-   * <ul>
-   *   <li>0: trace</li>
-   *   <li>1: debug</li>
-   *   <li>2: info</li>
-   *   <li>3: warn</li>
-   *   <li>4: error</li>
-   * </ul>
-   */
-  public static void setLevel(int level) {
-    minLogLevel = level;
-  }
-
-  /**
-   * Explicitly set the log level. These are:
-   *
-   * <ul>
-   *   <li>trace</li>
-   *   <li>debug</li>
-   *   <li>info</li>
-   *   <li>warn</li>
-   *   <li>error</li>
-   *   <li>off</li>
-   * </ul>
-   *
-   * On an invalid level, we default to 'info'
-   */
-  public static void setLevel(String level) {
-    switch (level.toLowerCase()) {
-      case "trace":
-      case "0":
-        minLogLevel = 0;
-        break;
-      case "debug":
-      case "1":
-        minLogLevel = 1;
-        break;
-      case "info":
-      case "2":
-        minLogLevel = 2;
-        break;
-      case "warn":
-      case "3":
-        minLogLevel = 3;
-        break;
-      case "error":
-      case "4":
-        minLogLevel = 4;
-        break;
-      case "off":
-      case "5":
-        minLogLevel = 99;
-        break;
-      default:
-        minLogLevel = 2;
-    }
-  }
-
-  /**
-   * Get the current log level.
-   */
-  public static int level() {
-    return minLogLevel;
-  }
-
-  /**
    * The number of log entries to keep in the log before compacting into a snapshot.
    */
-  public static final int COMPACTION_LIMIT = 0x1 << 14; // 16k
+  public static final int COMPACTION_LIMIT
+      = "true".equals(System.getenv("CI")) ? 32 : (0x1 << 14); // 16k
 
   /**
    * A pool for completing commit futures.
@@ -178,7 +105,7 @@ public class RaftLog {
   /**
    * CORE: This is used by leaders to know when a commit has been replicated and it's safe to respond to a caller
    */
-  final List<CommitFuture> commitFutures = new ArrayList<>();
+  final Collection<CommitFuture> commitFutures = new ConcurrentLinkedQueue<>();
 
   /**
    * LOG COMPACTION: This is used to backstop the log when we compact committed entries.
@@ -290,7 +217,6 @@ public class RaftLog {
    */
   void unsafeBootstrapQuorum(Collection<String> initialConfiguration) {
     Object timerStart = Prometheus.startTimer(summaryTiming);
-    assertConsistency();
     try {
       assert getQuorumMembers().isEmpty() : "Cannot bootstrap from an existing quorum";
       this.initialQuorumMembers = FunctionalUtils.immutable(new HashSet<>(initialConfiguration));
@@ -325,7 +251,7 @@ public class RaftLog {
    */
   public long getLastEntryIndex() {
     // Note: don't run consistency on this method
-    if (logEntries.size() > 0) {
+    if (!logEntries.isEmpty()) {
       return logEntries.getLast().getIndex();
     } else if (snapshot.isPresent()) {
       // the index of the entry that was actually the last one to be compacted is actually the prevLogIndex + 1 of the
@@ -344,7 +270,6 @@ public class RaftLog {
    * This returns index of the last log entry, regardless of whether it's been committed or not
    */
   public long getLastEntryTerm() {
-    assertConsistency();
     try {
       if (logEntries.size() > 0) {
         return logEntries.getLast().getTerm();
@@ -366,7 +291,6 @@ public class RaftLog {
    * This returns the most up-to-date view of the cluster membership that we have.
    */
   public Set<String> getQuorumMembers() {
-    assertConsistency();
     return this.latestQuorumMembers;
   }
 
@@ -375,7 +299,6 @@ public class RaftLog {
    * @return all entries that haven't been snapshotted yet.
    */
   public List<EloquentRaftProto.LogEntry> getAllUncompressedEntries() {
-    assertConsistency();
     return new ArrayList<>(this.logEntries);
   }
 
@@ -390,7 +313,6 @@ public class RaftLog {
    */
   public Optional<List<EloquentRaftProto.LogEntry>> getEntriesSinceInclusive(long startIndex) {
     Object timerStart = Prometheus.startTimer(summaryTiming);
-    assertConsistency();
     try {
       // Requesting an update in the future is just requesting a heartbeat
       if (startIndex > getLastEntryIndex()) {
@@ -433,7 +355,6 @@ public class RaftLog {
    */
   public Optional<Long> getPreviousEntryTerm(long index) {
     Object timerStart = Prometheus.startTimer(summaryTiming);
-    assertConsistency();
     try {
       // Requesting an update in the future
       if (index > getLastEntryIndex()) {
@@ -471,7 +392,6 @@ public class RaftLog {
    */
   public boolean getSafeToChangeMembership() {
     Object timerStart = Prometheus.startTimer(summaryTiming);
-    assertConsistency();
     try {
       // If any uncommitted entry is of type CONFIGURATION, return false
       for (long i = commitIndex + 1; i <= getLastEntryIndex(); i++) {
@@ -497,7 +417,6 @@ public class RaftLog {
    */
   public Optional<RaftLogEntryLocation> lastConfigurationEntryLocation() {
     Object timerStart = Prometheus.startTimer(summaryTiming);
-    assertConsistency();
     try {
       Iterator<EloquentRaftProto.LogEntry> iter = this.logEntries.descendingIterator();
       while (iter.hasNext()) {
@@ -541,7 +460,6 @@ public class RaftLog {
    */
   CompletableFuture<Boolean> createCommitFuture(long index, long term, boolean isInternal) {
     Object timerStart = Prometheus.startTimer(summaryTiming);
-    assertConsistency();
     try {
       CompletableFuture<Boolean> listener = new CompletableFuture<>();
       // 1. If this is a future for an event that has already happened, then complete it now
@@ -591,7 +509,6 @@ public class RaftLog {
    */
   public void setCommitIndex(long leaderCommit, long now) {
     Object timerStart = Prometheus.startTimer(summaryTiming);
-    assertConsistency();
     try {
       if (leaderCommit > commitIndex) {
         // 1. Some checks
@@ -637,7 +554,6 @@ public class RaftLog {
 
         // 3. Update the commit index
         commitIndex = newCommitIndex;
-        assertConsistency();
 
         // 4. Complete any CommitFutures that are waiting for this commit
         Map<Long, Long> termForIndex = new HashMap<>();  // A cache to avoid too many calls to previousEntryTerm
@@ -669,7 +585,16 @@ public class RaftLog {
               }
             }
             // 4.4. fire the future
-            commitFuture.complete.accept(success);
+            long futureCompleteBegin = System.currentTimeMillis();
+            try {
+              commitFuture.complete.accept(success);
+            } finally {
+              long futureCompleteEnd = System.currentTimeMillis();
+              if (futureCompleteEnd > futureCompleteBegin + 10000) {
+                log.warn("Completing a future took >10ms ({}) -- this likely indicates that we didn't defer user code to a thread pool",
+                    TimerUtils.formatTimeDifference(futureCompleteEnd - futureCompleteBegin));
+              }
+            }
             commitFuturesIter.remove();
           }
         }
@@ -694,113 +619,110 @@ public class RaftLog {
    * @param prevLogTerm the log term for the entry immediately preceding the entries to be appended
    * @param entries the entries to be appended
    *
-   * @return true if the append command is in the log.
+   * @return true if the append command is in the log; false if we should "reply false" to the RPC.
    */
+  @SuppressWarnings("ConstantConditions")
   public boolean appendEntries(long prevLogIndex, long prevLogTerm, List<EloquentRaftProto.LogEntry> entries) {
     Object timerStart = Prometheus.startTimer(summaryTiming);
-    assertConsistency();
+    // Should assert that our entries are sorted
+    assert entries.stream().sorted(Comparator.comparingLong(EloquentRaftProto.LogEntry::getIndex)).collect(Collectors.toList()).equals(entries) : "Entries we're appending should be sorted";
 
     try {
       // 1. Reply false if log doesn't contain an entry at prevLogIndex whose term matches prevLogTerm
       Optional<EloquentRaftProto.LogEntry> prevEntry = getEntryAtIndex(prevLogIndex);
       boolean allowEntry = false;
-      if (prevLogIndex == 0) {
-        allowEntry = true; // Always allow the first entry
-      } else if (prevEntry.isPresent() && prevEntry.get().getTerm() == prevLogTerm) {
-        allowEntry = true; // Allow if there's a matching previous entry
-      } else if (snapshot.isPresent() && snapshot.get().lastTerm == prevLogTerm && snapshot.get().lastIndex == prevLogIndex) {
-        allowEntry = true; // Allow if the snapshot matches the previous entry
+      if (prevEntry.isPresent() && prevEntry.get().getTerm() == prevLogTerm) {
+        // Allow if we're appending correctly to the log
+        allowEntry = entries.isEmpty() || prevEntry.get().getTerm() <= entries.get(0).getTerm();
+      } else if (prevLogIndex == 0 && !prevEntry.isPresent()) {
+        // Special case for the first index
+        // basically always allow, unless there's a super-esoteric term mismatch.
+        allowEntry = entries.isEmpty() || this.logEntries.isEmpty() || entries.get(0).getTerm() >= this.logEntries.getFirst().getTerm();
+      } else if (snapshot.isPresent() && snapshot.get().lastTerm <= prevLogTerm && snapshot.get().lastIndex == prevLogIndex) {
+        // Allow if we're appending correctly to a snapshot
+        allowEntry = entries.isEmpty() || (
+            entries.get(0).getIndex() == snapshot.get().lastIndex + 1 && entries.get(0).getTerm() >= snapshot.get().lastTerm);
       }
-      assert (entries.stream().noneMatch(entry -> this.getEntryAtIndex(entry.getIndex()).map(savedEntry -> savedEntry.getTerm() > entry.getTerm()).orElse(false))) : "We should never overwrite an entry with a lower term";
       if (!allowEntry) {
         if (!entries.isEmpty()) {
-          log.info("Rejecting log transition: prevLogIndex={}  prevEntry.getTerm()={}  prevLogTerm={}  commitIndex={}",
-              prevLogIndex, prevEntry.map(EloquentRaftProto.LogEntry::getTerm).orElse(-1L), prevLogTerm, commitIndex);
+          log.info("Rejecting log transition: prevLogIndex={}  prevEntry.getTerm()={}  prevLogTerm={}  commitIndex={}  snapshot.lastTerm={}  snapshot.lastIndex={}",
+              prevLogIndex, prevEntry.map(EloquentRaftProto.LogEntry::getTerm).orElse(-1L), prevLogTerm, commitIndex,
+              snapshot.map(x -> x.lastTerm).orElse(-1L), snapshot.map(x -> x.lastIndex).orElse(-1L));
         }
         return false;
       }
+      assert (entries.stream().noneMatch(entry -> this.getEntryAtIndex(entry.getIndex()).map(savedEntry -> savedEntry.getTerm() > entry.getTerm()).orElse(false))) : "We should never overwrite an entry with a lower term";
 
-      // Short circuit for if this is just a heartbeat
+      // 2. Short circuit for if this is just a heartbeat
       if (entries.isEmpty()) {
-        // (but: make sure we're not deleting anything)
-        if (this.logEntries.isEmpty()) {
-          // the log is empty and we're not adding anything
-          return true;
-        }
-        if (prevEntry.isPresent() &&
-            prevEntry.get().getIndex() == prevLogIndex && prevEntry.get().getTerm() == prevLogTerm &&
-            prevEntry.get().getIndex() == getLastEntryIndex()
-            ) {
-          // The log is up to date
-          return true;
-        }
+        return true;
       }
 
-      // 2. If an existing entry conflicts with a new one (same index but different terms), delete the existing entry and all
+      // 3. Bulkhead for assumptions
+      assert !entries.isEmpty() : "Beyond this point, we should have entries being added";
+      assert allowEntry : "We should be allowing our entries to be added";
+
+      // 4. If an existing entry conflicts with a new one (same index but different terms), delete the existing entry and all
       //    that follow it.
-      if (!entries.isEmpty()) {
-        if (entries.size() <= 2) {
-          // 2.A. If we only have a few entries, it's faster use getEntryAtIndex()
-          for (EloquentRaftProto.LogEntry entry : entries) {  // loop length is bounded
-            Optional<EloquentRaftProto.LogEntry> potentiallyConflictingEntry = getEntryAtIndex(entry.getIndex());
-            // If we find a conflicting entry, then truncate after that
-            if (potentiallyConflictingEntry.isPresent()) {
-              if (potentiallyConflictingEntry.get().getTerm() != entry.getTerm()) {
-                truncateLogAfterIndexInclusive(entry.getIndex());
-                break;
-              } else {
-                // If they're the same term, this is an opportunity to assert that it's the same transition
-                assert(entry.toByteString().equals(potentiallyConflictingEntry.get().toByteString()));
-              }
-            }
-          }
-        } else {
-          // 2.B. If we have multiple entries, it's faster to construct a map
-          Map<Long, Long> termForIndex = new HashMap<>(this.logEntries.size());
-          for (EloquentRaftProto.LogEntry entryInLog : this.logEntries) {
-            termForIndex.put(entryInLog.getIndex(), entryInLog.getTerm());
-          }
-          for (EloquentRaftProto.LogEntry entry : entries) {
-            Long potentiallyConflictingTerm = termForIndex.get(entry.getIndex());
-            if (potentiallyConflictingTerm != null && potentiallyConflictingTerm != entry.getTerm()) {
+      if (entries.size() <= 2) {
+        // 4.A. If we only have a few entries, it's faster use getEntryAtIndex()
+        for (EloquentRaftProto.LogEntry entry : entries) {  // loop length is bounded to 2
+          Optional<EloquentRaftProto.LogEntry> potentiallyConflictingEntry = getEntryAtIndex(entry.getIndex());
+          // If we find a conflicting entry, then truncate after that
+          if (potentiallyConflictingEntry.isPresent()) {
+            if (potentiallyConflictingEntry.get().getTerm() != entry.getTerm()) {
               truncateLogAfterIndexInclusive(entry.getIndex());
               break;
             } else {
-              //noinspection OptionalGetWithoutIsPresent
-              assert potentiallyConflictingTerm == null || entry.toByteString().equals(getEntryAtIndex(entry.getIndex()).get().toByteString()) : "Entry at same term + index should have the same transition";
+              // If they're the same term, this is an opportunity to assert that it's the same transition
+              assert entry.toByteString().equals(potentiallyConflictingEntry.get().toByteString()) : "We're trying to commit a different transition at the same index+term";
             }
+          }
+        }
+      } else {
+        // 4.B. If we have multiple entries, it's faster to construct a map
+        Map<Long, Long> termForIndex = new HashMap<>(this.logEntries.size());
+        for (EloquentRaftProto.LogEntry entryInLog : this.logEntries) {
+          termForIndex.put(entryInLog.getIndex(), entryInLog.getTerm());
+        }
+        for (EloquentRaftProto.LogEntry entry : entries) {
+          Long potentiallyConflictingTerm = termForIndex.get(entry.getIndex());
+          if (potentiallyConflictingTerm != null && potentiallyConflictingTerm != entry.getTerm()) {
+            truncateLogAfterIndexInclusive(entry.getIndex());
+            break;
+          } else {
+            //noinspection OptionalGetWithoutIsPresent
+            assert potentiallyConflictingTerm == null || entry.toByteString().equals(getEntryAtIndex(entry.getIndex()).get().toByteString()) : "We're trying to commit a different transition at the same index+term";
           }
         }
       }
 
-      // 3. Append any new entries not already in the log
-      if (!entries.isEmpty()) {
-        // 3.1. Calculate how many entries we need to skip before appending the new entries
-        long startIndex = entries.get(0).getIndex();
-        long lastKnownIndex = getLastEntryIndex();
-        // in the default cause, where we skip 0, lastKnownIndex = startIndex - 1
-        int skipEntries = (int) (lastKnownIndex - startIndex) + 1;
-        assert (skipEntries >= 0);
-        // 3.2. Add the entries
-        for (int i = skipEntries; i < entries.size(); i++) {
-          logEntries.add(entries.get(i));
-          // If an entry contains information about a new cluster membership, update our cluster membership immediately
-          if (entries.get(i).getType() == EloquentRaftProto.LogEntryType.CONFIGURATION) {
+      // 4. Append any new entries not already in the log
+      long lastGoodEntry = getLastEntryIndex();
+      for (EloquentRaftProto.LogEntry toAdd : entries) {
+        if (toAdd.getIndex() > lastGoodEntry) {
+          assert toAdd.getTerm() >= getLastEntryTerm() : "Double check: we should not be going backwards in term";
+          assert toAdd.getIndex() == getLastEntryIndex() + 1 : "Double check: we should be appending entries monotonically";
+          // 4.1. Append the entry
+          logEntries.add(toAdd);
+          // 4.2. Reconfigure the cluster (if applicable)
+          if (toAdd.getType() == EloquentRaftProto.LogEntryType.CONFIGURATION) {
             Optional<String> serverName = Optional.empty();
             if (stateMachine instanceof KeyValueStateMachine) {
               serverName = ((KeyValueStateMachine)stateMachine).serverName;
             }
-            log.info("{} - Reconfiguring cluster to {}", serverName.orElse("?"), entries.get(i).getConfigurationList());
+            log.info("{} - Reconfiguring cluster to {}", serverName.orElse("?"), toAdd.getConfigurationList());
             latestQuorumMembers.clear();
-            latestQuorumMembers.addAll(entries.get(i).getConfigurationList());
+            latestQuorumMembers.addAll(toAdd.getConfigurationList());
           }
         }
-        // 3.3. Force a compaction if our log is too long
-        if (this.logEntries.size() >= COMPACTION_LIMIT && commitIndex >= this.logEntries.getFirst().getIndex()) {
-          forceSnapshot();
-        }
+      }
+      // 4.3. Force a compaction if our log is too long
+      if (this.logEntries.size() >= COMPACTION_LIMIT && commitIndex >= this.logEntries.getFirst().getIndex()) {
+        forceSnapshot();
       }
 
+      // 5. Return
       return true;
     } finally {
       assertConsistency();
@@ -827,44 +749,43 @@ public class RaftLog {
    */
   public boolean installSnapshot(Snapshot snapshot, long now) {
     Object timerStart = Prometheus.startTimer(summaryTiming);
-    assertConsistency();
     try {
       // 1. If lastIndex is larger than the latest Snapshot's, then save the snapshot file and Raft state (lastIndex,
       //   lastTerm, lastConfig). Discard any existing or partial snapshots. Otherwise return.
-      if (!this.snapshot.isPresent() || snapshot.lastIndex > this.snapshot.get().lastIndex) {
+      Optional<EloquentRaftProto.LogEntry> entryAtSnapshotIndex = this.getEntryAtIndex(snapshot.lastIndex);
+      long minTerm = entryAtSnapshotIndex.map(EloquentRaftProto.LogEntry::getTerm).orElse(this.getLastEntryTerm());
+      if ((
+              !this.snapshot.isPresent() ||
+              (snapshot.lastIndex > this.snapshot.get().lastIndex && snapshot.lastTerm >= this.snapshot.get().lastTerm) ||
+              (snapshot.lastIndex >= this.snapshot.get().lastIndex && snapshot.lastTerm > this.snapshot.get().lastTerm)
+          ) &&  // the snapshot is more recent than our current one
+          (snapshot.lastTerm >= minTerm)  // The snapshot has a more recent term than the entry at that index
+      ) {
         this.snapshot = Optional.of(snapshot);
-      } else return false;
-
-      // Note: committing up until the snapshot's last index here is actually incorrect - we can have entries at the
-      // latest index with different term numbers than the snapshot, and therefore those should not be committed.
-
-      // 2. If existing log entry has the same index and term as lastIndex, discard log up through lastIndex (but retain
-      // following entries), and return.
-      Optional<EloquentRaftProto.LogEntry> entry = getEntryAtIndex(snapshot.lastIndex);
-      if (entry.isPresent() && entry.get().getTerm() == snapshot.lastTerm) {
-        if (commitIndex < snapshot.lastIndex) {
-          setCommitIndex(snapshot.lastIndex, now);
-        }
-        truncateLogBeforeIndexInclusive(snapshot.lastIndex);
-        // We don't overwrite the state machine (step 4), since we have entries that are at least as up to date as this snapshot
-        return true;
+      } else {
+        return false;
       }
 
-      // 3. Otherwise, discard the entire log
-      this.logEntries.clear();
-
-      // 4. Reset state machine using snapshot contents, and load cluster config from the snapshot.
-      stateMachine.overwriteWithSerialized(snapshot.serializedStateMachine, now, this.pool);
-      committedQuorumMembers.clear();
-      committedQuorumMembers.addAll(snapshot.lastClusterMembership);
-      latestQuorumMembers.clear();
-      latestQuorumMembers.addAll(snapshot.lastClusterMembership);
-
-      // Update the commit index
-      setCommitIndex(snapshot.lastIndex, now);
-      assertConsistency();
-
+      // 2. Update the log based off of the snapshot
+      truncateLogBeforeIndexInclusive(snapshot.lastIndex);
+      if (!this.logEntries.isEmpty() && this.logEntries.getFirst().getTerm() < snapshot.lastTerm) {
+        log.warn("Clearing Raft log ({} entries starting at index={} term={}) because of a snapshot with lastIndex={} lastTerm={}",
+            this.logEntries.size(), this.logEntries.getFirst().getIndex(), this.logEntries.getFirst().getTerm(),
+            snapshot.lastIndex, snapshot.lastTerm);
+        this.logEntries.clear();
+      }
+      if (commitIndex <= snapshot.lastIndex) {  // don't commit backwards!
+        setCommitIndex(snapshot.lastIndex, now);
+        stateMachine.overwriteWithSerialized(snapshot.serializedStateMachine, now, this.pool);
+        committedQuorumMembers.clear();
+        committedQuorumMembers.addAll(snapshot.lastClusterMembership);
+        if (snapshot.lastIndex >= this.getLastEntryIndex()) {  // don't overwrite latest membership, if log is more recent
+          latestQuorumMembers.clear();
+          latestQuorumMembers.addAll(snapshot.lastClusterMembership);
+        }
+      }
       return true;
+
     } finally {
       assertConsistency();
       assert fast("installSnapshot", timerStart);
@@ -878,7 +799,6 @@ public class RaftLog {
    */
   public Snapshot forceSnapshot() {
     Object timerStart = Prometheus.startTimer(summaryTiming);
-    assertConsistency();
     try {
       // 1. Error check
       EloquentRaftProto.LogEntry earliestEntry = logEntries.peekFirst();
@@ -931,7 +851,6 @@ public class RaftLog {
       System.err.println("Called unsafeSetLog in production! Ignoring the call");
       return;
     }
-    assertConsistency();
     try {
       this.logEntries.clear();
       this.logEntries.addAll(log);
@@ -957,7 +876,6 @@ public class RaftLog {
    */
   Optional<EloquentRaftProto.LogEntry> getEntryAtIndex(long index) {
     Object timerStart = Prometheus.startTimer(summaryTiming);
-    assertConsistency();
     try {
       // Some shortcuts
       if (this.logEntries.isEmpty()) {
@@ -985,6 +903,8 @@ public class RaftLog {
           return Optional.of(entry);
         }
       }
+      log.warn("Index should be within the log's range, but is not in the log! {} <= {} <= {}",
+          first.getIndex(), index, last.getIndex());
       return Optional.empty();
     } finally {
       assertConsistency();
@@ -1000,56 +920,49 @@ public class RaftLog {
    */
   void truncateLogAfterIndexInclusive(long index) {
     Object timerStart = Prometheus.startTimer(summaryTiming);
-    assertConsistency();
-    assert(index > this.commitIndex);
     try {
-      // 1. Check if this request is out of bounds
+      // 1. Check conditions
+      // 1.1. Index must be positive
       if (index < 0) {
-        assert(false) : "Cannot truncate to a negative log index";
+        assert false : "Cannot truncate to a negative log index";
         index = 0;
       }
-
-      // 2. If we have no log entries, then the one we're requesting has already been compacted
-      if (logEntries.size() == 0) return;
-
-      // 3. Get the index of the earliest entry that hasn't been compacted
-      long earliestRecordedEntry = logEntries.getFirst().getIndex();
-
-      // 4. If we're requesting to trucate to an index that's earlier than our earliest log entry, then we need to exception
-      if (index < earliestRecordedEntry) {
-        assert(false) : "Cannot truncate beyond already compacted log entries";
-        index = earliestRecordedEntry;
+      // 1.2. Index must be past our commit index
+      if (index < this.commitIndex) {
+        assert false : "Cannot truncate back beyond our commit index";
+        return;
+      }
+      // 1.3. We can't truncate if our log is empty
+      if (logEntries.isEmpty()) {
+        return;
       }
 
-      // 5. Now we can check the offset into the logEntries, and truncate accordingly
-      int logOffset = (int) (index - earliestRecordedEntry);
-      while (logEntries.size() > logOffset) {
-        logEntries.removeLast();
-        long newCommitIndex = Math.min(getLastEntryIndex(), this.commitIndex);
-        assert(newCommitIndex >= this.commitIndex);
-        this.commitIndex = newCommitIndex;
+      // 2. Truncate the log
+      Iterator<EloquentRaftProto.LogEntry> truncateIter = this.logEntries.descendingIterator();
+      while (truncateIter.hasNext() && truncateIter.next().getIndex() >= index) {
+        truncateIter.remove();
       }
 
-      // 6. Recompute the cluster configuration
+      // 3. Recompute the cluster configuration
       Collection<String> latestConfiguration = null;
-      // 6.1. Try to get the configuration from the log
-      Iterator<EloquentRaftProto.LogEntry> iter = logEntries.descendingIterator();
-      while (iter.hasNext()) {
-        EloquentRaftProto.LogEntry entry = iter.next();
+      // 3.1. Try to get the configuration from the log
+      Iterator<EloquentRaftProto.LogEntry> configIter = logEntries.descendingIterator();
+      while (configIter.hasNext()) {
+        EloquentRaftProto.LogEntry entry = configIter.next();
         if (entry.getConfigurationCount() > 0) {
           latestConfiguration = entry.getConfigurationList();
           break;
         }
       }
-      // 6.2. Try to get the configuration from the snapshot
+      // 3.2. Try to get the configuration from the snapshot
       if (latestConfiguration == null && snapshot.isPresent()) {
         latestConfiguration = snapshot.get().lastClusterMembership;
       }
-      // 6.3. Revert to the original configuration
+      // 3.3. Revert to the original configuration
       if (latestConfiguration == null) {
         latestConfiguration = initialQuorumMembers;
       }
-      // 6.4. Update the quorum
+      // 3.4. Update the quorum
       this.latestQuorumMembers.clear();
       this.latestQuorumMembers.addAll(latestConfiguration);
     } finally {
@@ -1066,30 +979,29 @@ public class RaftLog {
    */
   void truncateLogBeforeIndexInclusive(long index) {
     Object timerStart = Prometheus.startTimer(summaryTiming);
-    assertConsistency();
     try {
-      // 1. Check if this request is out of bounds
-      if (index < 0) throw new IndexOutOfBoundsException("Cannot truncate before a negative log index");
-
-      // 2. If we have no log entries, then the one we're requesting has already been compacted
-      if (logEntries.size() == 0) return;
-
-      // 3. Get the index of the earliest entry that hasn't been compacted
+      // 1. Basic checks
+      // 1.1. Check if this request is out of bounds
+      if (index < 0) {
+        assert false : "Cannot truncate before a negative index";
+        return;
+      }
+      // 1.2. If we have no log entries, then the one we're requesting has already been compacted
+      if (logEntries.isEmpty()) {
+        return;
+      }
+      // 1.3. If we're requesting to truncate up to an index that's earlier than our earliest log entry, then that's a no-op
       long earliestRecordedEntry = logEntries.getFirst().getIndex();
-
-      // 4. If we're requesting to truncate up to an index that's earlier than our earliest log entry, then that's a no-op
       if (index < earliestRecordedEntry) {
         return;
       }
 
-      // 5. Now we can check the offset into the logEntries, and truncate accordingly
-
-      int logOffset = (int) (index - earliestRecordedEntry);
-      for (int i = 0; i <= logOffset; i++) {
-        assert (logEntries.size() > 0);
-        logEntries.removeFirst();
+      // 2. Truncate the log
+      Iterator<EloquentRaftProto.LogEntry> iter = this.logEntries.iterator();
+      while (iter.hasNext() && iter.next().getIndex() <= index) {
+        iter.remove();
       }
-      assert logEntries.size() <= 0 || logEntries.getFirst().getIndex() == index + 1;
+      assert logEntries.isEmpty() || logEntries.getFirst().getIndex() == index + 1 : "The log should have gone in order after truncation";
     } finally {
       assertConsistency();
       assert fast("truncateLogBeforeIndexInclusive", timerStart);
@@ -1103,7 +1015,18 @@ public class RaftLog {
    * This should be called by every function to help us fail fast in case of errors.
    */
   void assertConsistency() {
+    // 1. Tests on the commit index
     assert this.commitIndex <= this.getLastEntryIndex() : "We've marked ourselves committed past our last entry: commitIndex=" + this.commitIndex + "  lastEntry=" + this.getLastEntryIndex();
+
+    // 2. Tests on the log
+    assert this.logEntries.isEmpty() || this.logEntries.stream().reduce(
+        Pair.makePair(this.logEntries.getFirst().getIndex() - 1, true),
+        (lastIndex, entry) -> Pair.makePair(entry.getIndex(), lastIndex.first + 1== entry.getIndex()),
+        (last, current) -> current).second : "The log entries list should be dense (i.e., each index should be one more than the previous)";
+    assert this.logEntries.stream().reduce(
+        Pair.makePair(0L, true),
+        (lastTerm, entry) -> Pair.makePair(entry.getTerm(), lastTerm.first <= entry.getTerm()),
+        (last, current) -> current).second : "The terms in the log should be monotonically increasing";
   }
 
 
@@ -1116,7 +1039,6 @@ public class RaftLog {
     return commitIndex == raftLog.commitIndex &&
         Objects.equals(new ArrayList<>(logEntries), new ArrayList<>(raftLog.logEntries)) &&
         Objects.equals(stateMachine, raftLog.stateMachine) &&
-        Objects.equals(commitFutures, raftLog.commitFutures) &&
         Objects.equals(snapshot, raftLog.snapshot) &&
         Objects.equals(latestQuorumMembers, raftLog.latestQuorumMembers) &&
         Objects.equals(committedQuorumMembers, raftLog.committedQuorumMembers)

@@ -3,6 +3,8 @@ package ai.eloquent.raft;
 import ai.eloquent.monitoring.Prometheus;
 import ai.eloquent.util.Span;
 import com.google.protobuf.ByteString;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.util.*;
 import java.util.concurrent.ExecutorService;
@@ -13,6 +15,11 @@ import java.util.concurrent.ExecutorService;
  * @author <a href="mailto:gabor@eloquent.ai">Gabor Angeli</a>
  */
 public class RaftState {
+  /**
+   * An SLF4J Logger for this class.
+   */
+  @SuppressWarnings("unused")
+  private static final Logger logger = LoggerFactory.getLogger(RaftState.class);
 
   /**
    * The leadership status of the given Raft node.
@@ -72,7 +79,6 @@ public class RaftState {
    * This is a computed value, but appears here with the variables because it is part of
    * the core Raft spec as a variable.
    */
-  @SuppressWarnings("unused")
   public long lastApplied() {
     return this.log.getLastEntryIndex();
   }
@@ -252,13 +258,13 @@ public class RaftState {
     log.assertConsistency();
     assert term >= this.currentTerm: "The term number can never go backwards";
     try {
+      // Clear the votes if our term increased
       if (term > this.currentTerm) {
-        // Clear the election state -- someone succeeded
         this.votesReceived.clear();
         this.votedFor = Optional.empty();
       }
+      // Set the term
       this.currentTerm = term;
-
       // Notify Prometheus of the current term
       Prometheus.gaugeSet(METRIC_GAUGE_TERM, this.currentTerm);
     } finally {
@@ -327,10 +333,14 @@ public class RaftState {
             lastMessageTimestamp.put(node, now);  // Assume everyone is online
           }
         }
+        // Assume everyone who owns anything on the state is online
+        // note[gabor]: if we have frequent elections, this could have
+        //              unexpected consequences, but it's better than the
+        //              alternative.
         Set<String> owners = this.log.stateMachine.owners(now);
         for (String stateOwner : owners) {
           if (!stateOwner.equals(this.serverName)) {
-            lastMessageTimestamp.put(stateOwner, now);  // Assume everyone who owns anything on the state is online
+            lastMessageTimestamp.put(stateOwner, now);
           }
         }
         this.nextIndex = Optional.of(nextIndex);
@@ -345,7 +355,7 @@ public class RaftState {
 
 
   /** Step down from an election -- become a simple follower. */
-  public void stepDownFromElection(long now) {
+  public void stepDownFromElection(long term, long now) {
     log.assertConsistency();
     try {
       this.leadership = LeadershipStatus.OTHER;
@@ -359,31 +369,8 @@ public class RaftState {
       // Reset follower state
       this.electionTimeoutCheckpoint = now;
       this.votesReceived.clear();
-    } finally {
-      log.assertConsistency();
-    }
-  }
-
-
-  /**
-   * Trigger a new election, and become a candidate.
-   */
-  public void becomeCandidate(long now) {
-    log.assertConsistency();
-    try {
-      // Error checks
-      assert this.leadership != LeadershipStatus.LEADER : "Can only become a candidate from being a leader";
-      assert this.log.getQuorumMembers().contains(this.serverName) : "Cannot become a candidate if we are not in the quorum";
-      // Step down from the election
-      if (this.leadership != LeadershipStatus.OTHER) {
-        this.stepDownFromElection(now);
-      }
-      // Become a candidate
-      if (this.leadership == LeadershipStatus.OTHER) {
-        this.leadership = LeadershipStatus.CANDIDATE;
-        assert votesReceived.isEmpty() : "Should not have any votes received when we start an election";
-        this.votesReceived.clear();
-      }
+      // Set the new term
+      this.setCurrentTerm(term);
     } finally {
       log.assertConsistency();
     }
@@ -396,23 +383,18 @@ public class RaftState {
    * don't need to start an election.
    *
    * @param now The current timestamp. Should be {@link System#currentTimeMillis()} unless we're in a mock
+   * @param leader The server we think is the leader.
    */
-  public void resetElectionTimeout(long now, String leader) {
+  public void resetElectionTimeout(long now, Optional<String> leader) {
     log.assertConsistency();
     try {
       // This is possible, just because the clock takes a while to process functions
       if (this.electionTimeoutCheckpoint < 0 || this.electionTimeoutCheckpoint <= now) {
-        // 1. Step down from any elections
-        //    This must come first
-        if (this.leadership == LeadershipStatus.CANDIDATE) {
-          assert !leader.equals(this.leader.orElse(null)) : "We seem to have re-elected ourselves?";
-          this.stepDownFromElection(now);  // just in case we were a candidate
-        }
-        // 2. Reset the election timeout
+        // 1. Reset the election timeout
         this.electionTimeoutCheckpoint = now;
-        // 3. Set the leader pointer
-        assert !leader.equals(this.serverName) || this.isLeader() || this.isCandidate() : "Can only set the leader to ourselves if we're a leader or candidate";
-        this.leader = Optional.of(leader);
+        // 2. Set the leader pointer
+        assert !Objects.equals(leader.orElse(null), this.serverName) || this.isLeader() || this.isCandidate() : "Can only set the leader to ourselves if we're a leader or candidate";
+        this.leader = leader;
       }
     } finally {
       log.assertConsistency();
@@ -447,8 +429,7 @@ public class RaftState {
         // Case: check if we should trigger a timeout
         long electionTimeoutMillis = new Random((this.currentTerm << 32) | this.serverName.hashCode())  // note[gabor]: non-random seed ensures the same timeout each call
             .nextInt((int) (electionTimeoutMillisRange.end - electionTimeoutMillisRange.begin)) + electionTimeoutMillisRange.begin;
-        boolean shouldTrigger =  now - this.electionTimeoutCheckpoint > electionTimeoutMillis;
-        return shouldTrigger;
+        return now - this.electionTimeoutCheckpoint > electionTimeoutMillis;
       }
     } finally {
       log.assertConsistency();
@@ -460,26 +441,18 @@ public class RaftState {
    * Vote for a particular server as the leader.
    *
    * @param vote The server we voted for.
-   * @param now The current time.
    */
-  public void voteFor(String vote, long now) {
+  public void voteFor(String vote) {
     log.assertConsistency();
     try {
       assert !votedFor.isPresent() || votedFor.get().equals(vote);
-      if (!votedFor.isPresent() || votedFor.get().equals(vote)) {
+      if (!votedFor.isPresent() || votedFor.get().equals(vote)) {  // should be a redundant if statement
         // Vote for the node
         this.votedFor = Optional.ofNullable(vote);
         // If the node is us, receive a vote from us :)
         if (this.serverName.equals(vote)) {
           receiveVoteFrom(this.serverName);
         }
-        if (vote != null && !vote.equals(this.serverName)) {
-          // We're sure as hell not keeping our old leader -- may as well guess this candidate is the new leader
-          this.leader = Optional.of(vote);
-        }
-        // Reset the election timer
-        // From p.129: "...it’s likely that all servers have reset their timers, _since servers do this when they grant a vote_"
-        this.electionTimeoutCheckpoint = now;
       }
     } finally {
       log.assertConsistency();

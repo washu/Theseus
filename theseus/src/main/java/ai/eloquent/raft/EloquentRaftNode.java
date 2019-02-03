@@ -40,6 +40,12 @@ public class EloquentRaftNode implements HasRaftLifecycle {
       25, 40, 45, 48, 49, 50, 51, 52, 55, 60, 75, 100, 150, 500, 1000
   );
 
+  /**
+   * A rate limiter for transitions to Raft, so that we don't saturate the system.
+   * This limits to a max of 5k transitions / second.
+   */
+  private final LeakyBucket transactionRateLimiter = new LeakyBucket(16, 200000, TimeUnit.NANOSECONDS);
+
 
   /**
    * Keeps track of an additional {@link RaftErrorListener} in this class
@@ -224,9 +230,14 @@ public class EloquentRaftNode implements HasRaftLifecycle {
    * @return A future for the transition, marking whether it completed successfully.
    */
   public CompletableFuture<Boolean> submitTransition(byte[] transition) {
-    // 1. Wait for the algorithm to have capacity.
-    //    This is a courtesy to avoid flooding the algorithm with requests.
-    algorithm.awaitCapacity();
+    // 1. Wait for the algorithm to be in an OK state.
+    // 1.1. Make sure we have a leader
+    algorithm.awaitLeaderKnown();
+    // 1.2. Rate limit the requests
+    try {
+      this.transactionRateLimiter.submitBlocking();
+    } catch (InterruptedException ignored) {}
+
     // 2. Receive the RPC request.
     return algorithm.receiveRPC(RaftTransport.mkRaftRPC(algorithm.serverName(),
         EloquentRaftProto.ApplyTransitionRequest.newBuilder()

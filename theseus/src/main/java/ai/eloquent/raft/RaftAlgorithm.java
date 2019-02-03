@@ -467,13 +467,12 @@ public interface RaftAlgorithm {
 
 
   /**
-   * Block until this Raft algorithm has the capacity to accept new requests.
-   * This is a useful way to prevent flooding the transport / work queue of the
-   * algorithm.
+   * Block until this Raft algorithm knows who its leader is and can in theory
+   * make progress.
    *
    * Note that <b>this is a blocking call</b>.
    */
-  default void awaitCapacity() {}
+  default void awaitLeaderKnown() {}
 
 
   /**

@@ -12,7 +12,6 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.Map;
 import java.util.Optional;
-import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.junit.Assert.*;
@@ -51,7 +50,7 @@ public class UnsatisfiableQuorumFailsafeTest {
         state.observeLifeFrom("dead_server_2", 0);
       }
     }
-    RaftAlgorithm algorithm = new SingleThreadedRaftAlgorithm(new EloquentRaftAlgorithm(state, transport, Optional.empty()), Executors.newSingleThreadExecutor());
+    RaftAlgorithm algorithm = new EloquentRaftAlgorithm(state, transport, Optional.empty());
     algorithm.heartbeat();
     return algorithm;
   }
@@ -77,7 +76,7 @@ public class UnsatisfiableQuorumFailsafeTest {
   @Test
   public void failsafeDoesntTriggersIfCandidate() {
     RaftAlgorithm algorithm = deadlockedAlgorithm(false, true, "deadlocked_leader");
-    algorithm.mutableState().becomeCandidate(System.currentTimeMillis());
+    ((EloquentRaftAlgorithm) algorithm).convertToCandidate();
     UnsatisfiableQuorumFailsafe deadlock = new UnsatisfiableQuorumFailsafe(() -> new String[] {"deadlocked_leader"}, Duration.ofSeconds(45));
     deadlock.heartbeat(algorithm, Duration.ofSeconds(46).toMillis());
     assertTrue("We should be a candidate", algorithm.state().isCandidate());
@@ -259,17 +258,14 @@ public class UnsatisfiableQuorumFailsafeTest {
    *
    * @param key The key of the environment variable
    * @param value The value of of the environment variable
-   * @throws Exception
    */
+  @SuppressWarnings({"unchecked", "SameParameterValue"})
   private static void injectEnvironmentVariable(String key, String value)
       throws Exception {
-
     Class<?> processEnvironment = Class.forName("java.lang.ProcessEnvironment");
-
     Field unmodifiableMapField = getAccessibleField(processEnvironment, "theUnmodifiableEnvironment");
     Object unmodifiableMap = unmodifiableMapField.get(null);
     injectIntoUnmodifiableMap(key, value, unmodifiableMap);
-
     Field mapField = getAccessibleField(processEnvironment, "theEnvironment");
     Map<String, String> map = (Map<String, String>) mapField.get(null);
     map.put(key, value);
@@ -278,16 +274,15 @@ public class UnsatisfiableQuorumFailsafeTest {
 
   private static Field getAccessibleField(Class<?> clazz, String fieldName)
       throws NoSuchFieldException {
-
     Field field = clazz.getDeclaredField(fieldName);
     field.setAccessible(true);
     return field;
   }
 
 
+  @SuppressWarnings("unchecked")
   private static void injectIntoUnmodifiableMap(String key, String value, Object map)
       throws ReflectiveOperationException {
-
     Class unmodifiableMap = Class.forName("java.util.Collections$UnmodifiableMap");
     Field field = getAccessibleField(unmodifiableMap, "m");
     Object obj = field.get(map);

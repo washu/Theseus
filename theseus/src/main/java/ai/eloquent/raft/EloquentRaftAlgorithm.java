@@ -2,23 +2,20 @@ package ai.eloquent.raft;
 
 import ai.eloquent.monitoring.Prometheus;
 import ai.eloquent.raft.EloquentRaftProto.*;
+import ai.eloquent.util.LeakyBucket;
 import ai.eloquent.util.RuntimeInterruptedException;
 import ai.eloquent.util.TimerUtils;
 import ai.eloquent.util.Uninterruptably;
 import com.google.protobuf.ByteString;
-import com.google.protobuf.InvalidProtocolBufferException;
-import com.sun.management.GcInfo;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.lang.management.GarbageCollectorMXBean;
-import java.lang.management.ManagementFactory;
-import java.lang.management.OperatingSystemMXBean;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.*;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.function.BiFunction;
 import java.util.function.Consumer;
@@ -34,6 +31,29 @@ public class EloquentRaftAlgorithm implements RaftAlgorithm {
    * An SLF4J Logger for this class.
    */
   private static final Logger log = LoggerFactory.getLogger(EloquentRaftAlgorithm.class);
+
+
+  /**
+   * An enumeration of the RPCs implemented for Raft.
+   */
+  private enum RPCType {
+    APPEND_ENTRIES,
+    APPEND_ENTRIES_REPLY,
+    APPLY_TRANSITION,
+    APPLY_TRANSITION_REPLY,
+    INSTALL_SNAPSHOT,
+    INSTALL_SNAPSHOT_REPLY,
+    REQUEST_VOTES,
+    REQUEST_VOTES_REPLY,
+    ADD_SERVER,
+    ADD_SERVER_REPLY,
+    REMOVE_SERVER,
+    REMOVE_SERVER_REPLY,
+    TRIGGER_ELECTIOn,
+    HEARTBEAT,
+    ;
+  }
+
 
   /**
    * A <b>very</b> conservative timeout that defines when we consider a machine to be down.
@@ -89,6 +109,9 @@ public class EloquentRaftAlgorithm implements RaftAlgorithm {
 
   /** A means of queuing tasks on the driving thread. */
   private Consumer<Runnable> drivingThreadQueue = Runnable::run;  // Disabled initially
+
+  /** A leaky bucket rate limiter for sending out broadcast messages */
+  private final LeakyBucket broadcastRateLimiter = new LeakyBucket(8, 5000000, TimeUnit.NANOSECONDS);
 
 
   /**
@@ -186,6 +209,352 @@ public class EloquentRaftAlgorithm implements RaftAlgorithm {
 
   //
   // --------------------------------------------------------------------------
+  // INVARIANTS
+  // --------------------------------------------------------------------------
+  //
+
+
+  /**
+   * Trigger a new election, and become a candidate.
+   *
+   * On conversion to candidate, start election:
+   * <ul>
+   *   <li>Increment currentTerm</li>
+   *   <li>Vote for self</li>
+   *   <li>Reset election timer</li>
+   *   <li>Send RequestVote RPCs to all other servers</li>
+   * </ul>
+   */
+  public void convertToCandidate() {
+    // 1. Error checks
+    assert this.state.leadership != RaftState.LeadershipStatus.LEADER : "Cannot become a candidate as a leader";
+    assert this.state.log.getQuorumMembers().contains(this.state.serverName) : "Cannot become a candidate if we are not in the quorum";
+
+    // 2. Step down from the election
+    switch (this.state.leadership) {
+      case LEADER:
+        // case: we're no longer the leader, apparently
+        this.state.stepDownFromElection(this.state.currentTerm, transport.now());
+        // FALL THROUGH
+
+      case OTHER:
+        // case: trigger an election
+        this.state.leadership = RaftState.LeadershipStatus.CANDIDATE;
+        // 2.1. Increment currentTerm
+        log.info("{} - Converting to candidate; incrementing term {} -> {}",
+            this.state.serverName, this.state.currentTerm, this.state.currentTerm + 1);
+        this.state.setCurrentTerm(this.state.currentTerm + 1);
+        // 2.2. Vote for self
+        assert state.votesReceived.isEmpty() : "Should not have any votes received when we start an election (i.e., in the new term)";
+        assert !state.votedFor.isPresent() : "Should not have voted for anyone when we start an election (i.e., in the new term)";
+        this.state.voteFor(this.state.serverName);
+        // 2.3. Reset election timer
+        this.state.electionTimeoutCheckpoint = transport.now();
+        // 2.4. Send RequestVote RPCs to all other servers
+        RequestVoteRequest voteRequest = RequestVoteRequest.newBuilder()
+            .setTerm(state.currentTerm)
+            .setCandidateName(state.serverName)
+            .setLastLogIndex(state.log.getLastEntryIndex())
+            .setLastLogTerm(state.log.getLastEntryTerm())
+            .build();
+        log.info("{}; Broadcasting requestVote", state.serverName);
+        transport.broadcastTransport(this.state.serverName, voteRequest);
+        break;
+
+      case CANDIDATE:
+        // we are already a candidate
+        //noinspection UnnecessaryReturnStatement
+        return;
+    }
+  }
+
+
+  /**
+   * Enforce the "All Server" rules in the Raft implementation.
+   *
+   * @param inboundTerm The term received from the inbound RPC. This is just called
+   *                    'T' in the Raft thesis.
+   * @param inboundCommitIndex The commit index from the inbound PRC. This is just called
+   *                           'commitIndex' in the Raft thesis.
+   */
+  void enforceServerRules(long inboundTerm, Optional<Long> inboundCommitIndex) {
+    /*
+     * If commitIndex > lastApplied: increment lastApplied, apply log[lastApplied] to the
+     * state machine
+     */
+    long lastApplied = this.state.lastApplied();
+    if (inboundCommitIndex.isPresent() && inboundCommitIndex.get() > lastApplied) {
+      state.commitUpTo(lastApplied, transport.now());
+    }
+
+    /*
+     * If RPC request or response contains term T > currentTerm:
+     * set currentTerm = T, convert to follower
+     */
+    if (inboundTerm > state.currentTerm) {
+      state.stepDownFromElection(inboundTerm, transport.now());
+    }
+  }
+
+
+  /**
+   * Enforce the follower rules from the Raft thesis.
+   *
+   * @param rpc The RPC we received that triggered this rule evaluation.
+   * @param inboundTerm The term received from the inbound RPC. This is just called
+   *                    'T' in the Raft thesis.
+   * @param leader The server we think is the leader based off of the inbound RPC.
+   */
+  void enforceFollowerRules(RPCType rpc, long inboundTerm, Optional<String> leader) {
+    assert state.leadership == RaftState.LeadershipStatus.OTHER : "We're enforcing follower rules but are not a follower";
+    /*
+     * Respond to RPCs from candidates and leaders.
+     */
+    // This is implicit -- we will respond to the RPC once we're done enforcing the rules
+
+    /*
+     * If election timeout elapses without receiving AppendEntries RPC
+     * from current leader or granting vote to candidate:
+     * convert to candidate.
+     */
+    if (this.state.shouldTriggerElection(transport.now(), this.electionTimeoutMillisRange())) {
+      this.convertToCandidate();
+      assert state.leadership == RaftState.LeadershipStatus.CANDIDATE : "We should be a candidate after triggering an election";
+    }
+
+    /*
+     * Eloquent Addition: detect split brain.
+     * If we're receiving heartbeats from two different leaders in the same term, trigger
+     * a snap election.
+     */
+    if (rpc == RPCType.APPEND_ENTRIES && leader.isPresent() && state.leader.isPresent()) {
+      //noinspection OptionalGetWithoutIsPresent
+      if (inboundTerm == state.currentTerm && !leader.get().equals(this.state.leader.get())) {
+        //noinspection OptionalGetWithoutIsPresent
+        log.warn("{} - [{}] Detected split-brain in Raft! {} believes both {} and {} are leaders in the same term {}",
+            state.serverName, transport.now(), state.serverName, state.leader.get(), leader.get(), state.currentTerm);
+        this.convertToCandidate();
+        assert state.leadership == RaftState.LeadershipStatus.CANDIDATE : "We should be a candidate after triggering an election";
+      }
+    }
+  }
+
+
+  /**
+   * Enforce the candidate rules from the Raft thesis.
+   *
+   * @param rpc The RPC we received that triggered this rule evaluation.
+   * @param inboundTerm The term received from the inbound RPC. This is just called
+   *                    'T' in the Raft thesis.
+   */
+  void enforceCandidateRules(RPCType rpc, long inboundTerm) {
+    assert state.leadership == RaftState.LeadershipStatus.CANDIDATE : "We're enforcing candidate rules but are not a candidate";
+    /*
+     * On conversion to candidate, start election:
+     *   * Increment currentTerm
+     *   * Vote for self
+     *   * Reset election timer
+     *   * Send RequestVote RPCs to all other servers
+     */
+    // see {@link #convertToCandidate()}
+
+    /*
+     * If votes received from majority of servers: become leader
+     */
+    if (state.votesReceived.size() > state.log.getQuorumMembers().size() / 2) {
+      log.info("{} - [{}] Won the election for term {}", state.serverName, transport.now(), state.currentTerm);
+      this.state.elect(transport.now());
+      assert state.leadership == RaftState.LeadershipStatus.LEADER : "We didn't become the leader after an election";
+      /*
+       * From {@link #enforceLeaderRules}:
+       * Upon election: send initial empty AppendEntries RPC (heartbeat) to each server;
+       * repeat during idle periods to prevent election timeouts.
+       */
+      this.broadcastAppendEntries();
+    }
+
+    /*
+     * If AppendEntries RPC received from new leader: convert to follower
+     */
+    if (rpc == RPCType.APPEND_ENTRIES) {
+      this.state.stepDownFromElection(inboundTerm, transport.now());
+    }
+
+    /*
+     * If election timeout elapses, start new election
+     */
+    if (this.state.shouldTriggerElection(transport.now(), this.electionTimeoutMillisRange())) {
+      this.state.stepDownFromElection(state.currentTerm, transport.now());
+      assert state.leadership == RaftState.LeadershipStatus.OTHER : "We should have stepped down from our election to trigger a new election";
+      this.convertToCandidate();
+      assert state.leadership == RaftState.LeadershipStatus.CANDIDATE : "We should be a candidate after triggering an election";
+    }
+  }
+
+
+  /**
+   * Enforce the leader rules from the Raft thesis.
+   *
+   * @param rpc The RPC that triggered enforcing these rules.
+   * @param follower The follower that sent the RPC
+   *                 that we should observe life from.
+   * @param inboundTerm The term received from the inbound RPC. This is just called
+   *                    'T' in the Raft thesis.
+   */
+  void enforceLeaderRules(RPCType rpc, String follower, long inboundTerm) {
+    /*
+     * Upon election: send initial AppendEntries RPC (heartbeat) to each
+     * server; repeat during idle periods to prevent election timeouts.
+     */
+    // see {@link #enfoceCandidateRules}.
+
+    /*
+     * If command received from client: append entry to local log,
+     * respond after entry applied to state machine
+     */
+    // see {@link #receiveApplyTransitionRPC(ApplyTransitionRequest, boolean)}.
+
+    /*
+     * If last log index >= nextIndex for a follower: send AppendEntries RPC
+     * with log entries starting at nextIndex
+     *
+     * * If successful: update nextIndex and matchIndex for follower
+     * * If AppendEntries fails because of log inconsistency: decrement
+     *   nextIndex and retry.
+     */
+    // see {@link #receiveAppendEntriesReply(AppendEntriesReply)}.
+    // see {@link #heartbeat()}.
+
+    /*
+     * If there exists an N such that N > commitIndex, a majority of
+     * matchIndex[i] >= N, and log[N].term == currentTerm:
+     * set commitIndex = N.
+     */
+    assert this.state.matchIndex.isPresent() : "There should always be a match index map for a leader";
+    if (!this.state.log.getQuorumMembers().isEmpty() && this.state.matchIndex.isPresent()) {
+      // 1. Get the match indices
+      //noinspection OptionalGetWithoutIsPresent
+      Map<String, Long> matchIndex = this.state.matchIndex.get();
+      Set<String> quorum = this.state.log.getQuorumMembers();
+      long[] matchIndices = new long[quorum.size()];
+      int i = -1;
+      for (String member : quorum) {
+        if (Objects.equals(member, this.state.serverName)) {
+          matchIndices[++i] = this.state.lastApplied();
+        } else {
+          assert matchIndex.containsKey(member) : "no match index for member " + member;
+          matchIndices[++i] = matchIndex.get(member);
+        }
+      }
+      // 2. Get N such that "a majority of matchIndex[i] >= N"
+      //    (i.e., get the median matchIndex)
+      Arrays.sort(matchIndices);
+      long medianIndex;
+      if (matchIndices.length % 2 == 0) {
+        medianIndex = matchIndices[matchIndices.length / 2 - 1];  // round pessimistically (len 4 -> index 1) -- we need a majority, not just a tie
+      } else {
+        medianIndex = matchIndices[matchIndices.length / 2];      // no need to round (len 3 -> index 1)
+      }
+      // 3. Commit up to the median index
+      if (medianIndex > state.commitIndex() &&  // N > commitIndex
+          state.log.getEntryAtIndex(medianIndex).map(entry -> entry.getTerm() == state.currentTerm).orElse(false)) {  // log[N].term == currentTerm
+        log.trace("{} - Committing up to index {}; matchIndex={} -> {}", state.serverName, medianIndex, matchIndex, matchIndices);
+        state.commitUpTo(medianIndex, transport.now());
+        // 4. Broadcast the commit immediately (Eloquent addition)
+        broadcastAppendEntries(false, false);
+      }
+    }
+
+    /*
+     * Eloquent Addition:
+     * observe life from the sender of the RPC so that we don't
+     * mark them for removal.
+     */
+    if (state.isLeader() && !Objects.equals(follower, state.serverName)) {
+      state.observeLifeFrom(follower, transport.now());
+    }
+
+    /*
+     * Eloquent Addition:
+     * split brain detection triggers an election.
+     */
+    if (rpc == RPCType.APPEND_ENTRIES && inboundTerm == this.state.currentTerm) {
+      log.warn("{} - Detected split brain (received heartbeat from {} on our term={}). Stepping down from election",
+          this.state.serverName, follower, inboundTerm);
+      state.stepDownFromElection(inboundTerm, transport.now());
+    }
+  }
+
+
+  /**
+   * Enforce the rules in the "Rules for Server" section of the Raft thesis.
+   *
+   * @param rpc The RPC that triggered enforcing these rules.
+   * @param sender The sender of the RPC.
+   * @param inboundTerm The term received from the inbound RPC. This is just called
+   *                    'T' in the Raft thesis.
+   * @param inboundCommitIndex The commit index from the inbound PRC. This is just called
+   *                           'commitIndex' in the Raft thesis.
+   * @param leader The server we think is the leader based off of the inbound RPC.
+   */
+  void enforceRules(RPCType rpc, String sender, long inboundTerm, Optional<Long> inboundCommitIndex, Optional<String> leader) {
+    assert drivingThreadId < 0 || drivingThreadId == Thread.currentThread().getId() : "Eloquent Raft Algorithm should only be run from the driving thread (" + drivingThreadId + ") but is being driven by " + Thread.currentThread();
+    // 1. Enforce general rules
+    if (inboundTerm < this.state.currentTerm) {
+      // This is an old message -- ignore it.
+      // It should be harmless to let it through too, but safer to just kill it.
+      return;
+    }
+    enforceServerRules(inboundTerm, inboundCommitIndex);
+
+    // 2. Enforce role-specific rules
+    switch (state.leadership) {
+      case LEADER:
+        // 2.A. Enforce leader invariants
+        enforceLeaderRules(rpc, sender, inboundTerm);
+        if (state.leadership != RaftState.LeadershipStatus.LEADER) {  // note[gabor]: shouldn't happen
+          enforceRules(rpc, sender, inboundTerm, inboundCommitIndex, leader);  // recurse if we now have a new role
+          return;  // no need to continue on
+        }
+        break;
+      case CANDIDATE:
+        // 2.B. Enforce candidate invariants
+        enforceCandidateRules(rpc, inboundTerm);
+        if (state.leadership != RaftState.LeadershipStatus.CANDIDATE) {
+          enforceRules(rpc, sender, inboundTerm, inboundCommitIndex, leader);  // recurse if we now have a new role
+          return;  // no need to continue on
+        }
+        break;
+      case OTHER:
+        // 2.C. Enforce follower invariants
+        enforceFollowerRules(rpc, inboundTerm, leader);
+        if (state.leadership != RaftState.LeadershipStatus.OTHER) {
+          enforceRules(rpc, sender, inboundTerm, inboundCommitIndex, leader);  // recurse if we now have a new role
+          return;  // no need to continue on
+        }
+        break;
+      default:
+        log.error("Unknown leadership state when enforcing server rules: {}", state.leader);
+        break;
+    }
+
+    // 3. Reset election timeout
+    if (state.leadership != RaftState.LeadershipStatus.LEADER) {  // leaders don't have election timeouts
+      switch (rpc) {
+        case APPEND_ENTRIES:
+        case REQUEST_VOTES:
+        case INSTALL_SNAPSHOT:
+          this.state.resetElectionTimeout(transport.now(), leader);
+          break;
+      }
+    }
+  }
+
+
+
+
+  //
+  // --------------------------------------------------------------------------
   // APPEND ENTRIES RPC
   // --------------------------------------------------------------------------
   //
@@ -195,173 +564,151 @@ public class EloquentRaftAlgorithm implements RaftAlgorithm {
   @Override
   public void receiveAppendEntriesRPC(AppendEntriesRequest heartbeat,
                                       Consumer<RaftMessage> replyLeader) {
+    // Some setup.
+    // This is not part of the official spec, it's just boilerplate and logging.
     assert drivingThreadId < 0 || drivingThreadId == Thread.currentThread().getId() : "Eloquent Raft Algorithm should only be run from the driving thread (" + drivingThreadId + ") but is being driven by " + Thread.currentThread();
-    long begin = System.currentTimeMillis();
-    String methodName = "AppendEntriesRPC";
+    long beginTime = System.currentTimeMillis();
+    RPCType rpc = RPCType.APPEND_ENTRIES;
     RaftMessage reply;
-    if (heartbeat.getEntriesCount() > 0) {
-      log.trace("{} - [{}] {}; num_entries={}  prevIndex={}  leader={}", state.serverName, transport.now(), methodName, heartbeat.getEntriesCount(), heartbeat.getPrevLogIndex(), heartbeat.getLeaderName());
+    if (heartbeat.getEntryCount() > 0) {
+      log.trace("{} - [{}] {}; num_entries={}  prevIndex={}  leader={}", state.serverName, transport.now(), rpc, heartbeat.getEntryCount(), heartbeat.getPrevLogIndex(), heartbeat.getLeaderName());
     }
     AppendEntriesReply.Builder partialReply = AppendEntriesReply.newBuilder()
         .setFollowerName(state.serverName);  // signal our name
 
-    // Step 1: Reply false if term < currentTerm
-    if (!canPerformFollowerAction(methodName, heartbeat.getTerm(), false)) {
-      reply = RaftTransport.mkRaftMessage(state.serverName, partialReply
-          .setTerm(state.currentTerm)                         // signal the new term
-          .setNextIndex(state.log.getLastEntryIndex() + 1)    // signal the next index in the new term
-          .setSuccess(false)                                  // there was no update
-          .setMissingFromQuorum(!this.state.log.latestQuorumMembers.contains(this.state.serverName))
-          .build());
-    } else {
+    // (0.) Server Rules
+    this.enforceRules(rpc, heartbeat.getLeaderName(), heartbeat.getTerm(), Optional.of(heartbeat.getLeaderCommit()), Optional.of(heartbeat.getLeaderName()));
+    try {
 
-      // Step 2-4:
-      //   2. Reply false if log doesn't contain an entry at prevLogIndex whose term matches prevLogTerm
-      //   3. If an existing entry conflicts with the new one (same index but different terms), delete the existing
-      //       entry and all that follow it.
-      //   4. Append any new entries not already in the log
-      if (state.log.appendEntries(heartbeat.getPrevLogIndex(), heartbeat.getPrevLogTerm(), heartbeat.getEntriesList())) {
-        // Case: success
-        // (some debugging)
-        assert state.log.getLastEntryIndex() >= heartbeat.getPrevLogIndex() + heartbeat.getEntriesCount()
-            : "appendEntries succeeded on " + state.serverName + ", but latest log index is not caught up(!?)  prevLogIndex=" + heartbeat.getPrevLogIndex() + "  entryCount=" + heartbeat.getEntriesCount() +"  new_lastIndex=" + state.log.getLastEntryIndex();
-        if (!heartbeat.getEntriesList().isEmpty()) {
-          try {
-            KeyValueStateMachineProto.Transition transition = KeyValueStateMachineProto.Transition.parseFrom(heartbeat.getEntriesList().get(0).getTransition());
-            log.trace("{} - {} Appended entry @ time={} to index {} of type {}: {}",
-                state.serverName, methodName, transport.now(), heartbeat.getEntriesList().get(0).getIndex(), transition.getType(), transition);
-          } catch (InvalidProtocolBufferException ignored) { }
-        }
-        // (update our commit index)
-        if (state.commitIndex() < heartbeat.getLeaderCommit()) {
-          assert state.commitIndex() <= heartbeat.getLeaderCommit()
-              : "Leader has committed past our current index on " + state.serverName + "!  commitIndex=" + state.commitIndex() + "  heartbeat.commitIndex=" + heartbeat.getLeaderCommit() + "  prevLogIndex=" + heartbeat.getPrevLogIndex() + "  entryCount=" + heartbeat.getEntriesCount() +"  new_lastIndex=" + state.log.getLastEntryIndex();
-          state.commitUpTo(heartbeat.getLeaderCommit(), transport.now());
-        }
-        // (step down from any elections)
-        if (state.leadership == RaftState.LeadershipStatus.LEADER) {
-          log.warn("{} - {} Raft got an inbound heartbeat as a leader -- this is a possible split-brain. Stepping down from leadership so we can sort it out democratically.", state.serverName, methodName);
-          state.stepDownFromElection(this.transport.now());
-        }
-        // (reply)
-        if (heartbeat.getEntriesCount() > 0) log.trace("{} - {} replying success;  term={}  nextIndex={}  commitIndex={}", state.serverName, methodName, state.currentTerm, state.log.getLastEntryIndex() + 1, state.commitIndex());
+      /*
+       * 1. Reply false if term < currentTerm
+       */
+      if (heartbeat.getTerm() < this.state.currentTerm) {
         reply = RaftTransport.mkRaftMessage(state.serverName, partialReply
-            .setSuccess(true)                                   // RPC was successful
             .setTerm(state.currentTerm)                         // signal the new term
             .setNextIndex(state.log.getLastEntryIndex() + 1)    // signal the next index in the new term
-            .setMissingFromQuorum(!this.state.log.latestQuorumMembers.contains(this.state.serverName))
-            .build());
-      } else if (heartbeat.getEntriesCount() > 0) {
-        // Case: failed to append
-        long requestedNextIndex = Math.max(
-            state.log.snapshot.map(snapshot -> snapshot.lastIndex).orElse(0L),
-            Math.min(heartbeat.getPrevLogIndex() - 1, state.log.getLastEntryIndex())
-        );
-        //noinspection StatementWithEmptyBody
-        if (heartbeat.getPrevLogIndex() < this.state.log.snapshot.map(snapshot -> snapshot.lastIndex).orElse(0L)) {
-          // This is actually ok, because we can receive appends out of order and fail an append that comes before a snapshot
-        } else {
-          log.warn("{} - {} replying error;  term={}  lastIndex={}  heartbeat.term={}  heartbeat.prevIndex={}  requesting nextIndex={}",
-              state.serverName, methodName, state.currentTerm, state.log.getLastEntryIndex(), heartbeat.getTerm(), heartbeat.getPrevLogIndex(), requestedNextIndex);
-        }
-        reply = RaftTransport.mkRaftMessage(state.serverName, partialReply
-            .setSuccess(false)                                  // the update failed
-            .setTerm(state.currentTerm)                         // signal the new term
-            .setNextIndex(requestedNextIndex)    // signal the next index in the new term
+            .setSuccess(false)                                  // there was no update
             .setMissingFromQuorum(!this.state.log.latestQuorumMembers.contains(this.state.serverName))
             .build());
       } else {
-        // Case: this heartbeat has no payload
-        if (heartbeat.getEntriesCount() > 0) log.trace("{} - {} heartbeat has no payload;  term={}  nextIndex={}",
-            state.serverName, methodName, state.currentTerm, heartbeat.getPrevLogIndex());
-        reply = RaftTransport.mkRaftMessage(state.serverName, partialReply
-            .setSuccess(false)                                  // everything went ok, but no updates
-            .setTerm(state.currentTerm)                         // signal the new term
-            .setNextIndex(state.log.getLastEntryIndex() + 1)    // signal the next index in the new term
-            .setMissingFromQuorum(!this.state.log.latestQuorumMembers.contains(this.state.serverName))
-            .build());
+
+        /*
+         * 2-4. <delegated to appendEntries>
+         */
+        if (state.log.appendEntries(heartbeat.getPrevLogIndex(), heartbeat.getPrevLogTerm(), heartbeat.getEntryList())) {
+
+          /*
+           * 5. if leaderCommit > commitIndex, set commitIndex = min(leaderCommit, index of last entry)
+           */
+          if (heartbeat.getLeaderCommit() > this.state.commitIndex()) {
+            this.state.commitUpTo(
+                Math.min(heartbeat.getLeaderCommit(), state.log.getLastEntryIndex()),  // min(leaderCommit, index of last entry)
+                transport.now());
+          }
+          reply = RaftTransport.mkRaftMessage(state.serverName, partialReply
+              .setSuccess(true)                                   // RPC was successful
+              .setTerm(state.currentTerm)                         // signal the new term
+              .setNextIndex(state.log.getLastEntryIndex() + 1)    // signal the next index in the new term
+              .setMissingFromQuorum(!this.state.log.latestQuorumMembers.contains(this.state.serverName))
+              .build());
+
+        } else {
+          // Reply false if log doesn't contain an entry at prevLogIndex whose term matches
+          // prevLogTerm,
+          long requestedNextIndex = Math.max(
+              state.log.snapshot.map(snapshot -> snapshot.lastIndex).orElse(0L),
+              Math.min(heartbeat.getPrevLogIndex() - 1, state.log.getLastEntryIndex())
+          ) + 1;
+          reply = RaftTransport.mkRaftMessage(state.serverName, partialReply
+              .setTerm(state.currentTerm)                         // signal the new term
+              .setNextIndex(requestedNextIndex)    // signal the next index in the new term
+              .setSuccess(false)                                  // there was no update
+              .setMissingFromQuorum(!this.state.log.latestQuorumMembers.contains(this.state.serverName))
+              .build());
+        }
+      }
+
+      // (6.) Send the reply
+      replyLeader.accept(reply);
+
+    } finally {
+      // Server Rules
+      this.enforceRules(rpc, heartbeat.getLeaderName(), heartbeat.getTerm(), Optional.of(heartbeat.getLeaderCommit()), Optional.of(heartbeat.getLeaderName()));
+      long endTime = System.currentTimeMillis();
+      if (endTime > beginTime + 50) {
+        log.warn("{} - Took {} to apply AppendEntiresRPC on {} entries setting commit to {}",
+            state.serverName, TimerUtils.formatTimeDifference(endTime - beginTime), heartbeat.getEntryCount(), state.commitIndex());
       }
     }
-
-    replyLeader.accept(reply);
-
-    // Valid heartbeat: Reset the election timeout
-    // note[gabor]: this is last because the function above may actually take enough time
-    //              to otherwise trigger an election timeout in rare cases.
-    Optional<String> oldLeader = state.leader;
-    state.resetElectionTimeout(transport.now(), heartbeat.getLeaderName());
-    if (!oldLeader.equals(state.leader)) {
-      log.info("{} - {}; registered new leader={} (via heartbeat)  old leader={}  time={}",
-          state.serverName, methodName, state.leader.orElse("<none>"), oldLeader.orElse("<none>"), transport.now());
-    }
-    assert checkDuration(methodName, begin, System.currentTimeMillis());
   }
 
 
   /** {@inheritDoc} */
-  @SuppressWarnings("StatementWithEmptyBody")
   @Override
   public void receiveAppendEntriesReply(AppendEntriesReply reply) {
+    // Some setup.
+    // This is not part of the official spec, it's just boilerplate and logging.
     assert drivingThreadId < 0 || drivingThreadId == Thread.currentThread().getId() : "Eloquent Raft Algorithm should only be run from the driving thread (" + drivingThreadId + ") but is being driven by " + Thread.currentThread();
-    String methodName = "AppendEntriesReply";
-    long begin = System.currentTimeMillis();
-    try {
-      log.trace("{} - [{}] {} from {}. success={}  term={}  nextIndex={}", state.serverName, transport.now(), methodName, reply.getFollowerName(), reply.getSuccess(), reply.getTerm(), reply.getNextIndex());
-      asLeader(reply.getFollowerName(), reply.getTerm(), () -> {
-        assert state.isLeader() : "We should still be a leader if we process this reply";
-        assert reply.getTerm() == state.currentTerm : "We should be on the correct term when getting a heartbeat reply";
-        assert state.nextIndex.isPresent() : "We should have a nextIndex map";
-        if (reply.getSuccess()) {
-          // Case: the call was successful; update nextIndex + matchIndex
-          state.nextIndex.ifPresent(map -> map.put(reply.getFollowerName(), Math.max(map.getOrDefault(reply.getFollowerName(), 0L), reply.getNextIndex())));
-          state.matchIndex.ifPresent(map -> map.put(reply.getFollowerName(), Math.max(map.getOrDefault(reply.getFollowerName(), 0L), reply.getNextIndex() - 1)));
-          // Eloquent Addition: sanity check the quorum
-          if (reply.getMissingFromQuorum() &&
-              state.log.committedQuorumMembers.contains(reply.getFollowerName()) &&
-              state.log.latestQuorumMembers.contains(reply.getFollowerName()) &&
-              clusterMembershipFuture.isDone() &&
-              lastClusterMembershipChange + this.electionTimeoutMillisRange().end < transport.now()
-          ) {
-            log.warn("{} - {} detected quorum mismatch on node {}. Trying to recover, but this is an error state.", this.state.serverName, methodName, reply.getFollowerName());
-            receiveAddServerRPC(AddServerRequest.newBuilder()
-                .setNewServer(reply.getFollowerName())
-                .addAllQuorum(state.log.latestQuorumMembers)
-                .build());
-          }
-        } else {
-          // Case: the call was rejected by the client -- resend the append entries call
-          log.trace("{} - {} from {} was rejected. resending with term={} and nextIndex={}", state.serverName, methodName, reply.getFollowerName(), reply.getTerm(), reply.getNextIndex());
-          long index = Math.max(0, reply.getNextIndex() - 1);
-          if (index > 0) {
-            Optional<LogEntry> entryAtIndex = state.log.getEntryAtIndex(index);
-            if (entryAtIndex.isPresent()) {
-              // Case: the entry we'd like to send is in our logs
-            } else if (state.log.snapshot.isPresent() && index == state.log.snapshot.get().lastIndex) {
-              // Case: the entry we'd like to send is the last entry of our snapshot
-            } else {
-              // Case: the follower asked for an index that we do not have -- this is a bit of an error case
-              long match = state.matchIndex.map(map -> map.get(reply.getFollowerName())).orElse(0L);
-              if (match >= index) {
-                // Case: this is a message arriving out of order, and we've already snapshotted the old logs, so this is fine
-              } else {
-                state.matchIndex.ifPresent(map -> map.put(reply.getFollowerName(), 0L));
-                state.nextIndex.ifPresent(map -> map.put(reply.getFollowerName(), 0L));
-                log.warn("{} - {}  Follower asked for an index we do not have; setting index to 0 (to trigger snapshot)", state.serverName, methodName);
-                index = 0; // note[gabor] this used to decrement by 1 and loop on what is now 'if (index > 0)', but that loop will never succeed?
-              }
-            }
-          }
+    RPCType rpc = RPCType.APPEND_ENTRIES_REPLY;
 
-          // Check that we're not sending a set of empty entries, cause that would cause an infinite loop
-          Optional<List<LogEntry>> entries = state.log.getEntriesSinceInclusive(index + 1);
-          if (!entries.isPresent() || entries.get().size() > 0) {
-            // This handles choosing between InstallSnapshot and AppendEntries
-            sendAppendEntries(reply.getFollowerName(), index + 1);
-          }
+    // (0.) Server Rules
+    this.enforceRules(rpc, reply.getFollowerName(), reply.getTerm(), Optional.empty(), Optional.empty());
+    if (!state.isLeader()) {
+      // Can't process an append entries reply if we're not the leader
+      // We also shouldn't be getting one, so let's throw a log message for good measure.
+      log.debug("{} - [{}] {}; Got an AppendEntriesReply but we are not the leader. Ignoring request.", state.serverName, transport.now(), rpc);
+      return;
+    }
+
+    try {
+      /*
+       * If last log index >= nextIndex for a follower: send AppendEntries RPC
+       * with log entries starting at nextIndex
+       *
+       * * If successful: update nextIndex and matchIndex for follower
+       * * If AppendEntries fails because of log inconsistency: decrement
+       *   nextIndex and retry. *** <- do this ***
+       */
+      if (reply.getSuccess()) {
+
+        // Case: the call was successful; update nextIndex + matchIndex
+        state.nextIndex.ifPresent(map -> map.put(reply.getFollowerName(), Math.max(map.getOrDefault(reply.getFollowerName(), 0L), reply.getNextIndex())));
+        state.matchIndex.ifPresent(map -> map.put(reply.getFollowerName(), Math.max(map.getOrDefault(reply.getFollowerName(), 0L), reply.getNextIndex() - 1)));
+        // Eloquent Addition: sanity check the quorum
+        if (reply.getMissingFromQuorum() &&
+            state.log.committedQuorumMembers.contains(reply.getFollowerName()) &&
+            state.log.latestQuorumMembers.contains(reply.getFollowerName()) &&
+            clusterMembershipFuture.isDone() &&
+            lastClusterMembershipChange + this.electionTimeoutMillisRange().end < transport.now()
+        ) {
+          log.warn("{} - {} detected quorum mismatch on node {}. Trying to recover, but this is an error state.", this.state.serverName, rpc, reply.getFollowerName());
+          receiveAddServerRPC(AddServerRequest.newBuilder()
+              .setNewServer(reply.getFollowerName())
+              .addAllQuorum(state.log.latestQuorumMembers)
+              .build());
         }
-      });
+      } else {
+
+        // Case: the call was rejected by the client -- resend the append entries call
+        log.trace("{} - {} from {} was rejected. resending with term={} and nextIndex={}", state.serverName, rpc, reply.getFollowerName(), reply.getTerm(), reply.getNextIndex());
+        // Get the next index
+        long index = Math.max(0, reply.getNextIndex() - 1);
+        if (index > 0 && state.log.snapshot.isPresent() && state.log.snapshot.get().lastIndex >= index) {
+          index = -1;
+        }
+        long nextIndex = index + 1;
+        assert nextIndex >= 0;
+        // Update the next index
+        state.nextIndex.ifPresent(x -> x.put(reply.getFollowerName(), nextIndex));
+        Optional<List<LogEntry>> entries = state.log.getEntriesSinceInclusive(nextIndex);
+        if (!entries.isPresent() || entries.get().size() > 0) {  // Check that we're not sending a set of empty entries, cause that would cause an infinite loop
+          // This handles choosing between InstallSnapshot and AppendEntries
+          sendAppendEntries(reply.getFollowerName(), nextIndex);
+        }
+      }
     } finally {
-      assert checkDuration(methodName, begin, System.currentTimeMillis());
+      // Server Rules
+      this.enforceRules(rpc, reply.getFollowerName(), reply.getTerm(), Optional.empty(), Optional.empty());
     }
   }
 
@@ -387,7 +734,7 @@ public class EloquentRaftAlgorithm implements RaftAlgorithm {
           .setLeaderName(state.serverName)
           .setPrevLogIndex(nextIndex - 1)
           .setPrevLogTerm(prevEntryTerm.get())
-          .addAllEntries(entries.get())
+          .addAllEntry(entries.get())
           .setLeaderCommit(state.log.getCommitIndex())
           .build());
     } else {
@@ -420,6 +767,7 @@ public class EloquentRaftAlgorithm implements RaftAlgorithm {
     String methodName = "AppendEntriesRPC";
     return generalizedAppendEntries(nextIndex, (heartbeat, snapshot) -> {
       assert drivingThreadId < 0 || drivingThreadId == Thread.currentThread().getId() : "Eloquent Raft Algorithm should only be run from the driving thread (" + drivingThreadId + ") but is being driven by " + Thread.currentThread();
+
       if (heartbeat != null) {
         // Case: this is a heartbeat request
         return transport.rpcTransportAsFuture(state.serverName, target, heartbeat, (result, exception) -> {
@@ -438,6 +786,7 @@ public class EloquentRaftAlgorithm implements RaftAlgorithm {
                 .setSuccess(false)).build());
           }
         }, this.drivingThreadQueue, timeout);
+
       } else if (snapshot != null) {
         // Case: this is a snapshot request
         return transport.rpcTransportAsFuture(state.serverName, target, snapshot, (result, exception) -> {
@@ -455,6 +804,7 @@ public class EloquentRaftAlgorithm implements RaftAlgorithm {
                 .build()));
           }
         }, this.drivingThreadQueue, timeout);
+
       } else {
         log.warn("{} - We have neither log entries or a snapshot to send to {}.", state.serverName, target);
         return CompletableFuture.completedFuture(RaftMessage.getDefaultInstance());
@@ -512,7 +862,9 @@ public class EloquentRaftAlgorithm implements RaftAlgorithm {
     AppendEntriesRequest appendEntriesRequest;  // The request we're sending. This does not need to be sent in a lock
 
     // 1. Rate Limit
-    if (!force && this.transport.isSaturated()) {
+    if (force) {
+      this.broadcastRateLimiter.forceSubmit();
+    } else if (!this.broadcastRateLimiter.submit(transport.nowNanos())){
       log.trace("{} - {}; rate limiting broadcast to avoid saturating the transport.", state.serverName, methodName);
       return;
     }
@@ -525,7 +877,6 @@ public class EloquentRaftAlgorithm implements RaftAlgorithm {
     assert state.nextIndex.isPresent() : "Running heartbeat as leader, but don't have a nextIndex defined";
 
     // 3. Find the largest update we have to send.
-    long findUpdateStart = System.currentTimeMillis();
     long minLogIndex = Long.MAX_VALUE;
     long minLogTerm = Long.MAX_VALUE;
     List<LogEntry> argminEntries = null;
@@ -557,7 +908,6 @@ public class EloquentRaftAlgorithm implements RaftAlgorithm {
         }
       }
     }
-    checkDuration("finding update index", findUpdateStart, System.currentTimeMillis());
 
     // 4. Handle the case that we have no updates
     if (minLogTerm == Long.MAX_VALUE || minLogIndex == Long.MAX_VALUE || argminEntries == null) {
@@ -571,35 +921,23 @@ public class EloquentRaftAlgorithm implements RaftAlgorithm {
       }
     }
 
-    // 5. Update invariants
-    if (state.isLeader()) {
-      updateLeaderInvariantsPostMessage(Optional.empty());
-    }
-
-    // 6. Construct the broadcast
-    long constructProtoStart = System.currentTimeMillis();
+    // 5. Construct the broadcast
     appendEntriesRequest = AppendEntriesRequest
         .newBuilder()
         .setTerm(state.currentTerm)
         .setLeaderName(state.serverName)
         .setPrevLogIndex(minLogIndex)
         .setPrevLogTerm(minLogTerm)
-        .addAllEntries(argminEntries)
+        .addAllEntry(argminEntries)
         .setLeaderCommit(state.log.getCommitIndex())
         .build();
-    checkDuration("creating heartbeat proto", constructProtoStart, System.currentTimeMillis());
 
-    // 7. Send the broadcast
-    // 7.1. (log the broadcast while in a lock)
+    // 6. Send the broadcast
+    // 6.1. (log the broadcast while in a lock)
     log.trace("{} - Broadcasting appendEntriesRequest; logIndex={}  logTerm={}  # entries={}  forced={}  @t={}",
         state.serverName, minLogIndex, minLogTerm, argminEntries.size(), force, transport.now());
-    // 7.2. (the sending does not need to be locked)
-    long broadcastStart = System.currentTimeMillis();
-    try {
-      transport.broadcastTransport(state.serverName, appendEntriesRequest);
-    } finally {
-      checkDuration("broadcast transport call", broadcastStart, System.currentTimeMillis());
-    }
+    // 6.2. (the sending does not need to be locked)
+    transport.broadcastTransport(state.serverName, appendEntriesRequest);
   }
 
 
@@ -613,78 +951,93 @@ public class EloquentRaftAlgorithm implements RaftAlgorithm {
   /** {@inheritDoc} */
   @Override
   public void receiveInstallSnapshotRPC(InstallSnapshotRequest snapshot, Consumer<RaftMessage> replyLeader) {
+    // Some setup.
+    // This is not part of the official spec, it's just boilerplate and logging.
     assert drivingThreadId < 0 || drivingThreadId == Thread.currentThread().getId() : "Eloquent Raft Algorithm should only be run from the driving thread (" + drivingThreadId + ") but is being driven by " + Thread.currentThread();
-    String methodName = "InstallSnapshotRPC";
-    RaftMessage reply;
+    RPCType rpc = RPCType.INSTALL_SNAPSHOT;
+    log.trace("{} - [{}] {}:  term={}  lastIndex={}", state.serverName, transport.now(), rpc, snapshot.getTerm(), snapshot.getLastIndex());
 
-    log.trace("{} - [{}] {}:  term={}  lastIndex={}", state.serverName, transport.now(), methodName, snapshot.getTerm(), snapshot.getLastIndex());
-    InstallSnapshotReply.Builder partialReply = InstallSnapshotReply.newBuilder()
-        .setFollowerName(state.serverName);
+    // (0.) Server Rules
+    this.enforceRules(rpc, snapshot.getLeaderName(), snapshot.getTerm(), Optional.empty(), Optional.of(snapshot.getLeaderName()));
+    try {
 
-    // Reset the election timeout
-    Optional<String> leader = state.leader;
-    state.resetElectionTimeout(transport.now(), snapshot.getLeaderName());
-    if (!leader.equals(state.leader)) {
-      log.info("{} - {}; registered new leader={}  old leader={}  term={}  lastIndex={}  time={}",
-          state.serverName, methodName, state.leader.orElse("<none>"), leader.orElse("<none>"),
-          snapshot.getTerm(), snapshot.getLastIndex(), transport.now());
-    }
+      /*
+       * 1. Reply immediately if term < currentTerm
+       */
+      if (snapshot.getTerm() >= state.currentTerm) {
 
-    // Step 1: Reply false if term < currentTerm
-    if (!canPerformFollowerAction(methodName, snapshot.getTerm(), false)) {
-      reply = RaftTransport.mkRaftMessage(state.serverName, partialReply
-          .setTerm(state.currentTerm)                       // signal our term
+        /*
+         * 2. Create new snapshot file if first chunk (offset is 0).
+         * 3. Write data into snapshot file at given offset.
+         *
+         * note[gabor]: we don't have a snapshot file or chunks
+         * TODO(gabor) Implement snapshot chunking.
+         *             I suspect this is one of the reasons we elect so much...
+         */
+        RaftLog.Snapshot requestedSnapshot = new RaftLog.Snapshot(
+            snapshot.getData().toByteArray(),
+            snapshot.getLastIndex(),
+            snapshot.getLastTerm(),
+            snapshot.getLastConfigList());
+
+        /*
+         * 4. Reply and wait for more data chunks if done is false (not implemented)
+         * 5. if lastIndex is larger than latest snapshot's, save snapshot file
+         *    and raft state (lastIndex, lastTerm, lastConfig). Discard any
+         *    existing or partial snapshot.
+         * 6. If existing log entry has same index and term as lastIndex and lastTerm, discard log
+         *    up through lastIndex (but retain any following entries) and reply
+         * 7. Discard the entire log
+         * 8. Reset state machine using snapshot contents (and load lastConfig as cluster configuration
+         */
+        state.log.installSnapshot(requestedSnapshot, transport.now());
+      }
+
+      // (9.) Reply
+      RaftMessage reply = RaftTransport.mkRaftMessage(state.serverName, InstallSnapshotReply.newBuilder()
+          .setFollowerName(state.serverName)
+          .setTerm(state.currentTerm)                       // signal our term. This must come after we enforce our initial rules
           .setNextIndex(state.log.getLastEntryIndex() + 1)  // signal our last log index
           .build());
-    } else {
-      assert snapshot.getTerm() == state.currentTerm : "Should not have been allowed to continue if the terms don't match!";
+      replyLeader.accept(reply);
 
-      // Step 2: Create new snapshot file
-      RaftLog.Snapshot requestedSnapshot = new RaftLog.Snapshot(
-          snapshot.getData().toByteArray(),
-          snapshot.getLastIndex(),
-          snapshot.getLastTerm(),
-          snapshot.getLastConfigList());
-
-      // Step 3 - 8: Write data into snapshot file + save the snapshot file. If exsiting log entry has same index
-      //             and term as lastIndex and lastTerm, discard log up through lastIndex (but retain any following
-      //             entries) and reply. Discard entire log. Reset state machine using snapshot contents.
-      state.log.installSnapshot(requestedSnapshot, transport.now());
-
-      //  Reply
-      log.trace("{} - {} success: last index in log is {}", state.serverName, methodName, state.log.getLastEntryIndex());
-      reply = RaftTransport.mkRaftMessage(state.serverName, partialReply
-          .setTerm(state.currentTerm)                       // signal our term
-          .setNextIndex(state.log.getLastEntryIndex() + 1)  // signal our last log index
-          .build());
+    } finally {
+      // Server Rules
+      this.enforceRules(rpc, snapshot.getLeaderName(), snapshot.getTerm(), Optional.empty(), Optional.of(snapshot.getLeaderName()));
     }
-
-    replyLeader.accept(reply);
   }
-
 
 
   /** {@inheritDoc} */
   @Override
   public void receiveInstallSnapshotReply(InstallSnapshotReply reply) {
+    // Some setup.
+    // This is not part of the official spec, it's just boilerplate and logging.
     assert drivingThreadId < 0 || drivingThreadId == Thread.currentThread().getId() : "Eloquent Raft Algorithm should only be run from the driving thread (" + drivingThreadId + ") but is being driven by " + Thread.currentThread();
-    String methodName = "InstallSnapshotReply";
-    log.trace("{} - [{}] {} from {}. term={}  nextIndex={}", state.serverName, transport.now(), methodName, reply.getFollowerName(), reply.getTerm(), reply.getNextIndex());
-    asLeader(reply.getFollowerName(), reply.getTerm(), () -> {
-      // As an efficiency boost, update nextIndex and matchIndex
-      // This is, strictly speaking, optional, as the next heartbeat will handle this automatically
-      state.nextIndex.ifPresent(map -> map.compute(reply.getFollowerName(), (k, v) -> reply.getNextIndex()));
-      state.matchIndex.ifPresent(map -> map.compute(reply.getFollowerName(), (k, v) -> reply.getNextIndex() - 1));
+    RPCType rpc = RPCType.INSTALL_SNAPSHOT_REPLY;
+    log.trace("{} - [{}] {} from {}. term={}  nextIndex={}", state.serverName, transport.now(), rpc, reply.getFollowerName(), reply.getTerm(), reply.getNextIndex());
 
-      // Always send any updates immediately, if the other endpoint is behind us
 
-      // Check that we're not sending a set of empty entries, cause that would cause an infinite loop
-      Optional<List<LogEntry>> entries = state.log.getEntriesSinceInclusive(reply.getNextIndex());
-      if (!entries.isPresent() || entries.get().size() > 0) {
-        // This handles choosing between InstallSnapshot and AppendEntries
-        sendAppendEntries(reply.getFollowerName(), reply.getNextIndex());
+    // (0.) Server Rules
+    this.enforceRules(rpc, reply.getFollowerName(), reply.getTerm(), Optional.empty(), Optional.empty());
+    try {
+
+      if (state.isLeader() && reply.getTerm() >= state.currentTerm) {
+        // 1. Eloquent addition:
+        //    As an efficiency boost, update nextIndex and matchIndex
+        //    This is, strictly speaking, optional, as the next heartbeat will handle this automatically
+        state.nextIndex.ifPresent(map -> map.compute(reply.getFollowerName(), (k, v) -> reply.getNextIndex()));
+        state.matchIndex.ifPresent(map -> map.compute(reply.getFollowerName(), (k, v) -> reply.getNextIndex() - 1));
+
+        // note[gabor]: we used to re-send updated entries here, but that seems actually incorrect.
+        // those entries have already been sent somewhere else, and if we're behind in the worst case we'll get them
+        // on the next heartbeat. Sending them here too seems like it just complicates the algorithm.
       }
-    });
+
+    } finally {
+      // Server Rules
+      this.enforceRules(rpc, reply.getFollowerName(), reply.getTerm(), Optional.empty(), Optional.empty());
+    }
   }
 
 
@@ -699,80 +1052,96 @@ public class EloquentRaftAlgorithm implements RaftAlgorithm {
   @Override
   public void receiveRequestVoteRPC(RequestVoteRequest voteRequest,
                                     Consumer<RaftMessage> replyLeader) {
+    // Some setup.
+    // This is not part of the official spec, it's just boilerplate and logging.
     assert drivingThreadId < 0 || drivingThreadId == Thread.currentThread().getId() : "Eloquent Raft Algorithm should only be run from the driving thread (" + drivingThreadId + ") but is being driven by " + Thread.currentThread();
-    //    if (!alive) { return; }  // Always vote -- we may need the vote on handoff
-    String methodName = "RequestVoteRPC";
+    RPCType rpc = RPCType.REQUEST_VOTES;
     RaftMessage reply;
 
-    log.trace("{} - [{}] {};  candidate={}  term={}", state.serverName, transport.now(), methodName, voteRequest.getCandidateName(), voteRequest.getTerm());
-    log.info("{} - {};  candidate={}  candidate_term={}  my_term={}", state.serverName, methodName, voteRequest.getCandidateName(), voteRequest.getTerm(), state.currentTerm);
+    // (0.) Server Rules
+    this.enforceRules(rpc, voteRequest.getCandidateName(), voteRequest.getTerm(), Optional.empty(), Optional.empty());
+    try {
 
-    if (canPerformFollowerAction(methodName, voteRequest.getTerm(), false)) {
-      // 1. Resolve who to vote for
-      boolean voteGranted;
       if (voteRequest.getTerm() < state.currentTerm) {
-        voteGranted = false;
+        /*
+         * 1. Reply false if term < currentTerm
+         */
+        reply = RaftTransport.mkRaftMessage(state.serverName, RequestVoteReply.newBuilder()
+            .setVoterName(state.serverName)
+            .setTerm(state.currentTerm)  // this is axiomatically greater than the requester term
+            .setVoteGranted(false)
+            .build());
+
+      } else if (
+          (!state.votedFor.isPresent() || state.votedFor.get().equals(voteRequest.getCandidateName()))  && // votedFor is null or candidateId
+              voteRequest.getLastLogIndex() >= state.log.getLastEntryIndex()  // candidate's log is at least as up-to-date as receiver's log
+          ) {
+
+        /*
+         * 2. If votedFor is null or candidateId, and candidate's log is at least as up-to-date
+         *    as receiver's log, grant vote.
+         */
+        state.voteFor(voteRequest.getCandidateName());
+        reply = RaftTransport.mkRaftMessage(state.serverName, RequestVoteReply.newBuilder()
+            .setVoterName(state.serverName)
+            .setTerm(Math.max(voteRequest.getTerm(), state.currentTerm))
+            .setVoteGranted(true)
+            .build());
       } else {
-        voteGranted = (
-            (!state.votedFor.isPresent() || state.votedFor.get().equals(voteRequest.getCandidateName())) &&
-                voteRequest.getLastLogIndex() >= state.log.getLastEntryIndex()
-        );
-        if (voteGranted) {
-          Optional<String> leader = state.leader;
-          state.voteFor(voteRequest.getCandidateName(), transport.now());  // resets election timer
-          if (!leader.equals(state.leader)) {
-            log.info("{} - {}; registered new leader={}  old leader={}  time={}", state.serverName, methodName, state.leader.orElse("<none>"), leader.orElse("<none>"), transport.now());
-          }
-        }
+
+        // Vote is not granted
+        reply = RaftTransport.mkRaftMessage(state.serverName, RequestVoteReply.newBuilder()
+            .setVoterName(state.serverName)
+            .setTerm(Math.max(voteRequest.getTerm(), state.currentTerm))
+            .setVoteGranted(false)
+            .build());
+
       }
 
-      // 2. Respond
-      log.trace("{} - {} replying;  candidate={}  vote_granted={}  term={}  voted_for={}", state.serverName, methodName, voteRequest.getCandidateName(), voteGranted, state.currentTerm, state.votedFor.orElse("<nobody>"));
-      reply = RaftTransport.mkRaftMessage(state.serverName, RequestVoteReply.newBuilder()
-          .setFollowerName(state.serverName)
-          .setTerm(voteRequest.getTerm())
-          .setFollowerTerm(state.currentTerm)
-          .setVoteGranted(voteGranted)
-          .build());
-    } else {
-      log.trace("{} - {} we're not allowed to perform this action; responding with a rejected vote", state.serverName, methodName);
-      reply = RaftTransport.mkRaftMessage(state.serverName, RequestVoteReply.newBuilder()
-          .setFollowerName(state.serverName)
-          .setTerm(voteRequest.getTerm())
-          .setFollowerTerm(state.currentTerm)
-          .setVoteGranted(false)
-          .build());
-    }
+      // (3.) Send the reply
+      log.info("{} - [{}] {};  candidate={}  candidate_term={}  my_term={}  vote_granted={}",
+          state.serverName, transport.now(), rpc, voteRequest.getCandidateName(), voteRequest.getTerm(), state.currentTerm,
+          reply.getRequestVotesReply().getVoteGranted());
+      replyLeader.accept(reply);
 
-    replyLeader.accept(reply);
+    } finally {
+      // Server Rules
+      this.enforceRules(rpc, voteRequest.getCandidateName(), voteRequest.getTerm(), Optional.empty(), Optional.empty());
+    }
   }
 
 
   /** {@inheritDoc} */
   @Override
   public void receiveRequestVotesReply(RequestVoteReply reply) {
+    // Some setup.
+    // This is not part of the official spec, it's just boilerplate and logging.
     assert drivingThreadId < 0 || drivingThreadId == Thread.currentThread().getId() : "Eloquent Raft Algorithm should only be run from the driving thread (" + drivingThreadId + ") but is being driven by " + Thread.currentThread();
-    String methodName = "RequestVoteReply";
-    log.info("{} - [{}] {} from {};  term={}  follower_term={}  vote_granted={}",
-        state.serverName, transport.now(), methodName, reply.getFollowerName(), reply.getTerm(), reply.getFollowerTerm(), reply.getVoteGranted());
-    if (canPerformFollowerAction(methodName, reply.getTerm(), true)) {
-      // 1. Grant the vote
-      if (reply.getVoteGranted()) {
-        state.receiveVoteFrom(reply.getFollowerName());
-        log.trace("{} - {} received vote; have {} votes total ({})", state.serverName, methodName, state.votesReceived.size(), state.votesReceived);
-        // 2. Check if we won the election
-        if (state.votesReceived.size() > state.log.getQuorumMembers().size() / 2) {
-          // 3. If we won the election, elect ourselves
-          if (state.leadership != RaftState.LeadershipStatus.LEADER) {
-            state.elect(transport.now());
-            log.info("{} - Raft won an election for term {} (time={}  members={})", state.serverName, this.state.currentTerm, transport.now(), state.log.getQuorumMembers());
-            broadcastAppendEntries(false, true);  // immediately broadcast our leadership status
-          } else {
-            log.trace("{} - {} already elected to term {}", state.serverName, methodName, this.state.currentTerm);
+    RPCType rpc = RPCType.REQUEST_VOTES_REPLY;
+    log.info("{} - [{}] {} {} {} for me ({});  term={}",
+        state.serverName, transport.now(), rpc,
+        reply.getVoterName(), reply.getVoteGranted() ? "voted" : "did not vote", state.serverName, reply.getTerm());
 
-          }
-        }
+
+    // IMPORTANT: don't enforce rules at the beginning of this function.
+    // It's important that we don't update our term from the election, or else
+    // state.currentTerm will axiomatically be reply.getRequesterTerm() below.
+    try {
+
+      // 1. Receive a vote, if we got one.
+      //    We allow the vote if:
+      //      (i)  The vote was granted by the voter, and
+      //      (ii) We are still on the same term as we were when we requested the vote.
+      //
+      //    The invariants are handled in {@link #enforceRules(RPCType, long, Optional, Optional)}
+      if (this.state.currentTerm == reply.getTerm() && reply.getVoteGranted()) {
+        state.receiveVoteFrom(reply.getVoterName());
       }
+
+    } finally {
+      // Server Rules
+      // note[gabor]: this is where we actually elect ourselves if applicable, if we've received a vote above
+      this.enforceRules(rpc, reply.getVoterName(), reply.getTerm(), Optional.empty(), Optional.empty());
     }
   }
 
@@ -781,44 +1150,14 @@ public class EloquentRaftAlgorithm implements RaftAlgorithm {
   @Override
   public void triggerElection() {
     assert drivingThreadId < 0 || drivingThreadId == Thread.currentThread().getId() : "Eloquent Raft Algorithm should only be run from the driving thread (" + drivingThreadId + ") but is being driven by " + Thread.currentThread();
-    String methodName = "triggerElection";
-    log.info("{} - Raft triggered an election with term {} -> {} (now={} chkpt={} cluster={} leader={} election_checkpoint={})",
-        state.serverName, state.currentTerm, state.currentTerm + 1, transport.now(), state.electionTimeoutCheckpoint, state.log.getQuorumMembers(), state.leader.orElse("<unknown>"), state.electionTimeoutCheckpoint);
-    // The request we're sending. This does not need to be sent in a lock
-    RequestVoteRequest voteRequest;
-
-    // 1. Become a candidate, if not already one
-    state.becomeCandidate(this.transport.now());
-    assert this.state.isCandidate() : "Should not be requesting votes if we're not a candidate";
-
-    // 2. Initiate Election
-    // 2.1. Increment currentTerm
-    state.setCurrentTerm(state.currentTerm + 1);
-    // 2.2. Vote for self
-    state.voteFor(state.serverName, transport.now());  // resets election timer
-
-    // 3. Check if we won the election by default (i.e., we're the only node)
-    if (state.votesReceived.size() > state.log.getQuorumMembers().size() / 2) {
-      if (state.leadership != RaftState.LeadershipStatus.LEADER) {
-        state.elect(transport.now());
-        log.info("{} - Raft won an election (by default) for term {} (time={}; cluster={})", state.serverName, this.state.currentTerm, transport.now(), state.log.latestQuorumMembers);
-      } else {
-        log.trace("{} - already elected to term {}", state.serverName, this.state.currentTerm);
-
-      }
+    log.info("{} [{}] - triggering an election", state.serverName, transport.now());
+    try {
+      this.convertToCandidate();
+    } finally {
+      // Server Rules
+      // note[gabor]: this is where we elect ourselves if we immediately elect.
+      this.enforceRules(RPCType.TRIGGER_ELECTIOn, this.serverName(), this.state.currentTerm, Optional.empty(), Optional.empty());
     }
-
-    // 4. Send the broadcast
-    voteRequest = RequestVoteRequest.newBuilder()
-        .setTerm(state.currentTerm)
-        .setCandidateName(state.serverName)
-        .setLastLogIndex(state.log.getLastEntryIndex())
-        .setLastLogTerm(state.log.getLastEntryTerm())
-        .build();
-    // 4.1. (log the broadcast)
-    log.trace("{} - {}; Broadcasting requestVote", state.serverName, methodName);
-    // 4.2. (send the broadcast)
-    transport.broadcastTransport(this.state.serverName, voteRequest);
   }
 
 
@@ -1161,7 +1500,7 @@ public class EloquentRaftAlgorithm implements RaftAlgorithm {
         if (result != null) {
           // If we've removed ourselves, step down from leadership.
           if (removeServerRequest.getOldServer().equals(state.serverName) && result.getRemoveServerReply().getStatus() == MembershipChangeStatus.OK) {
-            state.stepDownFromElection(this.transport.now());
+            state.stepDownFromElection(this.state.currentTerm, this.transport.now());
           }
           // Then, return
           rtn.complete(result);
@@ -1218,153 +1557,180 @@ public class EloquentRaftAlgorithm implements RaftAlgorithm {
   //
 
 
-  /** {@inheritDoc} */
+  /**
+   * {@inheritDoc}
+   *
+   * <p>
+   *   From the Raft spec:
+   * </p>
+   * <p>
+   *   If command received from client: append entry to local log,
+   *   respond after entry applied to state machine
+   * </p>
+   */
   @Override
   public CompletableFuture<RaftMessage> receiveApplyTransitionRPC(ApplyTransitionRequest transition, boolean forceOntoQueue) {
+    // Some setup.
+    // This is not part of the official spec, it's just boilerplate and logging.
     assert drivingThreadId < 0 || drivingThreadId == Thread.currentThread().getId() : "Eloquent Raft Algorithm should only be run from the driving thread (" + drivingThreadId + ") but is being driven by " + Thread.currentThread();
-    String methodName = "ReceiveApplyTransition";
-    log.trace("{} - [{}] {}; is_leader={}", state.serverName, transport.now(), methodName, this.state.isLeader());
+    RPCType rpc = RPCType.APPLY_TRANSITION;
+    log.trace("{} - [{}] {}; is_leader={}", state.serverName, transport.now(), rpc, this.state.isLeader());
     CompletableFuture<RaftMessage> rtn;
 
-    if (state.isLeader()) {
 
-      // Case: We're on the leader -- apply the transition
-      RaftLogEntryLocation location = state.transition(
-          transition.getTransition().isEmpty() ? Optional.empty() : Optional.of(transition.getTransition().toByteArray()),
-          "".equals(transition.getNewHospiceMember()) ? Optional.empty() : Optional.of(transition.getNewHospiceMember())
-      );
-      rtn = state.log.createCommitFuture(location.index, location.term, true).handle((success, exception) -> {
-        // The transition was either committed or overwritten
-        assert drivingThreadId < 0 || drivingThreadId == Thread.currentThread().getId() : "Eloquent Raft Algorithm should only be run from the driving thread (" + drivingThreadId + ") but is being driven by " + Thread.currentThread();
-        ApplyTransitionReply.Builder reply = ApplyTransitionReply
-            .newBuilder()
-            .setTerm(state.currentTerm)
-            .setNewEntryIndex(-1)  // just so it's not picked up as the default proto. overwritten below
-            .setSuccess(success != null ? success : false);
-        if (success != null && success) {
-          reply
-              .setNewEntryIndex(location.index)
-              .setNewEntryTerm(location.term);
+    // (0.) Server Rules
+    this.enforceRules(rpc, state.serverName, transition.getTerm(), Optional.empty(), Optional.empty());
+    try {
+
+      if (state.isLeader()) {
+
+        // Case: We're on the leader -- apply the transition
+        RaftLogEntryLocation location = state.transition(
+            transition.getTransition().isEmpty() ? Optional.empty() : Optional.of(transition.getTransition().toByteArray()),
+            "".equals(transition.getNewHospiceMember()) ? Optional.empty() : Optional.of(transition.getNewHospiceMember())
+        );
+        rtn = state.log.createCommitFuture(location.index, location.term, true).handle((success, exception) -> {
+          // The transition was either committed or overwritten
+          assert drivingThreadId < 0 || drivingThreadId == Thread.currentThread().getId() : "Eloquent Raft Algorithm should only be run from the driving thread (" + drivingThreadId + ") but is being driven by " + Thread.currentThread();
+          ApplyTransitionReply.Builder reply = ApplyTransitionReply
+              .newBuilder()
+              .setTerm(state.currentTerm)
+              .setNewEntryIndex(-1)  // just so it's not picked up as the default proto. overwritten below
+              .setSuccess(success != null ? success : false);
+          if (success != null && success) {
+            reply
+                .setNewEntryIndex(location.index)
+                .setNewEntryTerm(location.term);
+          } else {
+            log.info("{} - {}; failed transition (on leader; could not commit) @ time={}", state.serverName, rpc, transport.now(), exception);
+          }
+          // Reply
+          return RaftMessage.newBuilder().setSender(state.serverName).setApplyTransitionReply(reply).build();
+        });
+        // Early broadcast message
+        broadcastAppendEntries(this.state.log.latestQuorumMembers.size() <= 1, false);
+
+      } else if (state.leader.map(leader -> !leader.equals(this.state.serverName)).orElse(false)) {
+        if (transition.getForwardedByList().contains(state.serverName)) {
+
+          // Case: We're being forwarded this message in a loop (we've forwarded this message in the past), so fail it
+          log.info("{} - {}; we've been forwarded our own message back to us in a loop. Failing the message", state.serverName, rpc);
+          rtn = CompletableFuture.completedFuture(RaftMessage.newBuilder().setSender(state.serverName).setApplyTransitionReply(ApplyTransitionReply
+              .newBuilder()
+              .setTerm(state.currentTerm)
+              .setNewEntryIndex(-2)
+              .setSuccess(false)).build());
         } else {
-          log.info("{} - {}; failed transition (on leader; could not commit) @ time={}", state.serverName, methodName, transport.now(), exception);
-        }
-        // Reply
-        return RaftMessage.newBuilder().setSender(state.serverName).setApplyTransitionReply(reply).build();
-      });
-      // Early broadcast message
-      broadcastAppendEntries(this.state.log.latestQuorumMembers.size() <= 1, false);
-      // Update our leader invariants
-      this.updateLeaderInvariantsPostMessage(Optional.empty());
 
-    } else if (state.leader.map(leader -> !leader.equals(this.state.serverName)).orElse(false)) {
-      if (transition.getForwardedByList().contains(state.serverName)) {
-        // Case: We're being forwarded this message in a loop (we've forwarded this message in the past), so fail it
-        log.info("{} - {}; we've been forwarded our own message back to us in a loop. Failing the message", state.serverName, methodName);
+          // Case: We're not the leader -- forward it to the leader
+          assert !state.leader.map(x -> x.equals(this.serverName())).orElse(false) : "We are sending a message to the leader, but we think we're the leader!";
+          log.trace("{} - [{}] {}; forwarding request to {}", state.serverName, transport.now(), rpc, this.state.leader.orElse("<unknown>"));
+          // Forward the request
+          rtn = transport.rpcTransportAsFuture(
+              state.serverName,
+              state.leader.orElse("<unknown>"),
+              transition.toBuilder().addForwardedBy(state.serverName).build(),
+              (result, exception) -> {
+                assert drivingThreadId < 0 || drivingThreadId == Thread.currentThread().getId() : "Eloquent Raft Algorithm should only be run from the driving thread (" + drivingThreadId + ") but is being driven by " + Thread.currentThread();
+                if (result != null) {
+                  log.trace("{} - {}; received reply to forwarded message", state.serverName, rpc);
+                  return result;
+                } else {
+                  if (exception instanceof TimeoutException) {
+                    log.debug("{} - {} Timed out apply transition", state.serverName, rpc);
+                  } else {
+                    log.warn("{} - [{}] {} Failure: <{}>;  is_leader={}  leader={}",
+                        state.serverName, transport.now(), rpc, exception == null ? "unknown error" : (exception.getClass().getName() + ": " + exception.getMessage()),
+                        state.isLeader(), state.leader.orElse("<unknown>"));
+                  }
+                  return RaftMessage.newBuilder().setSender(state.serverName).setApplyTransitionReply(ApplyTransitionReply
+                      .newBuilder()
+                      .setTerm(state.currentTerm)
+                      .setNewEntryIndex(-3)
+                      .setSuccess(false)).build();
+                }
+              }, this.drivingThreadQueue, 2000)  // 2s timeout
+              .thenCompose(leaderResponse -> {
+                assert drivingThreadId < 0 || drivingThreadId == Thread.currentThread().getId() : "Eloquent Raft Algorithm should only be run from the driving thread (" + drivingThreadId + ") but is being driven by " + Thread.currentThread();
+                // Then wait for it to commit locally
+                if (leaderResponse.getApplyTransitionReply().getSuccess()) {
+                  log.trace("{} - {}; waiting for commit", state.serverName, rpc);
+                  long index = leaderResponse.getApplyTransitionReply().getNewEntryIndex();
+                  long term = leaderResponse.getApplyTransitionReply().getNewEntryTerm();
+                  return state.log.createCommitFuture(index, term, true).handle((success, t) -> {
+                    assert drivingThreadId < 0 || drivingThreadId == Thread.currentThread().getId() : "Eloquent Raft Algorithm should only be run from the driving thread (" + drivingThreadId + ") but is being driven by " + Thread.currentThread();
+                    log.trace("{} - {}; Entry @ {} (term={}) is committed in the local log", state.serverName, rpc, index, term);
+                    // The transition was either committed or overwritten
+                    ApplyTransitionReply.Builder reply = ApplyTransitionReply
+                        .newBuilder()
+                        .setTerm(state.currentTerm)
+                        .setNewEntryIndex(-4)  // just so this isn't the default proto. Overwritten below
+                        .setSuccess(success == null ? false : success);
+                    if (success != null && success) {
+                      reply
+                          .setNewEntryIndex(index)
+                          .setNewEntryTerm(term);
+                    } else {
+                      log.info("{} - {}; failed transition (on follower) @ time={}", state.serverName, rpc, transport.now());
+                    }
+                    return RaftMessage.newBuilder().setSender(state.serverName).setApplyTransitionReply(reply).build();
+                  });
+                } else {
+                  log.debug("{} - {}; failed to apply transition (reply proto had failure marked); returning failure", state.serverName, rpc);
+                  return CompletableFuture.completedFuture(leaderResponse);
+                }
+              });
+        }
+      } else {
+
+        // Case: We're not the leader, and we don't know who is.
+        //       We have no choice but to fail the request.
+        log.warn("{} - {}; we're not the leader and don't know who the leader is. This is OK if we're in the middle of an election", state.serverName, rpc);
         rtn = CompletableFuture.completedFuture(RaftMessage.newBuilder().setSender(state.serverName).setApplyTransitionReply(ApplyTransitionReply
             .newBuilder()
             .setTerm(state.currentTerm)
-            .setNewEntryIndex(-2)
+            .setNewEntryIndex(-5)
             .setSuccess(false)).build());
-      } else {
-        // Case: We're not the leader -- forward it to the leader
-        assert !state.leader.map(x -> x.equals(this.serverName())).orElse(false) : "We are sending a message to the leader, but we think we're the leader!";
-        log.trace("{} - [{}] {}; forwarding request to {}", state.serverName, transport.now(), methodName, this.state.leader.orElse("<unknown>"));
-        // Forward the request
-        rtn = transport.rpcTransportAsFuture(
-            state.serverName,
-            state.leader.orElse("<unknown>"),
-            transition.toBuilder().addForwardedBy(state.serverName).build(),
-            (result, exception) -> {
-              assert drivingThreadId < 0 || drivingThreadId == Thread.currentThread().getId() : "Eloquent Raft Algorithm should only be run from the driving thread (" + drivingThreadId + ") but is being driven by " + Thread.currentThread();
-              if (result != null) {
-                log.trace("{} - {}; received reply to forwarded message", state.serverName, methodName);
-                return result;
-              } else {
-                if (exception instanceof TimeoutException) {
-                  log.debug("{} - {} Timed out apply transition", state.serverName, methodName);
-                } else {
-                  log.warn("{} - [{}] {} Failure: <{}>;  is_leader={}  leader={}",
-                      state.serverName, transport.now(), methodName, exception == null ? "unknown error" : (exception.getClass().getName() + ": " + exception.getMessage()),
-                      state.isLeader(), state.leader.orElse("<unknown>"));
-                }
-                return RaftMessage.newBuilder().setSender(state.serverName).setApplyTransitionReply(ApplyTransitionReply
-                    .newBuilder()
-                    .setTerm(state.currentTerm)
-                    .setNewEntryIndex(-3)
-                    .setSuccess(false)).build();
-              }
-            }, this.drivingThreadQueue, 2000)  // 1s timeout
-            .thenCompose(leaderResponse -> {
-              assert drivingThreadId < 0 || drivingThreadId == Thread.currentThread().getId() : "Eloquent Raft Algorithm should only be run from the driving thread (" + drivingThreadId + ") but is being driven by " + Thread.currentThread();
-              // Then wait for it to commit locally
-              if (leaderResponse.getApplyTransitionReply().getSuccess()) {
-                log.trace("{} - {}; waiting for commit", state.serverName, methodName);
-                long index = leaderResponse.getApplyTransitionReply().getNewEntryIndex();
-                long term = leaderResponse.getApplyTransitionReply().getNewEntryTerm();
-                return state.log.createCommitFuture(index, term, true).handle((success, t) -> {
-                  assert drivingThreadId < 0 || drivingThreadId == Thread.currentThread().getId() : "Eloquent Raft Algorithm should only be run from the driving thread (" + drivingThreadId + ") but is being driven by " + Thread.currentThread();
-                  log.trace("{} - {}; Entry @ {} (term={}) is committed in the local log", state.serverName, methodName, index, term);
-                  // The transition was either committed or overwritten
-                  ApplyTransitionReply.Builder reply = ApplyTransitionReply
-                      .newBuilder()
-                      .setTerm(state.currentTerm)
-                      .setNewEntryIndex(-4)  // just so this isn't the default proto. Overwritten below
-                      .setSuccess(success == null ? false : success);
-                  if (success != null && success) {
-                    reply
-                        .setNewEntryIndex(index)
-                        .setNewEntryTerm(term);
-                  } else {
-                    log.info("{} - {}; failed transition (on follower) @ time={}", state.serverName, methodName, transport.now());
-                  }
-                  return RaftMessage.newBuilder().setSender(state.serverName).setApplyTransitionReply(reply).build();
-                });
-              } else {
-                log.debug("{} - {}; failed to apply transition (reply proto had failure marked); returning failure", state.serverName, methodName);
-                return CompletableFuture.completedFuture(leaderResponse);
-              }
-            });
       }
-    } else {
-      // Case: We're not the leader, and we don't know who is.
-      //       We have no choice but to fail the request.
-      log.info("{} - {}; we're not the leader and don't know who the leader is. This is OK if we're in the middle of an election", state.serverName, methodName);
-      rtn = CompletableFuture.completedFuture(RaftMessage.newBuilder().setSender(state.serverName).setApplyTransitionReply(ApplyTransitionReply
-          .newBuilder()
-          .setTerm(state.currentTerm)
-          .setNewEntryIndex(-5)
-          .setSuccess(false)).build());
-    }
 
-    // Return
-    return rtn;
+      // Return
+      if (rtn.isDone()) {
+        return rtn;
+      } else {
+        return rtn.thenApplyAsync(message -> message, this.state.log.pool);  // defer the future to another thread
+      }
+
+    } finally {
+      // Server Rules
+      this.enforceRules(rpc, state.serverName, transition.getTerm(), Optional.empty(), Optional.empty());
+    }
   }
 
 
   /** {@inheritDoc} */
   @Override
   public void heartbeat() {
+    // Some setup.
+    // This is not part of the official spec, it's just boilerplate and logging.
     assert drivingThreadId < 0 || drivingThreadId == Thread.currentThread().getId() : "Eloquent Raft Algorithm should only be run from the driving thread (" + drivingThreadId + ") but is being driven by " + Thread.currentThread();
-    long begin = transport.now();
+    RPCType rpc = RPCType.HEARTBEAT;
+    log.trace("{} - [{}] {}", state.serverName, transport.now(), rpc);
     Object timerPrometheusBegin = Prometheus.startTimer(summaryTiming, "heartbeat", "false", Boolean.toString(this.state.isLeader()));
-    long sectionBegin;
+
+    // (0.) Server Rules
+    this.enforceRules(rpc, state.serverName, state.currentTerm, Optional.empty(), Optional.empty());
     try {
       if (this.state.isLeader()) {
-        assert checkDuration("leadership check", begin, transport.now());
 
         // Case: do a leader heartbeat
-        sectionBegin = transport.now();
         log.trace("{} - heartbeat (leader) @ time={}  cluster={}", state.serverName, transport.now(), state.log.getQuorumMembers());
-        assert checkDuration("get quorum members", begin, transport.now());
         broadcastAppendEntries(false, true);  // the heartbeat.
         if (Thread.interrupted()) {
           throw new RuntimeInterruptedException();
         }
-        assert checkDuration("broadcast", sectionBegin, transport.now());
 
         // Check if we should scale the cluster
         if (state.targetClusterSize >= 0) {  // only do this if we don't have a fixed cluster
-          sectionBegin = transport.now();
           if (clusterMembershipFuture.getNow(null) != null) {  // if we're not still waiting on membership changes
             Optional<String> maybeServer;
             if ((maybeServer = state.serverToRemove(transport.now(), MACHINE_DOWN_TIMEOUT)).isPresent()) {
@@ -1377,7 +1743,6 @@ public class EloquentRaftAlgorithm implements RaftAlgorithm {
                       .build()),
                   true  // we don't want to block on this call
               );
-              assert checkDuration("remove server", sectionBegin, transport.now());
             } else if ((maybeServer = state.serverToAdd(transport.now(), electionTimeoutMillisRange().begin)).isPresent()) {  // note: add timeout is different from remove timeout. Much more strict to add than to remove
               // Case: we want to scale up the cluster
               log.info("{} - Detected Raft cluster is too small ({} < {}); scaling up by adding {} (latency {})  current_time={}",
@@ -1388,17 +1753,14 @@ public class EloquentRaftAlgorithm implements RaftAlgorithm {
                       .build()),
                   true  // we don't want to block on this call
               );
-              assert checkDuration("add server", sectionBegin, transport.now());
             }
           }
           if (Thread.interrupted()) {
             throw new RuntimeInterruptedException();
           }
-          assert checkDuration("size checks", sectionBegin, transport.now());
         }
 
         // Check if anyone has gone offline
-        sectionBegin = transport.now();
         if (state.log.stateMachine instanceof KeyValueStateMachine) {
           Set<String> toKillSet = state.killNodes(transport.now(), MACHINE_DOWN_TIMEOUT);
           for (String deadNode : toKillSet) {
@@ -1416,60 +1778,18 @@ public class EloquentRaftAlgorithm implements RaftAlgorithm {
                 });
           }
         }
-        assert checkDuration("offline check", sectionBegin, transport.now());
 
       } else {
 
-        // Case: do a follower heartbeat
+        // Case: Do a follower heartbeat.
+        //       This is basically a NOOP, handled by {@link #enforceRules(RPCType, long, Optional, Optional)}.
         log.trace("{} - heartbeat (follower) @ time={}  cluster={}", state.serverName, transport.now(), state.log.getQuorumMembers());
-        if (state.shouldTriggerElection(transport.now(), electionTimeoutMillisRange())) {
-          this.triggerElection();
-        }
       }
+
     } finally {
+      this.enforceRules(rpc, state.serverName, state.currentTerm, Optional.empty(), Optional.empty());
       Prometheus.observeDuration(timerPrometheusBegin);
-      assert checkDuration("total", begin, transport.now());
     }
-  }
-
-
-  /**
-   * A helper method for checking if an operation took too long.
-   *
-   * @param description The description of the task that timed out.
-   * @param begin The begin time of the operation
-   * @param now The current time.
-   *
-   * @return True if the operation took too long
-   */
-  @SuppressWarnings("Duplicates")
-  private boolean checkDuration(String description, long begin, long now) {
-    assert drivingThreadId < 0 || drivingThreadId == Thread.currentThread().getId() : "Eloquent Raft Algorithm should only be run from the driving thread (" + drivingThreadId + ") but is being driven by " + Thread.currentThread();
-    long timeElapsed = now - begin;
-    if (timeElapsed > 50) {
-      long lastGcTime = -1L;
-      try {
-        long uptime = ManagementFactory.getRuntimeMXBean().getStartTime();
-        for (GarbageCollectorMXBean gcBean : ManagementFactory.getGarbageCollectorMXBeans()) {
-          com.sun.management.GarbageCollectorMXBean sunGcBean = (com.sun.management.GarbageCollectorMXBean) gcBean;
-          GcInfo lastGcInfo = sunGcBean.getLastGcInfo();
-          if (lastGcInfo != null) {
-            lastGcTime = lastGcInfo.getStartTime() + uptime;
-          }
-        }
-      } catch (Throwable t) {
-        log.warn("Could not get GC info -- are you running on a non-Sun JVM?");
-      }
-      boolean interruptedByGC = false;
-      if (lastGcTime > begin && lastGcTime < now) {
-        interruptedByGC = true;
-      }
-      OperatingSystemMXBean osBean = ManagementFactory.getPlatformMXBean(OperatingSystemMXBean.class);
-      log.warn("{} - Raft took >50ms ({}) on step '{}';  leadership={}  system_load={}  interrupted_by_gc={}",
-          state.serverName, TimerUtils.formatTimeDifference(timeElapsed), description, state.leadership,
-          osBean.getSystemLoadAverage(), interruptedByGC);
-    }
-    return true;  // always return true, or else we throw an assert
   }
 
 
@@ -1494,11 +1814,11 @@ public class EloquentRaftAlgorithm implements RaftAlgorithm {
 
   /** {@inheritDoc} */
   @Override
-  public void awaitCapacity() {
+  public void awaitLeaderKnown() {
     assert drivingThreadId < 0 || drivingThreadId != Thread.currentThread().getId() : "It's extremely dangerous to awaitCapacity on the driving thread!";
     int iters = 0;
-    while ((++iters < 1000) && (!state.leader.isPresent() || transport.isSaturated())) {
-      Uninterruptably.sleep(1);  // sleep for just a bit; until the next millisecond
+    while ((++iters < 1000) && (!state.leader.isPresent())) {
+      Uninterruptably.sleep(1);  // sleep for just a bit
     }
   }
 
@@ -1553,158 +1873,14 @@ public class EloquentRaftAlgorithm implements RaftAlgorithm {
 
   //
   // --------------------------------------------------------------------------
-  // INVARIANTS
+  // OBJECT OVERRIDES
   // --------------------------------------------------------------------------
   //
 
-
-  /**
-   * This is called on every RPC communication step to ensure that we can perform a follower
-   * action.
-   *
-   * @param rpcName The name of the RPC, for debugging.
-   * @param remoteTermNumber The term number from the server.
-   * @param isRpcReply True if we're inside an RPC reply
-   *
-   * @return true if we observed a compatible term number
-   */
-  private boolean canPerformFollowerAction(String rpcName, long remoteTermNumber, boolean isRpcReply) {
-    assert drivingThreadId < 0 || drivingThreadId == Thread.currentThread().getId() : "Eloquent Raft Algorithm should only be run from the driving thread (" + drivingThreadId + ") but is being driven by " + Thread.currentThread();
-    if (remoteTermNumber < state.currentTerm && !isRpcReply) {
-      // Someone is broadcasting with an older term -- ignore the message
-      log.trace("{} - {} cannot perform action: remoteTerm={} < currentTerm={}", state.serverName, rpcName, remoteTermNumber, state.currentTerm);
-      return false;
-    } else if (remoteTermNumber > state.currentTerm) {
-      // Someone is broadcasting with a newer term -- defer to them
-      log.trace("{} - {} detected remoteTerm={} > currentTerm={} -- forced into follower state but otherwise continuing", state.serverName, rpcName, remoteTermNumber, state.currentTerm);
-      state.stepDownFromElection(this.transport.now());
-      state.setCurrentTerm(remoteTermNumber);
-      assert state.leadership == RaftState.LeadershipStatus.OTHER;
-      return true;
-    } else {
-      // Terms match -- everything is OK
-      if (!isRpcReply && this.state.leadership == RaftState.LeadershipStatus.LEADER) {
-        log.warn("We are trying to perform a follower action ({}) but are actually the leader", rpcName);
-      }
-      return true;
-    }
-  }
-
-
-  /**
-   * A short helper wrapping {@link #canPerformLeaderAction(String, long)} and
-   * {@link #updateLeaderInvariantsPostMessage(Optional)}.
-   */
-  private void asLeader(String followerName, long remoteTerm, Runnable fn) {
-    assert drivingThreadId < 0 || drivingThreadId == Thread.currentThread().getId() : "Eloquent Raft Algorithm should only be run from the driving thread (" + drivingThreadId + ") but is being driven by " + Thread.currentThread();
-    if (canPerformLeaderAction(followerName, remoteTerm)) {
-      try {
-        assert state.isLeader() : "We should be a leader if we get this far performing a leader action";
-        fn.run();
-      } finally {
-        updateLeaderInvariantsPostMessage(Optional.of(followerName));
-      }
-    } else {
-      log.trace("{} - Leader prereqs failed.", this.state.serverName);
-    }
-  }
-
-
-  /**
-   * Runs before a message is processed to make sure that we can perform a leader action.
-   *
-   * <p>
-   *   Consider calling {@link #asLeader(String, long, Runnable)} rather than calling this
-   *   function directly.
-   * </p>
-   *
-   * @param followerName The follower we received the message from.
-   * @param remoteTerm The term received from the follower
-   *
-   * @return True if the leader can continue with the request. Otherwise, we should
-   *         handle the error somehow.
-   */
-  private boolean canPerformLeaderAction(String followerName, long remoteTerm) {
-    assert drivingThreadId < 0 || drivingThreadId == Thread.currentThread().getId() : "Eloquent Raft Algorithm should only be run from the driving thread (" + drivingThreadId + ") but is being driven by " + Thread.currentThread();
-    if (!state.isLeader()) {
-      log.trace("{} - presumed leader is not a leader", state.serverName);
-      return false;
-    }
-    if (followerName.isEmpty()) {
-      log.warn("{} - Got a message with no follower name. This is an error!", state.serverName);
-      return false;
-    }
-    if (remoteTerm < state.currentTerm) {
-      // Someone is broadcasting with an older term -- ignore the message, but throw a warning because this is weird and
-      // should be very rare
-      log.warn("{} - leader cannot perform action. remoteTerm={} < currentTerm={}", state.serverName, remoteTerm, state.currentTerm);
-      return false;
-    } else if (remoteTerm > state.currentTerm) {
-      // Someone is broadcasting with a newer term -- defer to them
-      log.trace("{} - detected remoteTerm={} > currentTerm={} -- forced into follower state", state.serverName, remoteTerm, state.currentTerm);
-      state.stepDownFromElection(this.transport.now());
-      state.setCurrentTerm(remoteTerm);
-      assert state.leadership == RaftState.LeadershipStatus.OTHER;
-      return false;
-    } else {
-      // Terms match -- everything is OK
-      return true;
-    }
-  }
-
-
-  /**
-   * Run all of the invariants that should be true on the leader. This should be called after
-   * every successful message is received by the leader.
-   *
-   * <p>
-   *   Consider calling {@link #asLeader(String, long, Runnable)} rather than calling this
-   *   function directly.
-   * </p>
-   *
-   * @param followerName The follower we received the message from.
-   */
-  private void updateLeaderInvariantsPostMessage(Optional<String> followerName) {
-    assert drivingThreadId < 0 || drivingThreadId == Thread.currentThread().getId() : "Eloquent Raft Algorithm should only be run from the driving thread (" + drivingThreadId + ") but is being driven by " + Thread.currentThread();
-    if (state.isLeader()) {
-      // 1. Observe that a follower is still alive
-      followerName.ifPresent(s -> this.state.observeLifeFrom(s, transport.now()));
-
-      // 2. If there exists an N such that N > commitIndex, a majority of matchIndex[i] >= N,
-      //    and log[N].term == currentTerm, then set commitIndex = N.
-      this.state.matchIndex.ifPresent(matchIndex -> {
-        Set<String> clusterMembers = this.state.log.getQuorumMembers();
-        if (!clusterMembers.isEmpty()) {
-          // 2.1. Get the set of relevant match indices
-          long[] matchIndices = clusterMembers.stream().mapToLong(member -> {
-            if (this.state.serverName.equals(member)) {
-              return this.state.log.getLastEntryIndex();
-            } else {
-              assert matchIndex.containsKey(member) : "no match index for member " + member;
-              return matchIndex.get(member);
-            }
-          }).toArray();
-          // 2.2. Find the median index
-          Arrays.sort(matchIndices);
-          long medianIndex;
-          if (matchIndices.length % 2 == 0) {
-            medianIndex = matchIndices[matchIndices.length / 2 - 1];  // round pessimistically (len 4 -> index 1) -- we need a majority, not just a tie
-          } else {
-            medianIndex = matchIndices[matchIndices.length / 2];      // no need to round (len 3 -> index 1)
-          }
-//        log.trace("{} - matchIndices={}  medianIndex={}  commitIndex={}", state.serverName, matchIndices, medianIndex, state.commitIndex());
-          // 2.3. Commit up to the median index
-          if (medianIndex > state.commitIndex() && state.log.getLastEntryTerm() == state.currentTerm) {
-            log.trace("{} - Committing up to index {}; matchIndex={} -> {}", state.serverName, medianIndex, matchIndex, matchIndices);
-            state.commitUpTo(medianIndex, transport.now());
-            // 2.4. Broadcast the commit immediately
-            if (followerName.isPresent()) {  // but only if this is from a particular follower's update
-              broadcastAppendEntries(false, false);
-            }
-          }
-        }
-      });
-    }
+  /** {@inheritDoc} */
+  @Override
+  public String toString() {
+    return this.serverName();
   }
 
 

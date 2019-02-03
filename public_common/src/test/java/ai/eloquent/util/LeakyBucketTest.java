@@ -2,6 +2,8 @@ package ai.eloquent.util;
 
 import org.junit.Test;
 
+import java.util.concurrent.TimeUnit;
+
 import static org.junit.Assert.*;
 
 /**
@@ -17,7 +19,7 @@ public class LeakyBucketTest {
    */
   @Test
   public void testConstructor() {
-    LeakyBucket bucket = new LeakyBucket(5, 1000000L);
+    LeakyBucket bucket = new LeakyBucket(5, 1000000L, TimeUnit.NANOSECONDS);
     assertEquals(5, bucket.bucketCapacity);
     assertEquals(1000000L, bucket.nanosBetweenLeaks);
   }
@@ -28,7 +30,7 @@ public class LeakyBucketTest {
    */
   @Test
   public void submit() {
-    LeakyBucket bucket = new LeakyBucket(3, 1000000L);
+    LeakyBucket bucket = new LeakyBucket(3, 1000000L, TimeUnit.NANOSECONDS);
     // Fill up the bucket
     assertTrue(bucket.submit(0L));
     assertTrue(bucket.submit(0L));
@@ -51,7 +53,7 @@ public class LeakyBucketTest {
    */
   @Test
   public void submitCornerCaseJustStarted() {
-    LeakyBucket bucket = new LeakyBucket(1, 5L);
+    LeakyBucket bucket = new LeakyBucket(1, 5L, TimeUnit.NANOSECONDS);
     assertTrue(bucket.submit(100L));
     assertFalse(bucket.submit(104L));
     assertTrue(bucket.submit(105L));
@@ -63,7 +65,7 @@ public class LeakyBucketTest {
    */
   @Test
   public void forceSubmit() {
-    LeakyBucket bucket = new LeakyBucket(1, 5L);
+    LeakyBucket bucket = new LeakyBucket(1, 5L, TimeUnit.NANOSECONDS);
     assertTrue(bucket.submit(0L));
     bucket.forceSubmit();
     bucket.forceSubmit();
@@ -80,7 +82,7 @@ public class LeakyBucketTest {
    */
   @Test
   public void isFull() {
-    LeakyBucket bucket = new LeakyBucket(1, 1000000L);
+    LeakyBucket bucket = new LeakyBucket(1, 1000000L, TimeUnit.NANOSECONDS);
     assertFalse("Bucket should not start full", bucket.isFull(0L));
     assertTrue(bucket.submit(0L));
     assertTrue("Bucket with capacity 1 should be full after one submit", bucket.isFull(0L));
@@ -92,7 +94,7 @@ public class LeakyBucketTest {
    */
   @Test
   public void isFullWithForcedSubmissions() {
-    LeakyBucket bucket = new LeakyBucket(1, 5L);
+    LeakyBucket bucket = new LeakyBucket(1, 5L, TimeUnit.NANOSECONDS);
     assertFalse("Bucket should not start full", bucket.isFull(0L));
     bucket.forceSubmit();
     bucket.forceSubmit();
@@ -108,7 +110,7 @@ public class LeakyBucketTest {
    */
   @Test
   public void submitBlocking() throws InterruptedException {
-    LeakyBucket bucket = new LeakyBucket(1, 5000000L);
+    LeakyBucket bucket = new LeakyBucket(1, 5000000L, TimeUnit.NANOSECONDS);
     // Fill up the bucket
     long nanosBefore = System.nanoTime();  // a conservative estimate
     assertTrue(bucket.submit());

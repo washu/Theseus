@@ -43,13 +43,7 @@ public class TheseusTest extends WithLocalTransport {
    * @param fn The code to run 'quietly'
    */
   private void quietly(RunnableThrowsException fn) throws Exception{
-    int logLevel = RaftLog.level();
-//    EloquentLogger.setLevel("info");
-    try {
-      fn.run();
-    } finally {
-      RaftLog.setLevel(logLevel);
-    }
+    fn.run();
   }
 
 
