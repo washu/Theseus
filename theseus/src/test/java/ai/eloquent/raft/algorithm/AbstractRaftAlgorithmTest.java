@@ -1975,6 +1975,7 @@ public abstract class AbstractRaftAlgorithmTest {
   /**
    * Submit a bunch of transitions all at once
    */
+  @Ignore  // TODO(gabor) This test is super flaky on CI
   @Test
   public void testTransitionAllAtOnce() {
     Assume.assumeTrue(isStableTransport());  // requires a stable transport
