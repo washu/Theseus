@@ -1,6 +1,5 @@
 package ai.eloquent.raft;
 
-import ai.eloquent.data.Transport;
 import ai.eloquent.util.SafeTimerTask;
 import ai.eloquent.util.Span;
 
@@ -98,6 +97,12 @@ public interface RaftTransport {
    * This is used to calibrate the Raft algorithm, and to test the unit tests.
    */
   Span expectedNetworkDelay();
+
+
+  /** If true, we should throttle broadcasts on this transport. */
+  default boolean throttle() {
+    return true;
+  }
 
 
   /** For unit tests primarily -- most transports don't need to be started explicitly */

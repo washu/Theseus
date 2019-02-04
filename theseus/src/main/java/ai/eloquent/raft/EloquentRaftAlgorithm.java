@@ -862,7 +862,7 @@ public class EloquentRaftAlgorithm implements RaftAlgorithm {
     AppendEntriesRequest appendEntriesRequest;  // The request we're sending. This does not need to be sent in a lock
 
     // 1. Rate Limit
-    if (force) {
+    if (force || !transport.throttle()) {
       this.broadcastRateLimiter.forceSubmit();
     } else if (!this.broadcastRateLimiter.submit(transport.nowNanos())){
       log.trace("{} - {}; rate limiting broadcast to avoid saturating the transport.", state.serverName, methodName);

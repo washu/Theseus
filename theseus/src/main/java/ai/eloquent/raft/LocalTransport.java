@@ -380,6 +380,13 @@ public class LocalTransport implements RaftTransport {
   }
 
 
+  /** {@inheritDoc} */
+  @Override
+  public boolean throttle() {
+    return false;
+  }
+
+
   /**
    * Start the transport, if it hasn't already started
    */
