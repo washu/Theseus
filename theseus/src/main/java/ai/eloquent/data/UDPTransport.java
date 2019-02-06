@@ -14,10 +14,7 @@ import java.net.*;
 import java.nio.ByteBuffer;
 import java.time.Duration;
 import java.util.*;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.ExecutionException;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.TimeoutException;
+import java.util.concurrent.*;
 import java.util.function.Consumer;
 import java.util.regex.Pattern;
 
@@ -247,7 +244,7 @@ public class UDPTransport implements Transport {
           }
           // Force refresh our sockets
           for (InetAddress addr : broadcastAddrs) {
-            getTcpSocket(addr, true);
+            getTcpSocket(addr);
           }
           // Broadcast a ping
           broadcastTransport(UDPBroadcastProtos.MessageType.PING, UDPTransport.this.serverName.getAddress());
@@ -538,8 +535,8 @@ public class UDPTransport implements Transport {
         log.debug("Message is too long to send as a single packet ({}); sending over TCP", datagram.length);
         long socketSendStart = System.currentTimeMillis();
         try {
-          Optional<Socket> tcpSocket = getTcpSocket(InetAddress.getByName(destination), false);
-          tcpSocket.ifPresent(socket1 -> safeWriteTcp(proto, socket1, "sendTransport"));
+          Optional<Socket> tcpSocket = getTcpSocket(InetAddress.getByName(destination));
+          tcpSocket.ifPresent(socket1 -> safeWriteTcp(proto, socket1, "sendTransport"));  // drop the packet if the connection doesn't exist
         } finally {
           long socketSendEnd = System.currentTimeMillis();
           if (socketSendEnd > socketSendStart + 100) {
@@ -572,95 +569,49 @@ public class UDPTransport implements Transport {
   /**
    * A cache for open TCP sockets to various endpoints.
    */
-  final Map<InetAddress, Socket> tcpSocketCache = new HashMap<>();
+  final Map<InetAddress, DeferredLazy<Socket>> tcpSocketCache = new ConcurrentHashMap<>();
 
 
   /**
    * Gets a cached TCP socket to a box.
-   * Note that this method can be slow -- up to 100ms -- in the case that
-   * the receiving socket is not playing nice and does not complete the handshake
-   * in a timely fashion.
+   * If the socket doesn't exist, we return {@link Optional#empty()}, and begin recomputing the
+   * socket for -- hopefully -- the next call.
+   *  @param addr The address we're connecting to.
    *
-   * @param addr The address we're connecting to
-   * @param forceRetry If true, force trying to reconnect to the socket.
    */
-  private Optional<Socket> getTcpSocket(InetAddress addr, boolean forceRetry) {
-    Socket candidate;
-    synchronized (tcpSocketCache) {
-      if ((candidate = tcpSocketCache.get(addr)) == null && !forceRetry && tcpSocketCache.containsKey(addr)) {
-        // we've explicitly null'd this socket
-        return Optional.empty();
+  private Optional<Socket> getTcpSocket(InetAddress addr) {
+    long startTime = System.currentTimeMillis();
+    try {
+      return tcpSocketCache.computeIfAbsent(addr, key -> new DeferredLazy<Socket>() {
+        /** {@inheritDoc} */
+        @Override
+        protected Socket compute() throws IOException {
+          log.info("Getting a new TCP socket to {}", addr);
+          try {
+            return new Socket(addr, tcpListenPort);
+          } finally {
+            log.info("TCP socket to {} connected", addr);
+          }
+        }
+        /** {@inheritDoc} */
+        @Override
+        protected boolean isValid(Socket sock, long lastComputeTime, long currentTime) {
+          return sock != null && !sock.isClosed();
+        }
+        /** {@inheritDoc} */
+        @Override
+        protected void onDiscard(Socket value) throws IOException {
+          if (!value.isClosed()) {
+            value.close();
+          }
+        }
+      }).get();
+    } finally {
+      long endTime = System.currentTimeMillis();
+      if (endTime - startTime > 10) {
+        log.warn("Took {} to get a cached TCP socket. This is a pretty bad sign.", TimerUtils.formatTimeDifference(endTime - startTime));
       }
     }
-
-    if (candidate == null || candidate.isClosed()) {
-      // This socket doesn't exist, or is closed
-      // 1. Check that the address is even alive
-      try {
-        if (!addr.isReachable(100)) {
-          synchronized (tcpSocketCache) {
-            tcpSocketCache.put(addr, null);
-          }
-          log.warn("{} is reachable: ", addr);
-          return Optional.empty();
-        }
-      } catch (IOException e) {
-        log.warn("Could not check if {} is reachable: ", addr, e);
-        synchronized (tcpSocketCache) {
-          tcpSocketCache.put(addr, null);
-        }
-        return Optional.empty();
-      }
-
-      // 2. Get the socket on a killable thread
-      final CompletableFuture<Socket> asyncSocket = new CompletableFuture<>();
-      Thread tcpGetter = new Thread( () -> {
-        try {
-          Socket impl = new Socket(addr, tcpListenPort);
-          synchronized (asyncSocket) {
-            asyncSocket.complete(impl);
-          }
-        } catch (IOException e) {
-          asyncSocket.completeExceptionally(e);
-        }
-      });
-      tcpGetter.setName("socket-creator-" + addr.getHostAddress());
-      tcpGetter.setDaemon(true);
-      tcpGetter.setUncaughtExceptionHandler((t, e) -> log.warn("Uncaught exception on {}: ", t, e));
-      tcpGetter.start();
-
-      // 3. Wait on the result of the thread
-      try {
-        candidate = asyncSocket.get(5, TimeUnit.SECONDS);  // a socket connection to Google from my home wifi takes 20ms
-
-        // 4. Set the socket
-        synchronized (tcpSocketCache) {
-          Socket mostRecent = tcpSocketCache.get(addr);
-          if (mostRecent != null && !mostRecent.isClosed()) {
-            try {
-              candidate.close();  // we encountered a race condition -- close our newer socket
-            } catch (IOException ignored) {}
-          } else {
-            tcpSocketCache.put(addr, candidate);  // we have a new socket
-          }
-        }
-        log.info("refreshed TCP socket for {}", addr);
-      } catch (ExecutionException | InterruptedException | TimeoutException e) {
-        if (e.getCause() != null && e.getCause() instanceof ConnectException) {
-          log.warn("Remote machine {} is not accepting connections ({})", addr, e.getCause().getMessage());
-        } else {
-          log.warn("Could not create TCP socket to {} -- exception on future: ", addr, e);
-        }
-        return Optional.empty();
-      } finally {
-        if (tcpGetter.isAlive()) {  // kill the thread
-          tcpGetter.interrupt();
-        }
-      }
-    }
-
-    // 5. Return
-    return Optional.of(candidate);
   }
 
 
@@ -754,7 +705,7 @@ public class UDPTransport implements Transport {
         // 2.1. For each address in the broadcast...
         for (InetAddress addr : this.broadcastAddrs) {
           try {
-            Optional<Socket> tcpSocket = getTcpSocket(addr, false);
+            Optional<Socket> tcpSocket = getTcpSocket(addr);
             tcpSocket.ifPresent(socket1 -> safeWriteTcp(proto, socket1, "broadcastTransport"));
           } catch (Throwable t) {
             log.warn("Unhandled exception sending message on TCP socket", t);

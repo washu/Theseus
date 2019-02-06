@@ -747,11 +747,11 @@ public class RaftStateTest {
 
     assertEquals("Don't want to kill anyone at first", Collections.emptySet(), state.killNodes(1000, 500));
     assertEquals("Don't want to kill anyone right at the cutoff", Collections.emptySet(), state.killNodes(1500, 500));
-    assertEquals("Want to kill 'A' right after their timeout", Collections.singleton("A"), state.killNodes(1501, 500));
+    assertEquals("Want to kill 'A' 5s after their timeout", Collections.singleton("A"), state.killNodes(6501, 500));
     assertEquals("'A' should be in the already killed list", Collections.singleton("A"), state.alreadyKilled.get());
-    assertEquals("Should not want to double-kill 'A'", Collections.emptySet(), state.killNodes(1500, 500));
+    assertEquals("Should not want to double-kill 'A'", Collections.emptySet(), state.killNodes(6501, 500));
     state.revive("A");
-    assertEquals("Should want to kill 'A' after revival", Collections.singleton("A"), state.killNodes(1501, 500));
+    assertEquals("Should want to kill 'A' after revival", Collections.singleton("A"), state.killNodes(6501, 500));
   }
 
 
@@ -772,8 +772,8 @@ public class RaftStateTest {
     state.commitUpTo(log.getLastEntryIndex(), 0L);
 
     assertEquals("Don't want to kill anyone at first", Collections.emptySet(), state.killNodes(1000, 500));
-    assertEquals("Don't want to kill anyone at half of the cutoff", Collections.emptySet(), state.killNodes(1250, 500));  // 1250 = 1000 + 500 / 2 := (last fn run + timeout / 2)
-    assertEquals("Want to kill 'A' right after their timeout", Collections.singleton("A"), state.killNodes(1251, 500));
+    assertEquals("Don't want to kill anyone at first recompute", Collections.emptySet(), state.killNodes(5500, 500));
+    assertEquals("Want to kill 'A' on second recompute", Collections.singleton("A"), state.killNodes(11000, 500));
   }
 
 }

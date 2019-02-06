@@ -3,10 +3,7 @@ package ai.eloquent.raft;
 import ai.eloquent.error.RaftErrorListener;
 import ai.eloquent.io.IOUtils;
 import ai.eloquent.monitoring.Prometheus;
-import ai.eloquent.util.IdentityHashSet;
-import ai.eloquent.util.StackTrace;
-import ai.eloquent.util.SystemUtils;
-import ai.eloquent.util.TimerUtils;
+import ai.eloquent.util.*;
 import com.google.protobuf.ByteString;
 import com.google.protobuf.InvalidProtocolBufferException;
 import org.slf4j.Logger;
@@ -736,11 +733,35 @@ public class KeyValueStateMachine extends RaftStateMachine {
   /** For debugging -- the threads currently in a given function. This is a concurrent hash set.*/
   private final ConcurrentHashMap<Long, String> threadsInFunctions = new ConcurrentHashMap<>();
 
-  /** The servers that own values or locks on this state machine. See {@link #owners(long)}. */
-  private final Set<String> cachedOwners = new HashSet<>();
-
-  /** The last tiem we recomputed {@link #cachedOwners} as a timestamp milliseconds. */
-  private long cachedOwnersTime = -6000000L;
+  /**
+   * A function for recomputing the owners of values in this state machine.
+   * This is, in general, a pretty slow function, so we defer it to another thread.
+   */
+  private final DeferredLazy<Set<String>> ownersLazy = new DeferredLazy<Set<String>>() {
+    /** {@inheritDoc} */
+    @Override
+    protected boolean isValid(Set<String> value, long lastComputeTime, long callTime) {
+      return callTime - lastComputeTime < 5000;
+    }
+    /** {@inheritDoc} */
+    @Override
+    protected Set<String> compute() {
+      Set<String> seen = new HashSet<>();
+      locks.forEach((key, lock) -> {
+        if (lock.holder != null) {
+          String holder = lock.holder.server;
+          seen.add(holder);
+        }
+      });
+      values.forEach((key, value) -> {
+        if (value.owner.isPresent()) {
+          String holder = value.owner.get();
+          seen.add(holder);
+        }
+      });
+      return seen;
+    }
+  };
 
 
   /** Create a new state machine, with knowledge of what node it's running on */
@@ -1287,38 +1308,10 @@ public class KeyValueStateMachine extends RaftStateMachine {
   /** {@inheritDoc} */
   @Override
   public Set<String> owners(long now) {
-    Runnable computeOwnersFn = () -> {
-      Set<String> seen = new HashSet<>();
-      locks.forEach((key, lock) -> {
-        if (lock.holder != null) {
-          String holder = lock.holder.server;
-          seen.add(holder);
-        }
-      });
-      values.forEach((key, value) -> {
-        if (value.owner.isPresent()) {
-          String holder = value.owner.get();
-          seen.add(holder);
-        }
-      });
-      synchronized (cachedOwners) {
-        cachedOwners.clear();
-        cachedOwners.addAll(seen);
-      }
-    };
-    if (locks.size() < 100 && values.size() < 100) {
-      cachedOwnersTime = now;
-      computeOwnersFn.run();
-    } else if (now - cachedOwnersTime > 5000) {
-      cachedOwnersTime = now;
-      Thread computeOwners = new Thread(computeOwnersFn);
-      computeOwners.setName("compute-state-machine-owners");
-      computeOwners.setPriority(Thread.MIN_PRIORITY);
-      computeOwners.setDaemon(true);
-      computeOwners.start();
-    }
-    synchronized (this.cachedOwners) {
-      return new HashSet<>(this.cachedOwners);
+    if (this.values.size() < 10 && this.locks.size() < 10) {  // for very small stat machines, may as well behave synchronously
+      return ownersLazy.getSync(false, now);
+    } else {
+      return ownersLazy.get(false, now).orElse(Collections.emptySet());
     }
   }
 
