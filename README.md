@@ -1,5 +1,7 @@
 # Theseus · [![Build Status](https://travis-ci.com/eloquentlabs/Theseus.svg?branch=master)](https://travis-ci.com/eloquentlabs/Theseus)
 
+![Theseus Logo](https://storage.googleapis.com/res.eloquent.ai/Theseus.png)
+
 [Eloquent Labs](https://www.eloquent.ai)' implementation of the 
 [Raft distributed consensus algorithm](https://raft.github.io/).
 
