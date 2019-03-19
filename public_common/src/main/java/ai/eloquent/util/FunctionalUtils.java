@@ -147,4 +147,26 @@ public class FunctionalUtils {
         ));
   }
 
+
+  /**
+   * Remove any duplicate values in @original while perserving ordering (in-place).
+   * A list like 1 2 3 1 3 2 becomes 1 2 3.
+   * @param original List with some duplicates.
+   * @return original
+   */
+  public static <T> List<T> deduplicate(List<T> original) {
+    HashSet<T> elems = new HashSet<>();
+    Iterator<T> it = original.iterator();
+    while (it.hasNext()) {
+      T val = it.next();
+      if (elems.contains(val)) {
+        it.remove();
+      } else {
+        elems.add(val);
+      }
+    }
+
+    return original;
+  }
+
 }
