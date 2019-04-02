@@ -68,7 +68,7 @@ public class Theseus implements HasRaftLifecycle {
    * The default name for this server, assuming only one Raft is running
    * per box (i.e., IP address)
    */
-  private static Lazy<String> DEFAULT_SERVER_NAME = Lazy.of( () -> {
+  private static Lazy<String> DEFAULT_SERVER_NAME = Lazy.ofSupplier( () -> {
     // 1. Get the server name
     // 1.1. Get the host name, so that we're human readable
     String serverNameBuilder;

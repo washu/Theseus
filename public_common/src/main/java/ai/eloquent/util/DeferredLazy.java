@@ -88,7 +88,7 @@ public abstract class DeferredLazy<E> implements Supplier<Optional<E>> {
    * @return The value we are getting, if it present. Otherwise, {@link Optional#empty()}.
    */
   public Optional<E> get(boolean forceRefresh, long now) {
-    boolean isValid = (value != null && isValid(value, lastComputeTime, now));
+    boolean isValid = this.isValid(now);
     if ((forceRefresh || !isValid) && !computing.getAndSet(true)) {
       // Case: we need a recompute
       // 1. Start the thread
@@ -186,5 +186,18 @@ public abstract class DeferredLazy<E> implements Supplier<Optional<E>> {
    */
   public E getSync() {
     return getSync(false);
+  }
+
+
+  /**
+   * If true, this value is currently valid and can be retrieved.
+   * Note that this may be time-sensitive, and therefore a call to get() with a later time
+   * will not necessarily return a value, even if this returned true.
+   *
+   * @param now The current time.
+   * @return If true, the value is valid at this time.
+   */
+  public boolean isValid(long now) {
+    return (value != null && isValid(value, lastComputeTime, now));
   }
 }

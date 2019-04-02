@@ -107,9 +107,9 @@ public class RaftLifecycle {
     public RaftLifecycle build() {
       Lazy<SafeTimer> timer;
       if (this.mockTimer) {
-        timer = Lazy.of(SafeTimerMock::new);
+        timer = Lazy.ofSupplier(SafeTimerMock::new);
       } else {
-        timer = Lazy.of(PreciseSafeTimer::new);
+        timer = Lazy.ofSupplier(PreciseSafeTimer::new);
       }
       return new RaftLifecycle(timer);
     }
@@ -320,9 +320,9 @@ public class RaftLifecycle {
    */
   public void useTimerMock(boolean useMock) {
     if (useMock) {
-      timer = Lazy.of(SafeTimerMock::new);
+      timer = Lazy.ofSupplier(SafeTimerMock::new);
     } else {
-      timer = Lazy.of(PreciseSafeTimer::new);
+      timer = Lazy.ofSupplier(PreciseSafeTimer::new);
     }
   }
 
@@ -528,7 +528,7 @@ public class RaftLifecycle {
 
     // 8. Cancel the timers
     log.info(logServerNamePrefix()+"Cancelling timers");
-    Optional.ofNullable(timer.getIfDefined()).ifPresent(SafeTimer::cancel);
+    timer.getIfPresent().ifPresent(SafeTimer::cancel);
     log.info(logServerNamePrefix()+"Timers cancelled");
 
     // 9. Shutdown all the managed thread pools, and wait a max of 1 min for everything to shut down

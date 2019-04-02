@@ -1,153 +1,108 @@
 package ai.eloquent.util;
 
-import java.lang.ref.SoftReference;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import java.util.Optional;
 import java.util.function.Function;
 import java.util.function.Supplier;
 
 /**
- * An instantiation of a lazy object.
+ * A special case of {@link DeferredLazy} where we only ever compute the value once.
  *
  * @author <a href="mailto:gabor@eloquent.ai">Gabor Angeli</a>
  */
-public abstract class Lazy<E> {
-  /** If this lazy should cache, this is the cached value. */
-  private SoftReference<E> implOrNullCache = null;
-  /** If this lazy should not cache, this is the computed value */
-  private E implOrNull = null;
+public abstract class Lazy<E> implements Supplier<E> {
+  /**
+   * An SLF4J Logger for this class.
+   */
+  private static final Logger log = LoggerFactory.getLogger(Lazy.class);
 
-
-  /** For testing only: simulate a GC event. */
-  void simulateGC() {
-    if (implOrNullCache != null) {
-      implOrNullCache.clear();
+  /**
+   * Since {@link DeferredLazy} is a more general case of Lazy, we use it as our Lazy class.
+   */
+  private final DeferredLazy<E> impl = new DeferredLazy<E>() {
+    @Override
+    protected boolean isValid(E value, long lastComputeTime, long callTime) {
+      return true;
     }
-  }
-
-  /**
-   * Get the value of this {@link Lazy}, computing it if necessary.
-   */
-  public synchronized E get() {
-    E orNull = getIfDefined();
-    if (orNull == null) {
-      orNull = compute();
-      if (isCache()) {
-        implOrNullCache = new SoftReference<>(orNull);
-      } else {
-        implOrNull = orNull;
-      }
+    @Override
+    protected E compute() throws Exception {
+      return Lazy.this.compute();
     }
-    assert orNull != null;
-    return orNull;
-  }
+  };
 
 
-  /**
-   * Compute the value of this lazy.
-   */
-  protected abstract E compute();
-
+  /** @see ai.eloquent.util.DeferredLazy#compute()  */
+  protected abstract E compute() throws Exception;
 
   /**
-   * Specify whether this lazy should garbage collect its value if needed,
-   * or whether it should force it to be persistent.
-   */
-  public abstract boolean isCache();
-
-  /**
-   * Get the value of this {@link Lazy} if it's been initialized, or else
-   * return null.
-   */
-  public E getIfDefined() {
-    if (implOrNullCache != null) {
-      assert implOrNull == null;
-      return implOrNullCache.get();
-    } else {
-      return implOrNull;
-    }
-  }
-
-
-  /**
-   * Keep this value a Lazy, but when it is gotten apply the given function
-   * to it.
-   * This makes this a proper monad.
+   * Get our value, computing it if necessary.
    *
-   * @param fn The mapper function.
-   * @param <F> The type of Lazy we're returning
-   *
-   * @return The mapped lazy.
+   * @return The value we computed.
    */
-  public <F> Lazy<F> map(Function<E, F> fn) {
+  public E get() {
+    return impl.getSync();
+  }
+
+
+  /**
+   * Lazy is a monad! Let's implement a map function :)
+   *
+   * @param mapper The mapping function
+   * @param <F> The output type of the resulting Lazy.
+   *
+   * @return The mapped lazy. This will compute the value for this lazy, map it with the mapper, and store that value.
+   */
+  public <F> Lazy<F> map(Function<E, F> mapper) {
     return new Lazy<F>() {
       @Override
       protected F compute() {
-        return fn.apply(Lazy.this.compute());
-      }
-
-      @Override
-      public boolean isCache() {
-        return Lazy.this.isCache();
+        return mapper.apply(Lazy.this.get());
       }
     };
   }
 
 
   /**
-   * Create a degenerate {@link Lazy}, which simply returns the given pre-computed
-   * value.
+   * Get our value only if it has already been computed.
+   *
+   * @return Our value if computed, or else {@link Optional#empty()}.
    */
-  public static <E> Lazy<E> from(final E definedElement) {
-    Lazy<E> rtn = new Lazy<E>() {
-      @Override
-      protected E compute() {
-        return definedElement;
-      }
+  public Optional<E> getIfPresent() {
+    if (impl.isValid(0L)) {
+      return Optional.of(impl.getSync());
+    } else {
+      return Optional.empty();
+    }
+  }
 
+
+  /**
+   * Create a lazy from a given value (i.e., not a real lazy, just a value).
+   */
+  public static <X> Lazy<X> ofValue(X value) {
+    Lazy<X> rtn = new Lazy<X>() {
       @Override
-      public boolean isCache() {
-        return false;
+      protected X compute() {
+        return value;
       }
     };
-    rtn.implOrNull = definedElement;
+    rtn.get();  // need to explicitly cache it -- it should start life computed
     return rtn;
   }
 
 
   /**
-   * Create a lazy value from the given provider.
-   * The provider is only called once on initialization.
+   * Create a lazy from a given function.
    */
-  public static <E> Lazy<E> of(Supplier<E> fn) {
-    return new Lazy<E>() {
+  public static <X> Lazy<X> ofSupplier(Supplier<X> value) {
+    return new Lazy<X>() {
       @Override
-      protected E compute() {
-        return fn.get();
-      }
-
-      @Override
-      public boolean isCache() {
-        return false;
+      protected X compute() {
+        return value.get();
       }
     };
   }
 
-
-  /**
-   * Create a lazy value from the given provider, allowing the value
-   * stored in the lazy to be garbage collected if necessary.
-   * The value is then re-created by when needed again.
-   */
-  public static <E> Lazy<E> cache(Supplier<E> fn) {
-    return new Lazy<E>() {
-      @Override
-      protected E compute() {
-        return fn.get();
-      }
-
-      @Override
-      public boolean isCache() {
-        return true;
-      }
-    };
-  }
 }

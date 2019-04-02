@@ -263,7 +263,7 @@ public abstract class RaftBackedCache<V> implements Iterable<Map.Entry<String,V>
         key = key.replace(prefix(), "");
 
         final String finalKey = key;
-        Lazy<Optional<V>> lazyValue = Lazy.of(() -> {
+        Lazy<Optional<V>> lazyValue = Lazy.ofSupplier(() -> {
           Optional<V> parsedValue = Optional.empty();
           if (value.isPresent()) {
             try {

@@ -783,7 +783,7 @@ public class UDPTransport implements Transport {
   /**
    * The default UDP broadcast.
    */
-  public static Lazy<Transport> DEFAULT = Lazy.of(() -> {
+  public static Lazy<Transport> DEFAULT = Lazy.ofSupplier(() -> {
     try {
       return new UDPTransport();
     } catch (IOException e) {

@@ -2,7 +2,7 @@ package ai.eloquent.util;
 
 import org.junit.Test;
 
-import java.util.concurrent.atomic.AtomicInteger;
+import java.util.Optional;
 
 import static org.junit.Assert.*;
 
@@ -14,80 +14,38 @@ import static org.junit.Assert.*;
 public class LazyTest {
 
   @Test
-  public void testFrom() {
-    Lazy<String> x = Lazy.from("foo");
-    assertEquals("foo", x.getIfDefined());
+  public void testOfValue() {
+    Lazy<String> x = Lazy.ofValue("foo");
+    assertEquals(Optional.of("foo"), x.getIfPresent());
     assertEquals("foo", x.get());
   }
 
 
   @Test
-  public void testOf() {
-    Lazy<String> x = Lazy.of(() -> "foo");
-    assertNull(x.getIfDefined());
+  public void testOfSupplier() {
+    Lazy<String> x = Lazy.ofSupplier(() -> "foo");
+    assertEquals(Optional.empty(), x.getIfPresent());
     assertEquals("foo", x.get());
   }
-
-
 
   @Test
-  public void testCached() {
-    Lazy<String> x = Lazy.cache(() -> "foo");
-    assertNull(x.getIfDefined());
-    assertEquals("foo", x.get());
+  public void testDontDoubleCompute() {
+    int[] v = new int[]{7};
+    Lazy<Integer> x = Lazy.ofSupplier(() -> ++v[0]);
+    assertEquals(8, x.get().intValue());
+    assertEquals("We should not double compute the value", 8, x.get().intValue());
   }
-
-
-  @Test
-  public void testOfCalledOnlyOnce() {
-    AtomicInteger callCount = new AtomicInteger(0);
-    Lazy<String> x = Lazy.of(() -> {
-      callCount.incrementAndGet();
-      return "foo";
-    });
-    assertNull(x.getIfDefined());
-    assertEquals("foo", x.get());
-    x.simulateGC();
-    assertEquals("foo", x.get());
-    assertEquals(1, callCount.get());
-  }
-
-
-  @Test
-  public void testCachedCalledOnlyOnce() {
-    AtomicInteger callCount = new AtomicInteger(0);
-    Lazy<String> x = Lazy.cache(() -> {
-      callCount.incrementAndGet();
-      return "foo";
-    });
-    assertNull(x.getIfDefined());
-    assertEquals("foo", x.get());
-    assertEquals("foo", x.get());
-    assertEquals(1, callCount.get());
-  }
-
-
-  @Test
-  public void testCachedGC() {
-    AtomicInteger callCount = new AtomicInteger(0);
-    Lazy<String> x = Lazy.cache(() -> {
-      callCount.incrementAndGet();
-      return "foo";
-    });
-    assertNull(x.getIfDefined());
-    assertEquals("foo", x.get());
-    x.simulateGC();
-    assertEquals("foo", x.get());
-    assertEquals(2, callCount.get());
-  }
-
 
   @Test
   public void testMap() {
-    Lazy<Integer> i = Lazy.of(() -> 42);
-    Lazy<String> str = i.map(Object::toString);
-    assertNull(str.getIfDefined());
-    assertEquals("42", str.get());
+    // Create an int lazy
+    int[] v = new int[]{7};
+    Lazy<Integer> x = Lazy.ofSupplier(() -> ++v[0]);
+    assertEquals(8, x.get().intValue());
+    assertEquals("We should not double compute the value", 8, x.get().intValue());
+    // Map it to a String
+    Lazy<String> y = x.map(String::valueOf);
+    assertEquals("8", y.get());
+    assertEquals("8", y.get());
   }
-
 }
