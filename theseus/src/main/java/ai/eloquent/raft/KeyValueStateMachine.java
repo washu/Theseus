@@ -1167,7 +1167,7 @@ public class KeyValueStateMachine extends RaftStateMachine {
 
     // Make sure we don't have too many listeners
     if (numListeners > 256) {
-      throwRaftError("too-many-raft-listeners-" + SystemUtils.HOST, "Too many Raft listeners: Listener count at : " + numListeners);
+      throwRaftError("too-many-raft-listeners-" + SystemUtils.LOCAL_HOST_ADDRESS, "Too many Raft listeners: Listener count at : " + numListeners);
     }
   }
 

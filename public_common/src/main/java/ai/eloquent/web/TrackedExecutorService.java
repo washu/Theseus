@@ -16,6 +16,8 @@ import java.util.stream.Collectors;
 
 /**
  * A wrapper around an executor service that tracks our threads.
+ *
+ * @author <a href="mailto:gabor@eloquent.ai">Gabor Angeli</a>
  */
 public class TrackedExecutorService implements ExecutorService {
   /**
@@ -130,7 +132,7 @@ public class TrackedExecutorService implements ExecutorService {
         }
         // 4. Page
         if (traces.totalIntCount() >= 128) {  // make sure we empirically have > 128 pages
-          String incidentKey = "thread-overload-" + this.name + SystemUtils.HOST;
+          String incidentKey = "thread-overload-" + this.name + SystemUtils.LOCAL_HOST_ADDRESS;
           throwRaftError(incidentKey, "Too many threads on " + this.name);
         }
       }

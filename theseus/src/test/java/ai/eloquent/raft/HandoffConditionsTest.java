@@ -371,7 +371,7 @@ public class HandoffConditionsTest {
       log.warn("Passed {} runs before error", passes.get());
       log.warn("Actions:");
       for (Pair<Action, String> action : actionStack) {
-        log.warn("  - {}  on  {}", action.first, action.second);
+        log.warn("  - {}  on  {}", action.first(), action.second());
       }
       throw e;
     }

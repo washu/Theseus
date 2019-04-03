@@ -52,16 +52,16 @@ public class RaftLifecycle {
         return;
       }
 
-      log.info(global.logServerNamePrefix()+"-----------------BEGIN SHUTDOWN " + SystemUtils.HOST + "--------------------");
+      log.info(global.logServerNamePrefix()+"-----------------BEGIN SHUTDOWN " + SystemUtils.LOCAL_HOST_ADDRESS + "--------------------");
 
       // 1-11. Run shutdown
       global.shutdown(false);
 
       // N+1. Shutdown logging
-      log.info(global.logServerNamePrefix()+"-----------------END SHUTDOWN " + SystemUtils.HOST + "--------------------");
+      log.info(global.logServerNamePrefix()+"-----------------END SHUTDOWN " + SystemUtils.LOCAL_HOST_ADDRESS + "--------------------");
       Uninterruptably.sleep(1000);  // sleep a while to give everyone a chance to flush if they haven't already
       log.info(global.logServerNamePrefix()+"Done with shutdown");
-      log.info(global.logServerNamePrefix()+"-----------------TERMINATION " + SystemUtils.HOST + "--------------------");
+      log.info(global.logServerNamePrefix()+"-----------------TERMINATION " + SystemUtils.LOCAL_HOST_ADDRESS + "--------------------");
     }));
   }
 
@@ -487,8 +487,8 @@ public class RaftLifecycle {
       return Pair.makePair(t, task.getClass());
     }).collect(Collectors.toList()).forEach(pair -> {
       try {
-        pair.first.join(Duration.ofMinutes(1).toMillis());
-        log.info(logServerNamePrefix()+"Joined shutdown task {}", pair.second);
+        pair.first().join(Duration.ofMinutes(1).toMillis());
+        log.info(logServerNamePrefix()+"Joined shutdown task {}", pair.second());
       } catch (InterruptedException e) {
         log.warn(logServerNamePrefix()+"Shutdown hook got interrupted before it could finish!");
       }

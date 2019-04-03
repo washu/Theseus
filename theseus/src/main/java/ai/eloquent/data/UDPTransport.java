@@ -446,7 +446,7 @@ public class UDPTransport implements Transport {
       throw new FileNotFoundException("Could not find Kubernetes file variable ELOQUENT_RAFT_MEMBERS");
     }
 
-    String[] entries = IOUtils.slurpReader(IOUtils.readerFromString(path)).split("\n");
+    String[] entries = IOUtils.slurp(IOUtils.getReader(path)).split("\n");
     return Arrays.stream(entries)
         .filter(x -> x.trim().length() > 0)
         .map(x -> x.split("\\t|\\s{2,}")) // split on tabs, or on 2 (or more) spaces
@@ -772,7 +772,7 @@ public class UDPTransport implements Transport {
   /** {@inheritDoc} */
   @Override
   public String toString() {
-    return "UDP@" + SystemUtils.HOST + " (" + this.serverAddress + ")" +
+    return "UDP@" + SystemUtils.LOCAL_HOST_ADDRESS + " (" + this.serverAddress + ")" +
         "  <last message sent " + TimerUtils.formatTimeSince(lastMessageSent) + " ago; received " + TimerUtils.formatTimeSince(lastMessageReceived) + " ago>" +
         "  <broadcasting to " + Arrays.asList(this.broadcastAddrs) + ">" +
         "  <pings from " + StringUtils.join(liveServers(60000), ", ") + ">"

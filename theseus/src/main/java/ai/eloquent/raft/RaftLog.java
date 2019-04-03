@@ -1021,12 +1021,12 @@ public class RaftLog {
     // 2. Tests on the log
     assert this.logEntries.isEmpty() || this.logEntries.stream().reduce(
         Pair.makePair(this.logEntries.getFirst().getIndex() - 1, true),
-        (lastIndex, entry) -> Pair.makePair(entry.getIndex(), lastIndex.first + 1== entry.getIndex()),
-        (last, current) -> current).second : "The log entries list should be dense (i.e., each index should be one more than the previous)";
+        (lastIndex, entry) -> Pair.makePair(entry.getIndex(), lastIndex.first() + 1== entry.getIndex()),
+        (last, current) -> current).second() : "The log entries list should be dense (i.e., each index should be one more than the previous)";
     assert this.logEntries.stream().reduce(
         Pair.makePair(0L, true),
-        (lastTerm, entry) -> Pair.makePair(entry.getTerm(), lastTerm.first <= entry.getTerm()),
-        (last, current) -> current).second : "The terms in the log should be monotonically increasing";
+        (lastTerm, entry) -> Pair.makePair(entry.getTerm(), lastTerm.first() <= entry.getTerm()),
+        (last, current) -> current).second() : "The terms in the log should be monotonically increasing";
   }
 
 

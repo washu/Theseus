@@ -9,38 +9,9 @@ import static org.junit.Assert.*;
 
 /**
  * Test the behavior of the {@link Span} class.
+ * @author <a href="mailto:gabor@eloquent.ai">Gabor Angeli</a>
  */
 public class SpanTest {
-
-  @Test
-  public void testIteratorOneElement() {
-    Iterator<Long> iter = new Span(1, 2).iterator();
-    assertTrue(iter.hasNext());
-    assertEquals(1, iter.next().intValue());
-    assertFalse(iter.hasNext());
-  }
-
-  @Test
-  public void testIteratorTwoElements() {
-    Iterator<Long> iter = new Span(1, 3).iterator();
-    assertTrue(iter.hasNext());
-    assertEquals(1, iter.next().intValue());
-    assertTrue(iter.hasNext());
-    assertEquals(2, iter.next().intValue());
-    assertFalse(iter.hasNext());
-  }
-
-  @Test
-  public void testIteratorNoElements() {
-    Iterator<Long> iter = new Span(1, 1).iterator();
-    assertFalse(iter.hasNext());
-  }
-
-  @Test
-  public void testIteratorMisspecified() {
-    Iterator<Long> iter = new Span(1, 0).iterator();
-    assertFalse(iter.hasNext());
-  }
 
   @Test
   public void testOverlaps() {
@@ -121,12 +92,6 @@ public class SpanTest {
     assertEquals(new Span(1,2), Span.intersect(new Span(1, 4),new Span(1,2)));
     assertEquals(new Span(1,2), Span.intersect(new Span(0, 4),new Span(1,2)));
     assertEquals(new Span(1,2), Span.intersect(new Span(0, 2),new Span(1,5)));
-  }
-
-  @Test
-  public void testIntersectEdgeCases() {
-    assertEquals(new Span(4,4), Span.intersect(new Span(1, 4),new Span(4,5)));
-    assertEquals(new Span(0,0), Span.intersect(new Span(1, 2),new Span(4,5)));
   }
 }
 

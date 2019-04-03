@@ -2,6 +2,7 @@ package ai.eloquent.raft;
 
 import ai.eloquent.error.RaftErrorListener;
 import ai.eloquent.monitoring.Prometheus;
+
 import ai.eloquent.util.Lazy;
 import ai.eloquent.util.SafeTimerTask;
 import ai.eloquent.util.TimerUtils;
@@ -76,7 +77,7 @@ public class Theseus implements HasRaftLifecycle {
       serverNameBuilder = InetAddress.getLocalHost().toString();
     } catch (UnknownHostException e) {
       log.warn("Could not get InetAddress.getLocalHost() in order to determine Theseus' hostname", e);
-      Optional<String> hostname = Optional.ofNullable(System.getenv("HOST"));
+      Optional<String> hostname = Optional.ofNullable(System.getenv("LOCAL_HOST_ADDRESS"));
       serverNameBuilder = hostname.orElseGet(() -> UUID.randomUUID().toString());
     }
     if (serverNameBuilder.contains("/")) {

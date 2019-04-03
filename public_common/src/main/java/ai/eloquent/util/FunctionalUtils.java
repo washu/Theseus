@@ -121,7 +121,7 @@ public class FunctionalUtils {
 
   public static <K, V> Map<K, V> toMap(Stream<Pair<K, V>> pairs) {
     Map<K, V> ret = new HashMap<>();
-    pairs.forEach(pair -> ret.put(pair.first, pair.second));
+    pairs.forEach(pair -> ret.put(pair.first(), pair.second()));
     return ret;
   }
   public static <K, V> Map<K, V> toMap(Collection<Pair<K, V>> pairs) {

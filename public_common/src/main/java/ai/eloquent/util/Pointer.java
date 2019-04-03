@@ -1,25 +1,21 @@
 package ai.eloquent.util;
 
-import java.io.Serializable;
 import java.util.Optional;
 
 /**
  * A pointer to an object, to get around not being able to access non-final
  * variables within an anonymous function.
  *
- * @author Gabor Angeli
+ * @author <a href="mailto:gabor@eloquent.ai">Gabor Angeli</a>
  */
-public class Pointer<T> implements Serializable {
-  /** The serial version uid to ensure stable serialization. */
-  private static final long serialVersionUID = 1L;
-
+public class Pointer<T> {
   /**
-   * The value the pointer is set to, if it is set.
+   * The object that this pointer is pointing at
    */
   private T impl;
 
   /**
-   * Create a pointer pointing nowhere.
+   * Create a pointer that points to nowhere
    */
   public Pointer() {
     this.impl = null;
@@ -28,7 +24,7 @@ public class Pointer<T> implements Serializable {
   /**
    * Create a pointer pointing at the given object.
    *
-   * @param impl The object the pointer is pointing at.
+   * @param impl The object the pointer should point at.
    */
   public Pointer(T impl) {
     this.impl = impl;
@@ -52,15 +48,5 @@ public class Pointer<T> implements Serializable {
    */
   public void set(T impl) {
     this.impl = impl;
-  }
-
-
-  /**
-   * Set the pointer to a possible value.
-   *
-   * @param impl The value to set the pointer to. If this is {@linkplain Optional#empty empty}, the pointer is unset.
-   */
-  public void set(Optional<T> impl) {
-    this.impl = impl.orElse(null);
   }
 }

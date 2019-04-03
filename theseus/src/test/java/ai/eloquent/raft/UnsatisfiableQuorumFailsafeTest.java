@@ -7,6 +7,7 @@ import org.junit.Test;
 import java.io.File;
 import java.io.IOException;
 import java.lang.reflect.Field;
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.Arrays;
 import java.util.Collections;
@@ -196,7 +197,7 @@ public class UnsatisfiableQuorumFailsafeTest {
     UnsatisfiableQuorumFailsafe deadlock = new UnsatisfiableQuorumFailsafe(Duration.ofSeconds(45));
     File memberPath = File.createTempFile("raft_cluster", ".tab");
     memberPath.deleteOnExit();
-    IOUtils.writeStringToFile("10.0.0.1\t1/1\trunning.", memberPath.getPath(), "utf-8");
+    IOUtils.writeToFile("10.0.0.1\t1/1\trunning.", memberPath.getPath(), StandardCharsets.UTF_8);
     try {
       injectEnvironmentVariable("ELOQUENT_RAFT_MEMBERS", memberPath.getPath());
       deadlock.heartbeat(algorithm, Duration.ofSeconds(46).toMillis());
@@ -238,7 +239,7 @@ public class UnsatisfiableQuorumFailsafeTest {
     UnsatisfiableQuorumFailsafe deadlock = new UnsatisfiableQuorumFailsafe(Duration.ofSeconds(45));
     File memberPath = File.createTempFile("raft_cluster", ".tab");
     memberPath.deleteOnExit();
-    IOUtils.writeStringToFile("10.0.0.1\t1/1\trunning.\n10.0.0.2\t1/1\trunning.", memberPath.getPath(), "utf-8");
+    IOUtils.writeToFile("10.0.0.1\t1/1\trunning.\n10.0.0.2\t1/1\trunning.", memberPath.getPath(), StandardCharsets.UTF_8);
     try {
       injectEnvironmentVariable("ELOQUENT_RAFT_MEMBERS", memberPath.getPath());
       deadlock.heartbeat(algorithm, Duration.ofSeconds(46).toMillis());
